@@ -70,7 +70,7 @@ No cloning or building required — just point your tool at `npx github:stubbede
 #### Claude Code
 
 ```bash
-claude mcp add atlassian -- npx -y github:stubbedev/atlassian-mcp
+claude mcp add atlassian -- npx -y github:stubbedev/atlassian-mcp --config ~/.atlassian-mcp.json
 ```
 
 ---
@@ -84,7 +84,7 @@ Add to `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (project-only):
   "mcpServers": {
     "atlassian": {
       "command": "npx",
-      "args": ["-y", "github:stubbedev/atlassian-mcp"]
+      "args": ["-y", "github:stubbedev/atlassian-mcp", "--config", "/Users/you/.atlassian-mcp.json"]
     }
   }
 }
@@ -101,7 +101,7 @@ Add to `~/.codeium/windsurf/mcp_config.json`:
   "mcpServers": {
     "atlassian": {
       "command": "npx",
-      "args": ["-y", "github:stubbedev/atlassian-mcp"]
+      "args": ["-y", "github:stubbedev/atlassian-mcp", "--config", "/Users/you/.atlassian-mcp.json"]
     }
   }
 }
@@ -119,7 +119,7 @@ Add to `~/.config/zed/settings.json`:
     "atlassian": {
       "command": {
         "path": "npx",
-        "args": ["-y", "github:stubbedev/atlassian-mcp"]
+        "args": ["-y", "github:stubbedev/atlassian-mcp", "--config", "/home/you/.atlassian-mcp.json"]
       }
     }
   }
@@ -138,7 +138,7 @@ Add to `opencode.json` in your project root (or `~/.config/opencode/opencode.jso
   "mcp": {
     "atlassian": {
       "type": "local",
-      "command": ["npx", "-y", "github:stubbedev/atlassian-mcp"]
+      "command": ["npx", "-y", "github:stubbedev/atlassian-mcp", "--config", "/home/you/.atlassian-mcp.json"]
     }
   }
 }
@@ -157,13 +157,15 @@ mcpServers:
     args:
       - -y
       - github:stubbedev/atlassian-mcp
+      - --config
+      - /home/you/.atlassian-mcp.json
 ```
 
 ---
 
 #### Any other MCP-compatible tool
 
-Most tools that support MCP accept the same JSON format. Use `npx` as the command with `["-y", "github:stubbedev/atlassian-mcp"]` as the args.
+Most tools that support MCP accept the same JSON format. Use `npx` as the command with `["-y", "github:stubbedev/atlassian-mcp", "--config", "/path/to/config.json"]` as the args.
 
 ---
 
