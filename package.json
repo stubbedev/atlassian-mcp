@@ -1,9 +1,14 @@
 {
-  "name": "atlassian-mcp",
-  "version": "1.0.0",
+  "name": "@stubbedev/atlassian-mcp",
+  "version": "0.0.1",
   "description": "MCP server for self-hosted Jira and Bitbucket",
   "type": "module",
   "main": "dist/index.js",
+  "files": [
+    "dist",
+    "atlassian-mcp.schema.json",
+    "README.md"
+  ],
   "bin": {
     "atlassian-mcp": "dist/index.js"
   },
@@ -23,5 +28,13 @@
   },
   "engines": {
     "node": ">=18.0.0"
-  }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/stubbedev/atlassian-mcp.git"
+  },
+  "homepage": "https://github.com/stubbedev/atlassian-mcp#readme"
 }

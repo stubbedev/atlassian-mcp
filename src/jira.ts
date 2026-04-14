@@ -99,22 +99,14 @@ function buildJQL(args: {
 export class JiraClient {
   private baseUrl: string;
   private headers: Record<string, string>;
-  private defaults: { project?: string };
 
-  constructor(baseUrl: string, token: string, defaults: { project?: string } = {}) {
+  constructor(baseUrl: string, token: string) {
     this.baseUrl = baseUrl.replace(/\/$/, '');
     this.headers = {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
       Accept: 'application/json',
     };
-    this.defaults = defaults;
-  }
-
-  private resolveProject(projectKey?: string): string {
-    const key = projectKey ?? this.defaults.project;
-    if (!key) throw new Error('projectKey is required (or set jira.defaultProject in config)');
-    return key;
   }
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T | null> {
@@ -140,11 +132,7 @@ export class JiraClient {
     startAt?: number;
   }): Promise<ToolResult> {
     const { maxResults = 20, startAt = 0 } = args;
-    // Apply defaultProject as a fallback filter when using query mode (not raw JQL)
-    const resolvedArgs = !args.jql && !args.project && this.defaults.project
-      ? { ...args, project: this.defaults.project }
-      : args;
-    const jql = buildJQL(resolvedArgs);
+    const jql = buildJQL(args);
     const params = new URLSearchParams({
       jql,
       maxResults: String(maxResults),
@@ -177,8 +165,8 @@ export class JiraClient {
     return text(`${data.length} project(s):\n${lines.join('\n')}`);
   }
 
-  async getIssueTypes(args: { projectKey?: string }): Promise<ToolResult> {
-    const projectKey = this.resolveProject(args.projectKey);
+  async getIssueTypes(args: { projectKey: string }): Promise<ToolResult> {
+    const { projectKey } = args;
     const data = await this.request<JiraIssueTypeStatuses[]>('GET', `/project/${projectKey}/statuses`);
     if (!data || data.length === 0) return text('No issue types found.');
     const lines = data.map((t) => {
@@ -222,14 +210,14 @@ export class JiraClient {
   }
 
   async createIssue(args: {
-    projectKey?: string;
+    projectKey: string;
     issueType: string;
     summary: string;
     description?: string;
     assignee?: string;
     priority?: string;
   }): Promise<ToolResult> {
-    const projectKey = this.resolveProject(args.projectKey);
+    const { projectKey } = args;
     const fields: Record<string, unknown> = {
       project: { key: projectKey },
       issuetype: { name: args.issueType },

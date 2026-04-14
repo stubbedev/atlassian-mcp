@@ -15,11 +15,8 @@ import { getContext, getCommits, getDiff } from './git.js';
 import { getDevContext, createPrFromContext } from './context.js';
 
 const config = loadConfig();
-const jira = new JiraClient(config.jira.url, config.jira.token, { project: config.jira.defaultProject });
-const bitbucket = new BitbucketClient(config.bitbucket.url, config.bitbucket.token, {
-  project: config.bitbucket.defaultProject,
-  repo: config.bitbucket.defaultRepo,
-});
+const jira = new JiraClient(config.jira.url, config.jira.token);
+const bitbucket = new BitbucketClient(config.bitbucket.url, config.bitbucket.token);
 
 const server = new Server(
   { name: 'atlassian-mcp', version: '1.0.0' },
@@ -86,8 +83,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object',
         properties: {
-          projectKey: { type: 'string', description: 'Jira project key (uses defaultProject if omitted)' },
+          projectKey: { type: 'string', description: 'Jira project key' },
         },
+        required: ['projectKey'],
       },
     },
     {
@@ -119,14 +117,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object',
         properties: {
-          projectKey:  { type: 'string', description: 'Jira project key (uses defaultProject if omitted)' },
+          projectKey:  { type: 'string', description: 'Jira project key' },
           issueType:   { type: 'string', description: 'Issue type name, e.g. "Bug", "Story", "Task"' },
           summary:     { type: 'string', description: 'Issue title' },
           description: { type: 'string', description: 'Issue description (optional)' },
           assignee:    { type: 'string', description: 'Username to assign to (optional)' },
           priority:    { type: 'string', description: 'Priority name, e.g. "High" (optional)' },
         },
-        required: ['issueType', 'summary'],
+        required: ['projectKey', 'issueType', 'summary'],
       },
     },
     {
@@ -226,8 +224,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object',
         properties: {
-          projectKey: { type: 'string', description: 'Bitbucket project key (uses defaultProject if omitted)' },
-          repoSlug:   { type: 'string', description: 'Repository slug (uses defaultRepo if omitted)' },
+          projectKey: { type: 'string', description: 'Bitbucket project key (auto-detected from git remote if omitted)' },
+          repoSlug:   { type: 'string', description: 'Repository slug (auto-detected from git remote if omitted)' },
           state:      { type: 'string', enum: ['OPEN', 'MERGED', 'DECLINED', 'ALL'], description: 'PR state filter (default OPEN)', default: 'OPEN' },
           limit:      { type: 'number', description: 'Max PRs per page (default 25)', default: 25 },
           start:      { type: 'number', description: 'Offset for pagination (default 0)', default: 0 },
@@ -251,8 +249,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object',
         properties: {
-          projectKey: { type: 'string', description: 'Bitbucket project key (uses defaultProject if omitted)' },
-          repoSlug:   { type: 'string', description: 'Repository slug (uses defaultRepo if omitted)' },
+          projectKey: { type: 'string', description: 'Bitbucket project key (auto-detected from git remote if omitted)' },
+          repoSlug:   { type: 'string', description: 'Repository slug (auto-detected from git remote if omitted)' },
           prId:       { type: 'number', description: 'Pull request ID' },
         },
         required: ['prId'],
@@ -264,8 +262,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object',
         properties: {
-          projectKey: { type: 'string', description: 'Bitbucket project key (uses defaultProject if omitted)' },
-          repoSlug:   { type: 'string', description: 'Repository slug (uses defaultRepo if omitted)' },
+          projectKey: { type: 'string', description: 'Bitbucket project key (auto-detected from git remote if omitted)' },
+          repoSlug:   { type: 'string', description: 'Repository slug (auto-detected from git remote if omitted)' },
           prId:       { type: 'number', description: 'Pull request ID' },
         },
         required: ['prId'],
@@ -277,8 +275,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object',
         properties: {
-          projectKey: { type: 'string', description: 'Bitbucket project key (uses defaultProject if omitted)' },
-          repoSlug:   { type: 'string', description: 'Repository slug (uses defaultRepo if omitted)' },
+          projectKey: { type: 'string', description: 'Bitbucket project key (auto-detected from git remote if omitted)' },
+          repoSlug:   { type: 'string', description: 'Repository slug (auto-detected from git remote if omitted)' },
           prId:       { type: 'number', description: 'Pull request ID' },
           limit:      { type: 'number', description: 'Max commits (default 25)', default: 25 },
         },
@@ -287,12 +285,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'bitbucket_create_pull_request',
-      description: 'Create a new pull request with explicit project, repo, and branch parameters',
+      description: 'Create a new pull request (project and repo can be auto-detected from git remote)',
       inputSchema: {
         type: 'object',
         properties: {
-          projectKey:  { type: 'string', description: 'Bitbucket project key (uses defaultProject if omitted)' },
-          repoSlug:    { type: 'string', description: 'Repository slug (uses defaultRepo if omitted)' },
+          projectKey:  { type: 'string', description: 'Bitbucket project key (auto-detected from git remote if omitted)' },
+          repoSlug:    { type: 'string', description: 'Repository slug (auto-detected from git remote if omitted)' },
           title:       { type: 'string', description: 'PR title' },
           description: { type: 'string', description: 'PR description (optional)' },
           fromBranch:  { type: 'string', description: 'Source branch name' },
@@ -308,8 +306,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object',
         properties: {
-          projectKey: { type: 'string', description: 'Bitbucket project key (uses defaultProject if omitted)' },
-          repoSlug:   { type: 'string', description: 'Repository slug (uses defaultRepo if omitted)' },
+          projectKey: { type: 'string', description: 'Bitbucket project key (auto-detected from git remote if omitted)' },
+          repoSlug:   { type: 'string', description: 'Repository slug (auto-detected from git remote if omitted)' },
           prId:       { type: 'number', description: 'Pull request ID' },
         },
         required: ['prId'],
@@ -321,8 +319,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object',
         properties: {
-          projectKey: { type: 'string', description: 'Bitbucket project key (uses defaultProject if omitted)' },
-          repoSlug:   { type: 'string', description: 'Repository slug (uses defaultRepo if omitted)' },
+          projectKey: { type: 'string', description: 'Bitbucket project key (auto-detected from git remote if omitted)' },
+          repoSlug:   { type: 'string', description: 'Repository slug (auto-detected from git remote if omitted)' },
           prId:       { type: 'number', description: 'Pull request ID' },
         },
         required: ['prId'],
@@ -334,8 +332,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object',
         properties: {
-          projectKey: { type: 'string', description: 'Bitbucket project key (uses defaultProject if omitted)' },
-          repoSlug:   { type: 'string', description: 'Repository slug (uses defaultRepo if omitted)' },
+          projectKey: { type: 'string', description: 'Bitbucket project key (auto-detected from git remote if omitted)' },
+          repoSlug:   { type: 'string', description: 'Repository slug (auto-detected from git remote if omitted)' },
           prId:       { type: 'number', description: 'Pull request ID' },
           message:    { type: 'string', description: 'Optional decline message' },
         },
@@ -348,8 +346,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object',
         properties: {
-          projectKey:    { type: 'string', description: 'Bitbucket project key (uses defaultProject if omitted)' },
-          repoSlug:      { type: 'string', description: 'Repository slug (uses defaultRepo if omitted)' },
+          projectKey:    { type: 'string', description: 'Bitbucket project key (auto-detected from git remote if omitted)' },
+          repoSlug:      { type: 'string', description: 'Repository slug (auto-detected from git remote if omitted)' },
           prId:          { type: 'number', description: 'Pull request ID' },
           mergeStrategy: { type: 'string', enum: ['MERGE_COMMIT', 'SQUASH', 'FAST_FORWARD'], description: 'Merge strategy (uses repo default if omitted)' },
           message:       { type: 'string', description: 'Custom merge commit message (optional)' },
@@ -359,13 +357,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'bitbucket_get_pr_comments',
-      description: 'Get comments on a pull request',
+      description: 'Get pull request comment threads with comment IDs and states (needed for replies and resolving)',
       inputSchema: {
         type: 'object',
         properties: {
-          projectKey: { type: 'string', description: 'Bitbucket project key (uses defaultProject if omitted)' },
-          repoSlug:   { type: 'string', description: 'Repository slug (uses defaultRepo if omitted)' },
+          projectKey: { type: 'string', description: 'Bitbucket project key (auto-detected from git remote if omitted)' },
+          repoSlug:   { type: 'string', description: 'Repository slug (auto-detected from git remote if omitted)' },
           prId:       { type: 'number', description: 'Pull request ID' },
+          state:      { type: 'string', enum: ['OPEN', 'RESOLVED', 'PENDING'], description: 'Filter comment state (default OPEN)', default: 'OPEN' },
           limit:      { type: 'number', description: 'Max items per page (default 50)', default: 50 },
           start:      { type: 'number', description: 'Offset for pagination (default 0)', default: 0 },
         },
@@ -374,16 +373,48 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'bitbucket_add_pr_comment',
-      description: 'Add a comment to a pull request',
+      description: 'Add a top-level comment or reply to an existing comment in a pull request',
       inputSchema: {
         type: 'object',
         properties: {
-          projectKey: { type: 'string', description: 'Bitbucket project key (uses defaultProject if omitted)' },
-          repoSlug:   { type: 'string', description: 'Repository slug (uses defaultRepo if omitted)' },
+          projectKey: { type: 'string', description: 'Bitbucket project key (auto-detected from git remote if omitted)' },
+          repoSlug:   { type: 'string', description: 'Repository slug (auto-detected from git remote if omitted)' },
           prId:       { type: 'number', description: 'Pull request ID' },
+          parentCommentId: { type: 'number', description: 'Parent comment ID for reply mode (optional)' },
           text:       { type: 'string', description: 'Comment text' },
         },
         required: ['prId', 'text'],
+      },
+    },
+    {
+      name: 'bitbucket_update_pr_comment',
+      description: 'Update comment text, state, and/or severity (convert comment <-> task)',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          projectKey: { type: 'string', description: 'Bitbucket project key (auto-detected from git remote if omitted)' },
+          repoSlug:   { type: 'string', description: 'Repository slug (auto-detected from git remote if omitted)' },
+          prId:       { type: 'number', description: 'Pull request ID' },
+          commentId:  { type: 'number', description: 'Comment ID to update' },
+          text:       { type: 'string', description: 'New comment text (optional)' },
+          state:      { type: 'string', enum: ['OPEN', 'RESOLVED'], description: 'Comment state (optional)' },
+          severity:   { type: 'string', enum: ['NORMAL', 'BLOCKER'], description: 'Comment severity (optional, BLOCKER creates a task)' },
+        },
+        required: ['prId', 'commentId'],
+      },
+    },
+    {
+      name: 'bitbucket_delete_pr_comment',
+      description: 'Delete a pull request comment by ID',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          projectKey: { type: 'string', description: 'Bitbucket project key (auto-detected from git remote if omitted)' },
+          repoSlug:   { type: 'string', description: 'Repository slug (auto-detected from git remote if omitted)' },
+          prId:       { type: 'number', description: 'Pull request ID' },
+          commentId:  { type: 'number', description: 'Comment ID to delete' },
+        },
+        required: ['prId', 'commentId'],
       },
     },
     {
@@ -392,8 +423,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object',
         properties: {
-          projectKey: { type: 'string', description: 'Bitbucket project key (uses defaultProject if omitted)' },
-          repoSlug:   { type: 'string', description: 'Repository slug (uses defaultRepo if omitted)' },
+          projectKey: { type: 'string', description: 'Bitbucket project key (auto-detected from git remote if omitted)' },
+          repoSlug:   { type: 'string', description: 'Repository slug (auto-detected from git remote if omitted)' },
           filter:     { type: 'string', description: 'Filter branches by name (optional)' },
           limit:      { type: 'number', description: 'Max branches per page (default 25)', default: 25 },
           start:      { type: 'number', description: 'Offset for pagination (default 0)', default: 0 },
@@ -406,8 +437,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object',
         properties: {
-          projectKey: { type: 'string', description: 'Bitbucket project key (uses defaultProject if omitted)' },
-          repoSlug:   { type: 'string', description: 'Repository slug (uses defaultRepo if omitted)' },
+          projectKey: { type: 'string', description: 'Bitbucket project key (auto-detected from git remote if omitted)' },
+          repoSlug:   { type: 'string', description: 'Repository slug (auto-detected from git remote if omitted)' },
           path:       { type: 'string', description: 'File path, e.g. "src/index.ts"' },
           ref:        { type: 'string', description: 'Branch, tag, or commit hash (defaults to default branch)' },
         },
@@ -514,6 +545,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return await bitbucket.getPrComments(args as Parameters<typeof bitbucket.getPrComments>[0]);
       case 'bitbucket_add_pr_comment':
         return await bitbucket.addPrComment(args as Parameters<typeof bitbucket.addPrComment>[0]);
+      case 'bitbucket_update_pr_comment':
+        return await bitbucket.updatePrComment(args as Parameters<typeof bitbucket.updatePrComment>[0]);
+      case 'bitbucket_delete_pr_comment':
+        return await bitbucket.deletePrComment(args as Parameters<typeof bitbucket.deletePrComment>[0]);
       case 'bitbucket_get_branches':
         return await bitbucket.getBranches(args as Parameters<typeof bitbucket.getBranches>[0]);
       case 'bitbucket_get_file':

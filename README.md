@@ -1,6 +1,6 @@
 # atlassian-mcp
 
-A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **self-hosted Jira** (Server / Data Center) and **self-hosted Bitbucket** (Server / Data Center). Exposes 32 tools to Claude for reading and managing issues, pull requests, comments, and git context.
+A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **self-hosted Jira** (Server / Data Center) and **self-hosted Bitbucket** (Server / Data Center). Exposes 34 tools to Claude for reading and managing issues, pull requests, comments, and git context.
 
 > **Note:** This server only supports self-hosted instances. Jira Cloud and Bitbucket Cloud use different APIs and are not supported.
 
@@ -46,8 +46,10 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 | `bitbucket_unapprove_pr` | Remove your approval from a pull request |
 | `bitbucket_merge_pr` | Merge a pull request |
 | `bitbucket_decline_pr` | Decline a pull request |
-| `bitbucket_get_pr_comments` | Get comments on a pull request |
-| `bitbucket_add_pr_comment` | Add a comment to a pull request |
+| `bitbucket_get_pr_comments` | Get comment threads with IDs and states for a pull request |
+| `bitbucket_add_pr_comment` | Add a top-level PR comment or reply to an existing comment |
+| `bitbucket_update_pr_comment` | Update comment text, state, or severity (`NORMAL` / `BLOCKER`) |
+| `bitbucket_delete_pr_comment` | Delete a PR comment by comment ID |
 | `bitbucket_get_pr_commits` | List commits included in a pull request |
 | `bitbucket_get_branches` | List branches in a repository |
 | `bitbucket_get_file` | Get raw file content at a given ref |
@@ -75,19 +77,16 @@ Create `~/.atlassian-mcp.json`:
   "$schema": "https://raw.githubusercontent.com/stubbedev/atlassian-mcp/master/atlassian-mcp.schema.json",
   "jira": {
     "url": "https://jira.example.com",
-    "token": "your-jira-personal-access-token",
-    "defaultProject": "MYPROJ"
+    "token": "your-jira-personal-access-token"
   },
   "bitbucket": {
     "url": "https://bitbucket.example.com",
-    "token": "your-bitbucket-personal-access-token",
-    "defaultProject": "MYPROJ",
-    "defaultRepo": "my-api"
+    "token": "your-bitbucket-personal-access-token"
   }
 }
 ```
 
-The `$schema` field is optional but enables editor autocomplete and validation. `defaultProject` and `defaultRepo` are also optional — when set, you can omit those parameters from tool calls.
+The `$schema` field is optional but enables editor autocomplete and validation. For Bitbucket tools, `projectKey` and `repoSlug` are auto-detected from your local `origin` remote when omitted. Jira project-specific tools still require `projectKey` in the tool call.
 
 Alternatively, use environment variables (or a `.env` file in this directory):
 
@@ -102,14 +101,14 @@ Config is resolved in this order: `--config <path>` CLI arg → `ATLASSIAN_MCP_C
 
 ### 2. Connect to your AI tool
 
-No cloning or building required — just point your tool at `npx github:stubbedev/atlassian-mcp` and it will install and run automatically.
+No cloning or building required — just point your tool at `npx @stubbedev/atlassian-mcp@latest` and it will install and run automatically. Add `--prefer-online` to make `npx` check npm for updates on each run.
 
 ---
 
 #### Claude Code
 
 ```bash
-claude mcp add atlassian -- npx -y github:stubbedev/atlassian-mcp --config ~/.atlassian-mcp.json
+claude mcp add atlassian -- npx --prefer-online -y @stubbedev/atlassian-mcp@latest --config ~/.atlassian-mcp.json
 ```
 
 ---
@@ -123,7 +122,7 @@ Add to `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (project-only):
   "mcpServers": {
     "atlassian": {
       "command": "npx",
-      "args": ["-y", "github:stubbedev/atlassian-mcp", "--config", "/Users/you/.atlassian-mcp.json"]
+      "args": ["--prefer-online", "-y", "@stubbedev/atlassian-mcp@latest", "--config", "/Users/you/.atlassian-mcp.json"]
     }
   }
 }
@@ -140,7 +139,7 @@ Add to `~/.codeium/windsurf/mcp_config.json`:
   "mcpServers": {
     "atlassian": {
       "command": "npx",
-      "args": ["-y", "github:stubbedev/atlassian-mcp", "--config", "/Users/you/.atlassian-mcp.json"]
+      "args": ["--prefer-online", "-y", "@stubbedev/atlassian-mcp@latest", "--config", "/Users/you/.atlassian-mcp.json"]
     }
   }
 }
@@ -158,7 +157,7 @@ Add to `~/.config/zed/settings.json`:
     "atlassian": {
       "command": {
         "path": "npx",
-        "args": ["-y", "github:stubbedev/atlassian-mcp", "--config", "/home/you/.atlassian-mcp.json"]
+        "args": ["--prefer-online", "-y", "@stubbedev/atlassian-mcp@latest", "--config", "/home/you/.atlassian-mcp.json"]
       }
     }
   }
@@ -177,7 +176,7 @@ Add to `opencode.json` in your project root (or `~/.config/opencode/opencode.jso
   "mcp": {
     "atlassian": {
       "type": "local",
-      "command": ["npx", "-y", "github:stubbedev/atlassian-mcp", "--config", "/home/you/.atlassian-mcp.json"]
+      "command": ["npx", "--prefer-online", "-y", "@stubbedev/atlassian-mcp@latest", "--config", "/home/you/.atlassian-mcp.json"]
     }
   }
 }
@@ -194,8 +193,9 @@ mcpServers:
   atlassian:
     command: npx
     args:
+      - --prefer-online
       - -y
-      - github:stubbedev/atlassian-mcp
+      - @stubbedev/atlassian-mcp@latest
       - --config
       - /home/you/.atlassian-mcp.json
 ```
@@ -204,7 +204,7 @@ mcpServers:
 
 #### Any other MCP-compatible tool
 
-Most tools that support MCP accept the same JSON format. Use `npx` as the command with `["-y", "github:stubbedev/atlassian-mcp", "--config", "/path/to/config.json"]` as the args.
+Most tools that support MCP accept the same JSON format. Use `npx` as the command with `["--prefer-online", "-y", "@stubbedev/atlassian-mcp@latest", "--config", "/path/to/config.json"]` as the args.
 
 ---
 
@@ -219,6 +219,28 @@ npm install
 ```
 
 Then use `node /path/to/atlassian-mcp/dist/index.js` instead of the `npx` command in the configs above.
+
+---
+
+## Releases (Maintainers)
+
+This package is published to npm as `@stubbedev/atlassian-mcp`.
+
+Automatic publish is configured in `.github/workflows/publish.yml`:
+
+- Push a tag like `v1.0.1` to publish from CI
+- Or run the workflow manually via **Actions → Publish Package**
+
+Required repository secret:
+
+- `NPM_TOKEN` (npm automation token with publish rights for `@stubbedev`)
+
+Manual publish from local machine:
+
+```bash
+npm run build
+npm publish --access public
+```
 
 ---
 

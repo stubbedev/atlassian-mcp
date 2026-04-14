@@ -1,6 +1,7 @@
 import { execSync } from 'child_process';
 import type { JiraClient } from './jira.js';
 import type { BitbucketClient } from './bitbucket.js';
+import { parseBitbucketRemote } from './bitbucket.js';
 
 type ToolResult = { content: Array<{ type: 'text'; text: string }> };
 
@@ -12,27 +13,6 @@ function safeExec(cmd: string, cwd: string): string {
   } catch {
     return '';
   }
-}
-
-/**
- * Parses a Bitbucket Server remote URL into projectKey + repoSlug.
- * Handles SSH (ssh://git@host/PROJ/repo.git), SCP-like (git@host:PROJ/repo.git),
- * and HTTP (https://host/scm/PROJ/repo.git) formats.
- */
-export function parseBitbucketRemote(remoteUrl: string): { projectKey: string; repoSlug: string } | null {
-  // SSH: ssh://git@host/PROJ/repo.git
-  const sshUrl = remoteUrl.match(/ssh:\/\/[^/]+\/([^/]+)\/([^/]+?)(?:\.git)?$/);
-  if (sshUrl) return { projectKey: sshUrl[1], repoSlug: sshUrl[2] };
-
-  // SCP-like: git@host:PROJ/repo.git
-  const scpUrl = remoteUrl.match(/^[^@]+@[^:]+:([^/]+)\/([^/]+?)(?:\.git)?$/);
-  if (scpUrl) return { projectKey: scpUrl[1], repoSlug: scpUrl[2] };
-
-  // HTTP: https://host/scm/PROJ/repo.git
-  const httpUrl = remoteUrl.match(/\/scm\/([^/]+)\/([^/]+?)(?:\.git)?$/);
-  if (httpUrl) return { projectKey: httpUrl[1], repoSlug: httpUrl[2] };
-
-  return null;
 }
 
 /**
