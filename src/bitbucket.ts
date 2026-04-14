@@ -109,6 +109,10 @@ interface BBCommit {
   message: string;
 }
 
+interface BitbucketErrorPayload {
+  errors?: Array<{ message?: string; context?: string }>;
+}
+
 function text(t: string): ToolResult {
   return { content: [{ type: 'text', text: t }] };
 }
@@ -190,6 +194,39 @@ function formatDiff(data: BBDiff, maxChars = 8000): string {
   return result;
 }
 
+function parseBitbucketErrorDetails(errText: string): string {
+  const trimmed = errText.trim();
+  if (!trimmed) return '';
+
+  try {
+    const parsed = JSON.parse(trimmed) as BitbucketErrorPayload;
+    if (Array.isArray(parsed.errors) && parsed.errors.length > 0) {
+      const messages = parsed.errors
+        .map((e) => {
+          const msg = e.message?.trim() ?? '';
+          if (!msg) return '';
+          return e.context ? `${e.context}: ${msg}` : msg;
+        })
+        .filter((m) => m.length > 0);
+      if (messages.length > 0) return messages.join(' | ');
+    }
+  } catch {
+    // Fallback to raw text below
+  }
+
+  return trimmed.length > 500 ? `${trimmed.slice(0, 500)}...` : trimmed;
+}
+
+function formatBitbucketError(status: number, method: string, path: string, details: string): string {
+  const prefix = `Bitbucket ${status} ${method} ${path}`;
+  if (status === 400) return `${prefix}. Invalid request or parameters. ${details}`.trim();
+  if (status === 401) return `${prefix}. Authentication failed. Check BITBUCKET_ACCESS_TOKEN.`;
+  if (status === 403) return `${prefix}. Permission denied. Check repository/project permissions for this token.`;
+  if (status === 404) return `${prefix}. Resource not found. Verify project/repo/PR identifiers and access.`;
+  if (status === 409) return `${prefix}. Conflict (often stale version/state). Refresh and retry. ${details}`.trim();
+  return details ? `${prefix}. ${details}` : prefix;
+}
+
 export class BitbucketClient {
   private baseUrl: string;
   private headers: Record<string, string>;
@@ -230,7 +267,8 @@ export class BitbucketClient {
     const res = await fetch(url, opts);
     if (!res.ok) {
       const errText = await res.text();
-      throw new Error(`Bitbucket ${res.status} ${method} ${path}: ${errText}`);
+      const details = parseBitbucketErrorDetails(errText);
+      throw new Error(formatBitbucketError(res.status, method, path, details));
     }
     return res.status === 204 ? null : (res.json() as Promise<T>);
   }
@@ -243,7 +281,8 @@ export class BitbucketClient {
     });
     if (!res.ok) {
       const errText = await res.text();
-      throw new Error(`Bitbucket ${res.status} GET ${path}: ${errText}`);
+      const details = parseBitbucketErrorDetails(errText);
+      throw new Error(formatBitbucketError(res.status, 'GET', path, details));
     }
     return res.text();
   }
@@ -329,6 +368,117 @@ export class BitbucketClient {
       data.description ?? '(no description)',
     ];
     return text(lines.join('\n'));
+  }
+
+  async getPrOverview(args: {
+    projectKey?: string;
+    repoSlug?: string;
+    prId: number;
+    includeCommits?: boolean;
+    includeComments?: boolean;
+    includeDiff?: boolean;
+    commentsState?: 'OPEN' | 'RESOLVED' | 'PENDING';
+    commentsSeverity?: 'ALL' | 'NORMAL' | 'BLOCKER';
+    commentsLimit?: number;
+    commentsStart?: number;
+    commitsLimit?: number;
+    commitsStart?: number;
+    diffMaxChars?: number;
+  }): Promise<ToolResult> {
+    const { projectKey, repoSlug } = this.resolveProjectAndRepo(args.projectKey, args.repoSlug);
+    const includeCommits = args.includeCommits ?? true;
+    const includeComments = args.includeComments ?? true;
+    const includeDiff = args.includeDiff ?? false;
+
+    const pr = await this.request<BBPullRequest>(
+      'GET',
+      `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}`
+    );
+    if (!pr) return text('Pull request not found.');
+
+    const sections: string[] = [];
+    const reviewers = pr.reviewers.map((r) => `${r.user.displayName}${r.approved ? ' ✓' : ''}`).join(', ');
+    const url = pr.links?.self?.[0]?.href;
+    const header = [
+      `PR #${pr.id}: ${pr.title}`,
+      `State:     ${pr.state}`,
+      `Author:    ${pr.author.user.displayName}`,
+      `Branch:    ${pr.fromRef.displayId} → ${pr.toRef.displayId}`,
+      `Reviewers: ${reviewers || 'None'}`,
+      url ? `URL:       ${url}` : '',
+      '',
+      'Description:',
+      pr.description ?? '(no description)',
+    ].filter((line) => line !== '');
+    sections.push(header.join('\n'));
+
+    if (includeCommits) {
+      const commitsLimit = args.commitsLimit ?? 25;
+      const commitsStart = args.commitsStart ?? 0;
+      const data = await this.request<BBPagedResult<BBCommit>>(
+        'GET',
+        `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/commits?limit=${commitsLimit}&start=${commitsStart}`
+      );
+      if (!data || data.values.length === 0) {
+        sections.push('Commits:\n(no commits found)');
+      } else {
+        const lines = data.values.map(
+          (c) => `${c.displayId} ${formatDate(c.authorTimestamp)} ${c.author.name}: ${c.message.split('\n')[0]}`
+        );
+        sections.push(`Commits (${data.values.length})${pageHint(data)}:\n${lines.join('\n')}`);
+      }
+    }
+
+    if (includeComments) {
+      const commentsLimit = args.commentsLimit ?? 50;
+      const commentsStart = args.commentsStart ?? 0;
+      const commentsState = args.commentsState ?? 'OPEN';
+      const commentsSeverity = args.commentsSeverity ?? 'ALL';
+
+      if (commentsSeverity === 'BLOCKER' && commentsState === 'PENDING') {
+        throw new Error('commentsState=PENDING is not valid when commentsSeverity=BLOCKER. Use OPEN or RESOLVED.');
+      }
+
+      if (commentsSeverity === 'BLOCKER') {
+        const qs = new URLSearchParams({ limit: String(commentsLimit), start: String(commentsStart), state: commentsState });
+        const data = await this.request<BBPagedResult<BBComment>>(
+          'GET',
+          `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/blocker-comments?${qs}`
+        );
+        if (!data || data.values.length === 0) {
+          sections.push(`Comments:\n(no ${commentsState} BLOCKER comments)`);
+        } else {
+          const blocks = data.values.flatMap((comment) => formatCommentThread(comment));
+          sections.push(`Comments (${data.values.length} BLOCKER thread(s))${pageHint(data)}:\n\n${blocks.join('\n\n')}`);
+        }
+      } else {
+        const activityData = await this.request<BBPagedResult<BBActivity>>(
+          'GET',
+          `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/activities?limit=${commentsLimit}&start=${commentsStart}`
+        );
+        const comments = uniqueCommentsFromActivities(activityData?.values ?? []).filter((comment) => {
+          const matchesState = commentMatchesState(comment, commentsState);
+          return matchesState && commentMatchesSeverity(comment, commentsSeverity);
+        });
+        if (comments.length === 0) {
+          sections.push('Comments:\n(no matching comments)');
+        } else {
+          const blocks = comments.flatMap((comment) => formatCommentThread(comment));
+          const paging = activityData ? pageHint(activityData) : '';
+          sections.push(`Comments (${comments.length} thread(s))${paging}:\n\n${blocks.join('\n\n')}`);
+        }
+      }
+    }
+
+    if (includeDiff) {
+      const data = await this.request<BBDiff>(
+        'GET',
+        `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/diff`
+      );
+      sections.push(`Diff:\n${data ? formatDiff(data, args.diffMaxChars ?? 8000) : '(no diff found)'}`);
+    }
+
+    return text(sections.join('\n\n'));
   }
 
   async getPrDiff(args: { projectKey?: string; repoSlug?: string; prId: number }): Promise<ToolResult> {

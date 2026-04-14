@@ -1,6 +1,6 @@
 # atlassian-mcp
 
-A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **self-hosted Jira** (Server / Data Center) and **self-hosted Bitbucket** (Server / Data Center). Exposes 32 tools for natural-language workflows around tickets, pull requests, review threads, and git context.
+A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **self-hosted Jira** (Server / Data Center) and **self-hosted Bitbucket** (Server / Data Center). Exposes 33 tools for natural-language workflows around tickets, pull requests, review threads, and git context.
 
 > **Note:** This server only supports self-hosted instances. Jira Cloud and Bitbucket Cloud use different APIs and are not supported.
 
@@ -38,6 +38,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 | `bitbucket_list_pull_requests` | List repository pull requests (filter by state, source branch, or text) |
 | `bitbucket_my_prs` | List PRs in your inbox (authored by you or awaiting review) |
 | `bitbucket_get_pull_request` | Get pull request details |
+| `bitbucket_get_pr_overview` | Get a one-call PR overview: metadata, commits, comments/blockers, and optional diff |
 | `bitbucket_get_pr_diff` | Get the code diff for a pull request |
 | `bitbucket_create_pull_request` | Create a new pull request |
 | `bitbucket_approve_pr` | Approve a pull request |
@@ -68,6 +69,7 @@ All list tools support `limit` and `start`/`startAt` for pagination.
 - "list open PRs for this repo from branch feature/ABC-123" → `bitbucket_list_pull_requests`
 - "open a PR from my current branch to master" → `bitbucket_create_pull_request`
 - "show review comments on PR 42" → `bitbucket_get_pr_comments`
+- "give me one full overview of PR 42" → `bitbucket_get_pr_overview`
 - "how many open blockers are on PR 42" → `bitbucket_get_pr_comments` with `severity=BLOCKER` and `countOnly=true`
 - "move FOO-123 to In Progress" → `jira_transition_issue` with `transitionName="In Progress"`
 - "find bugs assigned to me in PAY project" → `jira_search_issues`
@@ -100,6 +102,9 @@ The `$schema` field is optional but enables editor autocomplete and validation.
 - `projectKey` means a project code:
   - Jira example: `PAY` in ticket `PAY-123`
   - Bitbucket example: project `ENG` in repo path `ENG/payments-service`
+- You can also use ergonomic aliases:
+  - Jira: `project` (alias of `projectKey`)
+  - Bitbucket: `project` and `repo` (aliases of `projectKey` and `repoSlug`)
 - For Bitbucket tools, `projectKey` and `repoSlug` are usually auto-detected from your local `origin` remote.
 - `bitbucket_create_pull_request` also auto-detects `fromBranch` from your current branch.
 - Jira project-scoped calls accept `projectKey` and work best when provided.
@@ -254,6 +259,8 @@ Then use `node /path/to/atlassian-mcp/dist/index.js` instead of the `npx` comman
 
 This package is published to npm as `@stubbedev/atlassian-mcp`.
 
+Use semantic versioning for releases. Breaking tool-surface changes should bump the minor version while `<1.0.0` (for example `0.0.x` -> `0.1.0`).
+
 Automatic publish is configured in `.github/workflows/publish.yml`:
 
 - Push a tag like `v1.0.1` to publish from CI
@@ -321,6 +328,9 @@ node dist/index.js
 
 # Test the tool list
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | node dist/index.js
+
+# Quick release smoke check
+npm run smoke
 ```
 
 To use a specific config file:

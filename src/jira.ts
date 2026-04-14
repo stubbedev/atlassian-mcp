@@ -68,6 +68,11 @@ interface JiraUser {
   active: boolean;
 }
 
+interface JiraErrorPayload {
+  errorMessages?: string[];
+  errors?: Record<string, string>;
+}
+
 const JIRA_KEY_IN_BRANCH_RE = /\b([A-Z][A-Z0-9]+)-\d+\b/;
 
 function text(t: string): ToolResult {
@@ -108,6 +113,43 @@ function safeExec(cmd: string): string {
   }
 }
 
+function parseJiraErrorDetails(errText: string): string {
+  const trimmed = errText.trim();
+  if (!trimmed) return '';
+
+  try {
+    const parsed = JSON.parse(trimmed) as JiraErrorPayload;
+    const parts: string[] = [];
+    if (Array.isArray(parsed.errorMessages)) {
+      for (const msg of parsed.errorMessages) {
+        const clean = (msg ?? '').trim();
+        if (clean) parts.push(clean);
+      }
+    }
+    if (parsed.errors && typeof parsed.errors === 'object') {
+      for (const [field, msg] of Object.entries(parsed.errors)) {
+        const clean = (msg ?? '').trim();
+        if (clean) parts.push(`${field}: ${clean}`);
+      }
+    }
+    if (parts.length > 0) return parts.join(' | ');
+  } catch {
+    // Fallback to raw text below
+  }
+
+  return trimmed.length > 500 ? `${trimmed.slice(0, 500)}...` : trimmed;
+}
+
+function formatJiraError(status: number, method: string, path: string, details: string): string {
+  const prefix = `Jira ${status} ${method} ${path}`;
+  if (status === 400) return `${prefix}. Invalid request or parameters. ${details}`.trim();
+  if (status === 401) return `${prefix}. Authentication failed. Check JIRA_ACCESS_TOKEN.`;
+  if (status === 403) return `${prefix}. Permission denied. Check Jira permissions for this token.`;
+  if (status === 404) return `${prefix}. Resource not found. Verify issue/project identifiers and access.`;
+  if (status === 409) return `${prefix}. Conflict. Refresh and retry. ${details}`.trim();
+  return details ? `${prefix}. ${details}` : prefix;
+}
+
 export class JiraClient {
   private baseUrl: string;
   private headers: Record<string, string>;
@@ -128,7 +170,8 @@ export class JiraClient {
     const res = await fetch(url, opts);
     if (!res.ok) {
       const errText = await res.text();
-      throw new Error(`Jira ${res.status} ${method} ${path}: ${errText}`);
+      const details = parseJiraErrorDetails(errText);
+      throw new Error(formatJiraError(res.status, method, path, details));
     }
     return res.status === 204 ? null : (res.json() as Promise<T>);
   }
@@ -157,7 +200,7 @@ export class JiraClient {
     const lines = shown.map((p, i) => `${i + 1}. ${p.key} — ${p.name}`);
     const extra = projects.length > shown.length ? `\n...and ${projects.length - shown.length} more.` : '';
     throw new Error(
-      `Please provide projectKey for this Jira action. Choose one of these project codes:\n${lines.join('\n')}${extra}`
+      `Please provide projectKey (or project) for this Jira action. Choose one of these project codes:\n${lines.join('\n')}${extra}`
     );
   }
 

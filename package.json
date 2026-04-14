@@ -1,6 +1,6 @@
 {
   "name": "@stubbedev/atlassian-mcp",
-  "version": "0.0.5",
+  "version": "0.1.0",
   "description": "MCP server for self-hosted Jira and Bitbucket",
   "type": "module",
   "main": "dist/index.js",
@@ -16,7 +16,9 @@
     "prepare": "tsc",
     "build": "tsc",
     "start": "node dist/index.js",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "smoke": "npm run build && npm run smoke:tools",
+    "smoke:tools": "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}' | node dist/index.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
