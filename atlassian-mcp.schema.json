@@ -1,0 +1,48 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "atlassian-mcp-config",
+  "title": "Atlassian MCP Config",
+  "description": "Configuration file for the atlassian-mcp MCP server",
+  "type": "object",
+  "required": ["jira", "bitbucket"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "jira": {
+      "type": "object",
+      "description": "Self-hosted Jira Server / Data Center connection settings",
+      "required": ["url", "token"],
+      "additionalProperties": false,
+      "properties": {
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Base URL of your Jira instance, e.g. https://jira.example.com"
+        },
+        "token": {
+          "type": "string",
+          "description": "Personal Access Token (PAT) for Jira Server authentication"
+        }
+      }
+    },
+    "bitbucket": {
+      "type": "object",
+      "description": "Self-hosted Bitbucket Server / Data Center connection settings",
+      "required": ["url", "token"],
+      "additionalProperties": false,
+      "properties": {
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Base URL of your Bitbucket instance, e.g. https://bitbucket.example.com"
+        },
+        "token": {
+          "type": "string",
+          "description": "Personal Access Token (PAT) for Bitbucket Server authentication"
+        }
+      }
+    }
+  }
+}

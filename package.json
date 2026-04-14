@@ -1,0 +1,27 @@
+{
+  "name": "atlassian-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for self-hosted Jira and Bitbucket",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "atlassian-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "prepare": "tsc",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "dotenv": "^16.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "@types/node": "^22.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
