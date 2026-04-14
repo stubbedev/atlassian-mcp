@@ -101,14 +101,16 @@ Config is resolved in this order: `--config <path>` CLI arg → `ATLASSIAN_MCP_C
 
 ### 2. Connect to your AI tool
 
-No cloning or building required — just point your tool at `npx @stubbedev/atlassian-mcp@latest` and it will install and run automatically. Add `--prefer-online` to make `npx` check npm for updates on each run.
+No cloning or building required — just point your tool at `npx @stubbedev/atlassian-mcp@latest` and it will install and run automatically.
+
+> Note: `--prefer-online` can break MCP startup in some clients. Keep the command simple and use the update steps below when you want to refresh.
 
 ---
 
 #### Claude Code
 
 ```bash
-claude mcp add atlassian -- npx --prefer-online -y @stubbedev/atlassian-mcp@latest --config ~/.atlassian-mcp.json
+claude mcp add atlassian -- npx -y @stubbedev/atlassian-mcp@latest --config ~/.atlassian-mcp.json
 ```
 
 ---
@@ -122,7 +124,7 @@ Add to `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (project-only):
   "mcpServers": {
     "atlassian": {
       "command": "npx",
-      "args": ["--prefer-online", "-y", "@stubbedev/atlassian-mcp@latest", "--config", "/Users/you/.atlassian-mcp.json"]
+      "args": ["-y", "@stubbedev/atlassian-mcp@latest", "--config", "/Users/you/.atlassian-mcp.json"]
     }
   }
 }
@@ -139,7 +141,7 @@ Add to `~/.codeium/windsurf/mcp_config.json`:
   "mcpServers": {
     "atlassian": {
       "command": "npx",
-      "args": ["--prefer-online", "-y", "@stubbedev/atlassian-mcp@latest", "--config", "/Users/you/.atlassian-mcp.json"]
+      "args": ["-y", "@stubbedev/atlassian-mcp@latest", "--config", "/Users/you/.atlassian-mcp.json"]
     }
   }
 }
@@ -157,7 +159,7 @@ Add to `~/.config/zed/settings.json`:
     "atlassian": {
       "command": {
         "path": "npx",
-        "args": ["--prefer-online", "-y", "@stubbedev/atlassian-mcp@latest", "--config", "/home/you/.atlassian-mcp.json"]
+        "args": ["-y", "@stubbedev/atlassian-mcp@latest", "--config", "/home/you/.atlassian-mcp.json"]
       }
     }
   }
@@ -176,7 +178,7 @@ Add to `opencode.json` in your project root (or `~/.config/opencode/opencode.jso
   "mcp": {
     "atlassian": {
       "type": "local",
-      "command": ["npx", "--prefer-online", "-y", "@stubbedev/atlassian-mcp@latest", "--config", "/home/you/.atlassian-mcp.json"]
+      "command": ["npx", "-y", "@stubbedev/atlassian-mcp@latest", "--config", "/home/you/.atlassian-mcp.json"]
     }
   }
 }
@@ -193,7 +195,6 @@ mcpServers:
   atlassian:
     command: npx
     args:
-      - --prefer-online
       - -y
       - @stubbedev/atlassian-mcp@latest
       - --config
@@ -204,7 +205,17 @@ mcpServers:
 
 #### Any other MCP-compatible tool
 
-Most tools that support MCP accept the same JSON format. Use `npx` as the command with `["--prefer-online", "-y", "@stubbedev/atlassian-mcp@latest", "--config", "/path/to/config.json"]` as the args.
+Most tools that support MCP accept the same JSON format. Use `npx` as the command with `["-y", "@stubbedev/atlassian-mcp@latest", "--config", "/path/to/config.json"]` as the args.
+
+### Updating existing installs
+
+If your MCP client is already configured and you want the newest package version:
+
+```bash
+npx clear-npx-cache
+```
+
+Then restart your MCP client.
 
 ---
 
@@ -231,9 +242,11 @@ Automatic publish is configured in `.github/workflows/publish.yml`:
 - Push a tag like `v1.0.1` to publish from CI
 - Or run the workflow manually via **Actions → Publish Package**
 
-Required repository secret:
+- The workflow is configured for npm Trusted Publisher (OIDC), so no `NPM_TOKEN` secret is required
 
-- `NPM_TOKEN` (npm automation token with publish rights for `@stubbedev`)
+Required npm setup (one-time):
+
+- In npm package settings, add this GitHub repo/workflow as a Trusted Publisher
 
 Manual publish from local machine:
 
