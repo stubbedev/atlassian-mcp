@@ -64,6 +64,17 @@ interface BBComment {
   comments?: BBComment[];
 }
 
+interface BBActivity {
+  action: string;
+  comment?: BBComment;
+}
+
+interface BBTaskCount {
+  open?: number;
+  resolved?: number;
+  values?: Array<{ state?: string; count?: number }>;
+}
+
 interface BBBranch {
   id: string;
   displayId: string;
@@ -127,6 +138,22 @@ function formatCommentThread(comment: BBComment, indent = ''): string[] {
   }
 
   return lines;
+}
+
+function commentMatchesState(comment: BBComment, state: 'OPEN' | 'RESOLVED' | 'PENDING'): boolean {
+  const currentState = comment.state ?? 'OPEN';
+  if (currentState === state) return true;
+  return (comment.comments ?? []).some((child) => commentMatchesState(child, state));
+}
+
+function uniqueCommentsFromActivities(activities: BBActivity[]): BBComment[] {
+  const byId = new Map<number, BBComment>();
+  for (const activity of activities) {
+    if (activity.action === 'COMMENTED' && activity.comment && !byId.has(activity.comment.id)) {
+      byId.set(activity.comment.id, activity.comment);
+    }
+  }
+  return Array.from(byId.values()).sort((a, b) => (a.createdDate ?? 0) - (b.createdDate ?? 0));
 }
 
 function pageHint(data: BBPagedResult<unknown>): string {
@@ -253,11 +280,13 @@ export class BitbucketClient {
     return text(`${data.values.length} PR(s) (${state})${pageHint(data)}:\n${lines.join('\n')}`);
   }
 
-  async myPrs(args: { limit?: number; start?: number }): Promise<ToolResult> {
-    const { limit = 25, start = 0 } = args;
+  async myPrs(args: { limit?: number; start?: number; role?: 'author' | 'reviewer' | 'participant' }): Promise<ToolResult> {
+    const { limit = 25, start = 0, role } = args;
+    const qs = new URLSearchParams({ limit: String(limit), start: String(start) });
+    if (role) qs.set('role', role);
     const data = await this.request<BBPagedResult<BBPullRequest>>(
       'GET',
-      `/inbox/pull-requests?limit=${limit}&start=${start}`
+      `/inbox/pull-requests?${qs}`
     );
     if (!data || data.values.length === 0) return text('No pull requests in your inbox.');
     const lines = data.values.map((pr) => {
@@ -300,12 +329,13 @@ export class BitbucketClient {
     return text(formatDiff(data));
   }
 
-  async getPrCommits(args: { projectKey?: string; repoSlug?: string; prId: number; limit?: number }): Promise<ToolResult> {
+  async getPrCommits(args: { projectKey?: string; repoSlug?: string; prId: number; limit?: number; start?: number }): Promise<ToolResult> {
     const { projectKey, repoSlug } = this.resolveProjectAndRepo(args.projectKey, args.repoSlug);
     const limit = args.limit ?? 25;
+    const start = args.start ?? 0;
     const data = await this.request<BBPagedResult<BBCommit>>(
       'GET',
-      `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/commits?limit=${limit}`
+      `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/commits?limit=${limit}&start=${start}`
     );
     if (!data || data.values.length === 0) return text('No commits found.');
     const lines = data.values.map(
@@ -446,23 +476,91 @@ export class BitbucketClient {
     projectKey?: string;
     repoSlug?: string;
     prId: number;
+    path?: string;
     state?: 'OPEN' | 'RESOLVED' | 'PENDING';
     limit?: number;
     start?: number;
   }): Promise<ToolResult> {
     const { projectKey, repoSlug } = this.resolveProjectAndRepo(args.projectKey, args.repoSlug);
     const { limit = 50, start = 0, state = 'OPEN' } = args;
-    const qs = new URLSearchParams({ limit: String(limit), start: String(start) });
-    qs.set('state', state);
-    const data = await this.request<BBPagedResult<BBComment>>(
+
+    if (args.path) {
+      const qs = new URLSearchParams({
+        limit: String(limit),
+        start: String(start),
+        state,
+        path: args.path,
+      });
+      const data = await this.request<BBPagedResult<BBComment>>(
+        'GET',
+        `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/comments?${qs}`
+      );
+      const filtered = (data?.values ?? []).filter((comment) => commentMatchesState(comment, state));
+      if (filtered.length === 0) {
+        return text(`No ${state} comments on PR #${args.prId} for path ${args.path}.`);
+      }
+      const blocks = filtered.flatMap((comment) => formatCommentThread(comment));
+      const paging = data ? pageHint(data) : '';
+      return text(`${filtered.length} comment thread(s) on PR #${args.prId} for ${args.path}${paging}:\n\n${blocks.join('\n\n')}`);
+    }
+
+    const activityData = await this.request<BBPagedResult<BBActivity>>(
       'GET',
-      `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/comments?${qs}`
+      `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/activities?limit=${limit}&start=${start}`
     );
-    if (!data || data.values.length === 0) {
+    const comments = uniqueCommentsFromActivities(activityData?.values ?? []).filter((comment) => commentMatchesState(comment, state));
+    if (comments.length === 0) {
       return text(`No ${state} comments on PR #${args.prId}.`);
     }
+    const blocks = comments.flatMap((comment) => formatCommentThread(comment));
+    const paging = activityData ? pageHint(activityData) : '';
+    return text(`${comments.length} comment thread(s) on PR #${args.prId}${paging}:\n\n${blocks.join('\n\n')}`);
+  }
+
+  async getPrTasks(args: {
+    projectKey?: string;
+    repoSlug?: string;
+    prId: number;
+    state?: 'OPEN' | 'RESOLVED';
+    limit?: number;
+    start?: number;
+  }): Promise<ToolResult> {
+    const { projectKey, repoSlug } = this.resolveProjectAndRepo(args.projectKey, args.repoSlug);
+    const { limit = 50, start = 0, state = 'OPEN' } = args;
+    const qs = new URLSearchParams({ limit: String(limit), start: String(start), state });
+    const data = await this.request<BBPagedResult<BBComment>>(
+      'GET',
+      `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/blocker-comments?${qs}`
+    );
+    if (!data || data.values.length === 0) {
+      return text(`No ${state} tasks on PR #${args.prId}.`);
+    }
     const blocks = data.values.flatMap((comment) => formatCommentThread(comment));
-    return text(`${data.values.length} comment thread(s) on PR #${args.prId}${pageHint(data)}:\n\n${blocks.join('\n\n')}`);
+    return text(`${data.values.length} ${state} task(s) on PR #${args.prId}${pageHint(data)}:\n\n${blocks.join('\n\n')}`);
+  }
+
+  async getPrTaskCount(args: {
+    projectKey?: string;
+    repoSlug?: string;
+    prId: number;
+  }): Promise<ToolResult> {
+    const { projectKey, repoSlug } = this.resolveProjectAndRepo(args.projectKey, args.repoSlug);
+    const data = await this.request<BBTaskCount>(
+      'GET',
+      `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/blocker-comments?count=true`
+    );
+
+    let open = data?.open ?? 0;
+    let resolved = data?.resolved ?? 0;
+
+    if ((open === 0 && resolved === 0) && data?.values && data.values.length > 0) {
+      for (const v of data.values) {
+        if ((v.state ?? '').toUpperCase() === 'OPEN') open = v.count ?? open;
+        if ((v.state ?? '').toUpperCase() === 'RESOLVED') resolved = v.count ?? resolved;
+      }
+    }
+
+    return text(`PR #${args.prId} tasks: OPEN=${open}, RESOLVED=${resolved}`);
   }
 
   async addPrComment(args: {

@@ -1,6 +1,6 @@
 # atlassian-mcp
 
-A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **self-hosted Jira** (Server / Data Center) and **self-hosted Bitbucket** (Server / Data Center). Exposes 34 tools to Claude for reading and managing issues, pull requests, comments, and git context.
+A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **self-hosted Jira** (Server / Data Center) and **self-hosted Bitbucket** (Server / Data Center). Exposes 37 tools to Claude for reading and managing issues, pull requests, comments, and git context.
 
 > **Note:** This server only supports self-hosted instances. Jira Cloud and Bitbucket Cloud use different APIs and are not supported.
 
@@ -46,7 +46,9 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 | `bitbucket_unapprove_pr` | Remove your approval from a pull request |
 | `bitbucket_merge_pr` | Merge a pull request |
 | `bitbucket_decline_pr` | Decline a pull request |
-| `bitbucket_get_pr_comments` | Get comment threads with IDs and states for a pull request |
+| `bitbucket_get_pr_comments` | Get PR comment threads with IDs/states (optional `path` filter) |
+| `bitbucket_get_pr_tasks` | List PR tasks (blocker comments), with `OPEN`/`RESOLVED` filter |
+| `bitbucket_get_pr_task_count` | Get total OPEN and RESOLVED PR task counts |
 | `bitbucket_add_pr_comment` | Add a top-level PR comment or reply to an existing comment |
 | `bitbucket_update_pr_comment` | Update comment text, state, or severity (`NORMAL` / `BLOCKER`) |
 | `bitbucket_delete_pr_comment` | Delete a PR comment by comment ID |

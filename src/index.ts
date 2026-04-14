@@ -240,6 +240,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           limit: { type: 'number', description: 'Max PRs per page (default 25)', default: 25 },
           start: { type: 'number', description: 'Offset for pagination (default 0)', default: 0 },
+          role:  { type: 'string', enum: ['author', 'reviewer', 'participant'], description: 'Inbox role filter (default server behavior)' },
         },
       },
     },
@@ -279,6 +280,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           repoSlug:   { type: 'string', description: 'Repository slug (auto-detected from git remote if omitted)' },
           prId:       { type: 'number', description: 'Pull request ID' },
           limit:      { type: 'number', description: 'Max commits (default 25)', default: 25 },
+          start:      { type: 'number', description: 'Offset for pagination (default 0)', default: 0 },
         },
         required: ['prId'],
       },
@@ -357,16 +359,46 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'bitbucket_get_pr_comments',
-      description: 'Get pull request comment threads with comment IDs and states (needed for replies and resolving)',
+      description: 'Get pull request comment threads with comment IDs and states (uses activities feed unless a path filter is provided)',
       inputSchema: {
         type: 'object',
         properties: {
           projectKey: { type: 'string', description: 'Bitbucket project key (auto-detected from git remote if omitted)' },
           repoSlug:   { type: 'string', description: 'Repository slug (auto-detected from git remote if omitted)' },
           prId:       { type: 'number', description: 'Pull request ID' },
+          path:       { type: 'string', description: 'Optional file path filter, e.g. "src/index.ts"' },
           state:      { type: 'string', enum: ['OPEN', 'RESOLVED', 'PENDING'], description: 'Filter comment state (default OPEN)', default: 'OPEN' },
           limit:      { type: 'number', description: 'Max items per page (default 50)', default: 50 },
           start:      { type: 'number', description: 'Offset for pagination (default 0)', default: 0 },
+        },
+        required: ['prId'],
+      },
+    },
+    {
+      name: 'bitbucket_get_pr_tasks',
+      description: 'List blocker comments (tasks) on a pull request',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          projectKey: { type: 'string', description: 'Bitbucket project key (auto-detected from git remote if omitted)' },
+          repoSlug:   { type: 'string', description: 'Repository slug (auto-detected from git remote if omitted)' },
+          prId:       { type: 'number', description: 'Pull request ID' },
+          state:      { type: 'string', enum: ['OPEN', 'RESOLVED'], description: 'Task state filter (default OPEN)', default: 'OPEN' },
+          limit:      { type: 'number', description: 'Max tasks per page (default 50)', default: 50 },
+          start:      { type: 'number', description: 'Offset for pagination (default 0)', default: 0 },
+        },
+        required: ['prId'],
+      },
+    },
+    {
+      name: 'bitbucket_get_pr_task_count',
+      description: 'Get total OPEN and RESOLVED task counts for a pull request',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          projectKey: { type: 'string', description: 'Bitbucket project key (auto-detected from git remote if omitted)' },
+          repoSlug:   { type: 'string', description: 'Repository slug (auto-detected from git remote if omitted)' },
+          prId:       { type: 'number', description: 'Pull request ID' },
         },
         required: ['prId'],
       },
@@ -543,6 +575,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return await bitbucket.mergePr(args as Parameters<typeof bitbucket.mergePr>[0]);
       case 'bitbucket_get_pr_comments':
         return await bitbucket.getPrComments(args as Parameters<typeof bitbucket.getPrComments>[0]);
+      case 'bitbucket_get_pr_tasks':
+        return await bitbucket.getPrTasks(args as Parameters<typeof bitbucket.getPrTasks>[0]);
+      case 'bitbucket_get_pr_task_count':
+        return await bitbucket.getPrTaskCount(args as Parameters<typeof bitbucket.getPrTaskCount>[0]);
       case 'bitbucket_add_pr_comment':
         return await bitbucket.addPrComment(args as Parameters<typeof bitbucket.addPrComment>[0]);
       case 'bitbucket_update_pr_comment':
