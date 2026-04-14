@@ -8,23 +8,48 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 
 ## Tools
 
+### Jira
+
 | Tool | Description |
 |---|---|
 | `jira_search_issues` | Search issues using JQL |
+| `jira_my_issues` | List issues assigned to you, ordered by last updated |
+| `jira_get_projects` | List all accessible projects |
 | `jira_get_issue` | Get issue details by key |
+| `jira_create_issue` | Create a new issue |
+| `jira_update_issue` | Update summary, description, assignee, or priority |
+| `jira_assign_issue` | Assign or unassign an issue |
 | `jira_get_comments` | List comments on an issue |
 | `jira_add_comment` | Add a comment to an issue |
 | `jira_get_transitions` | List available status transitions |
 | `jira_transition_issue` | Change issue status via transition ID |
+
+### Bitbucket
+
+| Tool | Description |
+|---|---|
 | `bitbucket_list_repos` | List repositories (optionally by project) |
 | `bitbucket_list_pull_requests` | List pull requests for a repository |
+| `bitbucket_my_prs` | List PRs in your inbox (authored by you or awaiting review) |
 | `bitbucket_get_pull_request` | Get pull request details |
+| `bitbucket_get_pr_diff` | Get the code diff for a pull request |
 | `bitbucket_create_pull_request` | Create a new pull request |
+| `bitbucket_approve_pr` | Approve a pull request |
+| `bitbucket_merge_pr` | Merge a pull request |
 | `bitbucket_get_pr_comments` | Get comments on a pull request |
 | `bitbucket_add_pr_comment` | Add a comment to a pull request |
-| `git_get_context` | Get branch, remote, recent commits, and working tree status |
-| `git_get_commits` | Get commit history for a branch |
-| `git_get_diff` | Get diff of uncommitted changes or between two refs |
+| `bitbucket_get_branches` | List branches in a repository |
+| `bitbucket_get_file` | Get raw file content at a given ref |
+
+### Git
+
+| Tool | Description |
+|---|---|
+| `git_get_context` | Branch, remote, recent commits, working tree status, and any Jira keys detected in the branch name |
+| `git_get_commits` | Commit history for a branch with author and message |
+| `git_get_diff` | Diff of uncommitted changes or between two refs |
+
+All list tools support `limit` and `start`/`startAt` for pagination.
 
 ---
 

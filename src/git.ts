@@ -2,6 +2,8 @@ import { execSync } from 'child_process';
 
 type ToolResult = { content: Array<{ type: 'text'; text: string }> };
 
+const JIRA_KEY_RE = /\b[A-Z][A-Z0-9]+-\d+\b/g;
+
 function text(t: string): ToolResult {
   return { content: [{ type: 'text', text: t }] };
 }
@@ -26,17 +28,28 @@ export function getContext(args: { repoPath?: string; commitLimit?: number }): T
     const remote = safeGit('remote get-url origin', repoPath, '(no remote)');
     const commits = safeGit(`log --oneline -${limit}`, repoPath, '(no commits)');
     const status = safeGit('status --short', repoPath, '');
+
+    const jiraKeys = [...new Set(branch.match(JIRA_KEY_RE) ?? [])];
+
     const lines = [
       `Repository: ${repoPath}`,
       `Branch:     ${branch}`,
       `Remote:     ${remote}`,
+    ];
+
+    if (jiraKeys.length > 0) {
+      lines.push(`Jira issue(s) detected in branch: ${jiraKeys.join(', ')}`);
+    }
+
+    lines.push(
       '',
       `Recent commits (last ${limit}):`,
       commits || '(none)',
       '',
       'Working tree status:',
       status || '(clean)',
-    ];
+    );
+
     return text(lines.join('\n'));
   } catch (err) {
     return text(`Error reading git context: ${(err as Error).message}`);

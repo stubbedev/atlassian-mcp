@@ -29,14 +29,40 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     // ── Jira ──────────────────────────────────────────────────────────────
     {
       name: 'jira_search_issues',
-      description: 'Search Jira issues using JQL',
+      description: 'Search Jira issues. Use `query` for plain-text search (searches summary, description, and comments using Lucene full-text). Use `jql` for advanced queries. Combine `query` with `project`, `status`, `assignee`, or `issueType` to narrow results without writing JQL.',
       inputSchema: {
         type: 'object',
         properties: {
-          jql: { type: 'string', description: 'JQL query, e.g. "project = FOO AND status = Open"' },
-          maxResults: { type: 'number', description: 'Max results (default 20, max 100)', default: 20 },
+          query:     { type: 'string', description: 'Plain-text search across summary, description, and comments (fuzzy, stemmed)' },
+          jql:       { type: 'string', description: 'Raw JQL query — overrides all other filters when provided' },
+          project:   { type: 'string', description: 'Filter by project key, e.g. "FOO"' },
+          status:    { type: 'string', description: 'Filter by status name, e.g. "In Progress"' },
+          assignee:  { type: 'string', description: 'Filter by assignee username, e.g. "jsmith"' },
+          issueType: { type: 'string', description: 'Filter by issue type, e.g. "Bug", "Story"' },
+          maxResults: { type: 'number', description: 'Max results per page (default 20)', default: 20 },
+          startAt:    { type: 'number', description: 'Offset for pagination (default 0)', default: 0 },
         },
-        required: ['jql'],
+      },
+    },
+    {
+      name: 'jira_my_issues',
+      description: 'List issues assigned to the current user, ordered by last updated',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          maxResults: { type: 'number', description: 'Max results per page (default 20)', default: 20 },
+          startAt: { type: 'number', description: 'Offset for pagination (default 0)', default: 0 },
+        },
+      },
+    },
+    {
+      name: 'jira_get_projects',
+      description: 'List all accessible Jira projects',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          maxResults: { type: 'number', description: 'Max results (default 50)', default: 50 },
+        },
       },
     },
     {
@@ -51,13 +77,60 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'jira_create_issue',
+      description: 'Create a new Jira issue',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          projectKey: { type: 'string', description: 'Jira project key, e.g. "FOO"' },
+          issueType: { type: 'string', description: 'Issue type name, e.g. "Bug", "Story", "Task"' },
+          summary: { type: 'string', description: 'Issue title' },
+          description: { type: 'string', description: 'Issue description (optional)' },
+          assignee: { type: 'string', description: 'Username to assign to (optional)' },
+          priority: { type: 'string', description: 'Priority name, e.g. "High", "Medium" (optional)' },
+        },
+        required: ['projectKey', 'issueType', 'summary'],
+      },
+    },
+    {
+      name: 'jira_update_issue',
+      description: 'Update fields on an existing Jira issue',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          issueKey: { type: 'string', description: 'Jira issue key' },
+          summary: { type: 'string', description: 'New summary (optional)' },
+          description: { type: 'string', description: 'New description (optional)' },
+          assignee: { type: 'string', description: 'New assignee username (optional)' },
+          priority: { type: 'string', description: 'New priority name (optional)' },
+        },
+        required: ['issueKey'],
+      },
+    },
+    {
+      name: 'jira_assign_issue',
+      description: 'Assign (or unassign) a Jira issue',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          issueKey: { type: 'string', description: 'Jira issue key' },
+          assignee: {
+            description: 'Username to assign to, or null to unassign',
+            oneOf: [{ type: 'string' }, { type: 'null' }],
+          },
+        },
+        required: ['issueKey', 'assignee'],
+      },
+    },
+    {
       name: 'jira_get_comments',
       description: 'Get comments on a Jira issue',
       inputSchema: {
         type: 'object',
         properties: {
           issueKey: { type: 'string', description: 'Jira issue key' },
-          maxResults: { type: 'number', description: 'Max comments to return (default 50)', default: 50 },
+          maxResults: { type: 'number', description: 'Max comments per page (default 50)', default: 50 },
+          startAt: { type: 'number', description: 'Offset for pagination (default 0)', default: 0 },
         },
         required: ['issueKey'],
       },
@@ -87,7 +160,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'jira_transition_issue',
-      description: 'Change the status of a Jira issue using a transition ID (get IDs from jira_get_transitions)',
+      description: 'Change the status of a Jira issue (get transition IDs from jira_get_transitions)',
       inputSchema: {
         type: 'object',
         properties: {
@@ -104,8 +177,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object',
         properties: {
-          projectKey: { type: 'string', description: 'Bitbucket project key to filter repos (optional)' },
-          limit: { type: 'number', description: 'Max repos to return (default 50)', default: 50 },
+          projectKey: { type: 'string', description: 'Bitbucket project key (optional)' },
+          limit: { type: 'number', description: 'Max repos per page (default 50)', default: 50 },
+          start: { type: 'number', description: 'Offset for pagination (default 0)', default: 0 },
         },
       },
     },
@@ -123,14 +197,39 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             description: 'PR state filter (default OPEN)',
             default: 'OPEN',
           },
-          limit: { type: 'number', description: 'Max PRs to return (default 25)', default: 25 },
+          limit: { type: 'number', description: 'Max PRs per page (default 25)', default: 25 },
+          start: { type: 'number', description: 'Offset for pagination (default 0)', default: 0 },
         },
         required: ['projectKey', 'repoSlug'],
       },
     },
     {
+      name: 'bitbucket_my_prs',
+      description: 'List pull requests in your inbox (authored by you or awaiting your review)',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          limit: { type: 'number', description: 'Max PRs per page (default 25)', default: 25 },
+          start: { type: 'number', description: 'Offset for pagination (default 0)', default: 0 },
+        },
+      },
+    },
+    {
       name: 'bitbucket_get_pull_request',
       description: 'Get details of a specific Bitbucket pull request',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          projectKey: { type: 'string', description: 'Bitbucket project key' },
+          repoSlug: { type: 'string', description: 'Repository slug' },
+          prId: { type: 'number', description: 'Pull request ID' },
+        },
+        required: ['projectKey', 'repoSlug', 'prId'],
+      },
+    },
+    {
+      name: 'bitbucket_get_pr_diff',
+      description: 'Get the code diff for a Bitbucket pull request',
       inputSchema: {
         type: 'object',
         properties: {
@@ -152,7 +251,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           title: { type: 'string', description: 'PR title' },
           description: { type: 'string', description: 'PR description (optional)' },
           fromBranch: { type: 'string', description: 'Source branch name' },
-          toBranch: { type: 'string', description: 'Target branch name (default: main)' },
+          toBranch: { type: 'string', description: 'Target branch name (default: master)' },
           reviewers: {
             type: 'array',
             items: { type: 'string' },
@@ -160,6 +259,38 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
         },
         required: ['projectKey', 'repoSlug', 'title', 'fromBranch'],
+      },
+    },
+    {
+      name: 'bitbucket_approve_pr',
+      description: 'Approve a Bitbucket pull request',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          projectKey: { type: 'string', description: 'Bitbucket project key' },
+          repoSlug: { type: 'string', description: 'Repository slug' },
+          prId: { type: 'number', description: 'Pull request ID' },
+        },
+        required: ['projectKey', 'repoSlug', 'prId'],
+      },
+    },
+    {
+      name: 'bitbucket_merge_pr',
+      description: 'Merge a Bitbucket pull request',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          projectKey: { type: 'string', description: 'Bitbucket project key' },
+          repoSlug: { type: 'string', description: 'Repository slug' },
+          prId: { type: 'number', description: 'Pull request ID' },
+          mergeStrategy: {
+            type: 'string',
+            enum: ['MERGE_COMMIT', 'SQUASH', 'FAST_FORWARD'],
+            description: 'Merge strategy (optional, uses repo default if omitted)',
+          },
+          message: { type: 'string', description: 'Custom merge commit message (optional)' },
+        },
+        required: ['projectKey', 'repoSlug', 'prId'],
       },
     },
     {
@@ -171,7 +302,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           projectKey: { type: 'string', description: 'Bitbucket project key' },
           repoSlug: { type: 'string', description: 'Repository slug' },
           prId: { type: 'number', description: 'Pull request ID' },
-          limit: { type: 'number', description: 'Max activity items (default 50)', default: 50 },
+          limit: { type: 'number', description: 'Max items per page (default 50)', default: 50 },
+          start: { type: 'number', description: 'Offset for pagination (default 0)', default: 0 },
         },
         required: ['projectKey', 'repoSlug', 'prId'],
       },
@@ -190,10 +322,39 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['projectKey', 'repoSlug', 'prId', 'text'],
       },
     },
+    {
+      name: 'bitbucket_get_branches',
+      description: 'List branches in a Bitbucket repository',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          projectKey: { type: 'string', description: 'Bitbucket project key' },
+          repoSlug: { type: 'string', description: 'Repository slug' },
+          filter: { type: 'string', description: 'Filter branches by name (optional)' },
+          limit: { type: 'number', description: 'Max branches per page (default 25)', default: 25 },
+          start: { type: 'number', description: 'Offset for pagination (default 0)', default: 0 },
+        },
+        required: ['projectKey', 'repoSlug'],
+      },
+    },
+    {
+      name: 'bitbucket_get_file',
+      description: 'Get the raw content of a file from a Bitbucket repository',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          projectKey: { type: 'string', description: 'Bitbucket project key' },
+          repoSlug: { type: 'string', description: 'Repository slug' },
+          path: { type: 'string', description: 'File path, e.g. "src/index.ts"' },
+          ref: { type: 'string', description: 'Branch, tag, or commit hash (defaults to default branch)' },
+        },
+        required: ['projectKey', 'repoSlug', 'path'],
+      },
+    },
     // ── Git ───────────────────────────────────────────────────────────────
     {
       name: 'git_get_context',
-      description: 'Get git context for a repo: current branch, remote URL, recent commits, and working tree status',
+      description: 'Get git context: current branch, remote URL, recent commits, working tree status, and any Jira issue keys detected in the branch name',
       inputSchema: {
         type: 'object',
         properties: {
@@ -236,8 +397,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // Jira
       case 'jira_search_issues':
         return await jira.searchIssues(args as Parameters<typeof jira.searchIssues>[0]);
+      case 'jira_my_issues':
+        return await jira.myIssues(args as Parameters<typeof jira.myIssues>[0]);
+      case 'jira_get_projects':
+        return await jira.getProjects(args as Parameters<typeof jira.getProjects>[0]);
       case 'jira_get_issue':
         return await jira.getIssue(args as Parameters<typeof jira.getIssue>[0]);
+      case 'jira_create_issue':
+        return await jira.createIssue(args as Parameters<typeof jira.createIssue>[0]);
+      case 'jira_update_issue':
+        return await jira.updateIssue(args as Parameters<typeof jira.updateIssue>[0]);
+      case 'jira_assign_issue':
+        return await jira.assignIssue(args as Parameters<typeof jira.assignIssue>[0]);
       case 'jira_get_comments':
         return await jira.getComments(args as Parameters<typeof jira.getComments>[0]);
       case 'jira_add_comment':
@@ -251,14 +422,26 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return await bitbucket.listRepos(args as Parameters<typeof bitbucket.listRepos>[0]);
       case 'bitbucket_list_pull_requests':
         return await bitbucket.listPullRequests(args as Parameters<typeof bitbucket.listPullRequests>[0]);
+      case 'bitbucket_my_prs':
+        return await bitbucket.myPrs(args as Parameters<typeof bitbucket.myPrs>[0]);
       case 'bitbucket_get_pull_request':
         return await bitbucket.getPullRequest(args as Parameters<typeof bitbucket.getPullRequest>[0]);
+      case 'bitbucket_get_pr_diff':
+        return await bitbucket.getPrDiff(args as Parameters<typeof bitbucket.getPrDiff>[0]);
       case 'bitbucket_create_pull_request':
         return await bitbucket.createPullRequest(args as Parameters<typeof bitbucket.createPullRequest>[0]);
+      case 'bitbucket_approve_pr':
+        return await bitbucket.approvePr(args as Parameters<typeof bitbucket.approvePr>[0]);
+      case 'bitbucket_merge_pr':
+        return await bitbucket.mergePr(args as Parameters<typeof bitbucket.mergePr>[0]);
       case 'bitbucket_get_pr_comments':
         return await bitbucket.getPrComments(args as Parameters<typeof bitbucket.getPrComments>[0]);
       case 'bitbucket_add_pr_comment':
         return await bitbucket.addPrComment(args as Parameters<typeof bitbucket.addPrComment>[0]);
+      case 'bitbucket_get_branches':
+        return await bitbucket.getBranches(args as Parameters<typeof bitbucket.getBranches>[0]);
+      case 'bitbucket_get_file':
+        return await bitbucket.getFile(args as Parameters<typeof bitbucket.getFile>[0]);
       // Git
       case 'git_get_context':
         return getContext(args as Parameters<typeof getContext>[0]);
