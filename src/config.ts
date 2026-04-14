@@ -3,13 +3,22 @@ import { homedir } from 'os';
 import { join, resolve } from 'path';
 
 export interface Config {
-  jira: { url: string; token: string };
-  bitbucket: { url: string; token: string };
+  jira: {
+    url: string;
+    token: string;
+    defaultProject?: string;
+  };
+  bitbucket: {
+    url: string;
+    token: string;
+    defaultProject?: string;
+    defaultRepo?: string;
+  };
 }
 
 interface ConfigFile {
-  jira?: { url?: string; token?: string };
-  bitbucket?: { url?: string; token?: string };
+  jira?: { url?: string; token?: string; defaultProject?: string };
+  bitbucket?: { url?: string; token?: string; defaultProject?: string; defaultRepo?: string };
 }
 
 function readJsonFile(filePath: string): ConfigFile | null {
@@ -22,19 +31,15 @@ function readJsonFile(filePath: string): ConfigFile | null {
 }
 
 function getConfigPath(): string | null {
-  // 1. CLI arg --config <path>
   const configArgIndex = process.argv.indexOf('--config');
   if (configArgIndex !== -1 && process.argv[configArgIndex + 1]) {
     return resolve(process.argv[configArgIndex + 1]);
   }
-  // 2. Env var
   if (process.env.ATLASSIAN_MCP_CONFIG) {
     return resolve(process.env.ATLASSIAN_MCP_CONFIG);
   }
-  // 3. ~/.atlassian-mcp.json
   const homeConfig = join(homedir(), '.atlassian-mcp.json');
   if (existsSync(homeConfig)) return homeConfig;
-  // 4. ./.atlassian-mcp.json
   const cwdConfig = join(process.cwd(), '.atlassian-mcp.json');
   if (existsSync(cwdConfig)) return cwdConfig;
   return null;
@@ -63,7 +68,16 @@ export function loadConfig(): Config {
   }
 
   return {
-    jira: { url: jiraUrl, token: jiraToken },
-    bitbucket: { url: bitbucketUrl, token: bitbucketToken },
+    jira: {
+      url: jiraUrl,
+      token: jiraToken,
+      defaultProject: file?.jira?.defaultProject ?? process.env.JIRA_DEFAULT_PROJECT,
+    },
+    bitbucket: {
+      url: bitbucketUrl,
+      token: bitbucketToken,
+      defaultProject: file?.bitbucket?.defaultProject ?? process.env.BITBUCKET_DEFAULT_PROJECT,
+      defaultRepo: file?.bitbucket?.defaultRepo ?? process.env.BITBUCKET_DEFAULT_REPO,
+    },
   };
 }

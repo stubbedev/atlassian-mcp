@@ -1,6 +1,6 @@
 # atlassian-mcp
 
-A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **self-hosted Jira** (Server / Data Center) and **self-hosted Bitbucket** (Server / Data Center). Exposes 15 tools to Claude for reading and managing issues, pull requests, comments, and git context.
+A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **self-hosted Jira** (Server / Data Center) and **self-hosted Bitbucket** (Server / Data Center). Exposes 32 tools to Claude for reading and managing issues, pull requests, comments, and git context.
 
 > **Note:** This server only supports self-hosted instances. Jira Cloud and Bitbucket Cloud use different APIs and are not supported.
 
@@ -8,17 +8,24 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 
 ## Tools
 
+### Context
+
+| Tool | Description |
+|---|---|
+| `get_dev_context` | Unified snapshot: git state + linked Jira tickets (from branch name) + open PR for the current branch |
+
 ### Jira
 
 | Tool | Description |
 |---|---|
-| `jira_search_issues` | Search issues using JQL |
+| `jira_search_issues` | Search issues by text, JQL, project, status, assignee, or issue type |
 | `jira_my_issues` | List issues assigned to you, ordered by last updated |
 | `jira_get_projects` | List all accessible projects |
+| `jira_get_issue_types` | List issue types and their available statuses for a project |
 | `jira_get_issue` | Get issue details by key |
 | `jira_create_issue` | Create a new issue |
 | `jira_update_issue` | Update summary, description, assignee, or priority |
-| `jira_assign_issue` | Assign or unassign an issue |
+| `jira_search_users` | Search for users by name or email |
 | `jira_get_comments` | List comments on an issue |
 | `jira_add_comment` | Add a comment to an issue |
 | `jira_get_transitions` | List available status transitions |
@@ -34,10 +41,14 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 | `bitbucket_get_pull_request` | Get pull request details |
 | `bitbucket_get_pr_diff` | Get the code diff for a pull request |
 | `bitbucket_create_pull_request` | Create a new pull request |
+| `bitbucket_create_pr_from_context` | Create a PR auto-detecting project, repo, and branch from the current git repo |
 | `bitbucket_approve_pr` | Approve a pull request |
+| `bitbucket_unapprove_pr` | Remove your approval from a pull request |
 | `bitbucket_merge_pr` | Merge a pull request |
+| `bitbucket_decline_pr` | Decline a pull request |
 | `bitbucket_get_pr_comments` | Get comments on a pull request |
 | `bitbucket_add_pr_comment` | Add a comment to a pull request |
+| `bitbucket_get_pr_commits` | List commits included in a pull request |
 | `bitbucket_get_branches` | List branches in a repository |
 | `bitbucket_get_file` | Get raw file content at a given ref |
 
@@ -64,16 +75,19 @@ Create `~/.atlassian-mcp.json`:
   "$schema": "https://raw.githubusercontent.com/stubbedev/atlassian-mcp/master/atlassian-mcp.schema.json",
   "jira": {
     "url": "https://jira.example.com",
-    "token": "your-jira-personal-access-token"
+    "token": "your-jira-personal-access-token",
+    "defaultProject": "MYPROJ"
   },
   "bitbucket": {
     "url": "https://bitbucket.example.com",
-    "token": "your-bitbucket-personal-access-token"
+    "token": "your-bitbucket-personal-access-token",
+    "defaultProject": "MYPROJ",
+    "defaultRepo": "my-api"
   }
 }
 ```
 
-The `$schema` field is optional but enables editor autocomplete and validation.
+The `$schema` field is optional but enables editor autocomplete and validation. `defaultProject` and `defaultRepo` are also optional — when set, you can omit those parameters from tool calls.
 
 Alternatively, use environment variables (or a `.env` file in this directory):
 

@@ -24,6 +24,10 @@
         "token": {
           "type": "string",
           "description": "Personal Access Token (PAT) for Jira Server authentication"
+        },
+        "defaultProject": {
+          "type": "string",
+          "description": "Default Jira project key used when project is not specified, e.g. \"FOO\""
         }
       }
     },
@@ -41,6 +45,14 @@
         "token": {
           "type": "string",
           "description": "Personal Access Token (PAT) for Bitbucket Server authentication"
+        },
+        "defaultProject": {
+          "type": "string",
+          "description": "Default Bitbucket project key used when projectKey is not specified, e.g. \"MYPROJ\""
+        },
+        "defaultRepo": {
+          "type": "string",
+          "description": "Default repository slug used when repoSlug is not specified, e.g. \"my-api\""
         }
       }
     }

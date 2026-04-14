@@ -53,6 +53,19 @@ interface JiraProject {
   projectTypeKey: string;
 }
 
+interface JiraIssueTypeStatuses {
+  id: string;
+  name: string;
+  statuses: Array<{ id: string; name: string }>;
+}
+
+interface JiraUser {
+  name: string;
+  displayName: string;
+  emailAddress: string;
+  active: boolean;
+}
+
 function text(t: string): ToolResult {
   return { content: [{ type: 'text', text: t }] };
 }
@@ -70,36 +83,38 @@ function buildJQL(args: {
   assignee?: string;
   issueType?: string;
 }): string {
-  // Explicit JQL wins — used as-is
   if (args.jql) return args.jql;
 
   const clauses: string[] = [];
-
-  if (args.query) {
-    // text ~ searches summary, description, comments, environment — Lucene full-text with stemming
-    clauses.push(`text ~ ${JSON.stringify(args.query)}`);
-  }
+  if (args.query)     clauses.push(`text ~ ${JSON.stringify(args.query)}`);
   if (args.project)   clauses.push(`project = "${args.project}"`);
   if (args.status)    clauses.push(`status = "${args.status}"`);
   if (args.assignee)  clauses.push(`assignee = "${args.assignee}"`);
   if (args.issueType) clauses.push(`issuetype = "${args.issueType}"`);
 
   if (clauses.length === 0) throw new Error('Provide at least one of: query, jql, project, status, assignee, issueType');
-
   return clauses.join(' AND ') + ' ORDER BY updated DESC';
 }
 
 export class JiraClient {
   private baseUrl: string;
   private headers: Record<string, string>;
+  private defaults: { project?: string };
 
-  constructor(baseUrl: string, token: string) {
+  constructor(baseUrl: string, token: string, defaults: { project?: string } = {}) {
     this.baseUrl = baseUrl.replace(/\/$/, '');
     this.headers = {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
       Accept: 'application/json',
     };
+    this.defaults = defaults;
+  }
+
+  private resolveProject(projectKey?: string): string {
+    const key = projectKey ?? this.defaults.project;
+    if (!key) throw new Error('projectKey is required (or set jira.defaultProject in config)');
+    return key;
   }
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T | null> {
@@ -125,7 +140,11 @@ export class JiraClient {
     startAt?: number;
   }): Promise<ToolResult> {
     const { maxResults = 20, startAt = 0 } = args;
-    const jql = buildJQL(args);
+    // Apply defaultProject as a fallback filter when using query mode (not raw JQL)
+    const resolvedArgs = !args.jql && !args.project && this.defaults.project
+      ? { ...args, project: this.defaults.project }
+      : args;
+    const jql = buildJQL(resolvedArgs);
     const params = new URLSearchParams({
       jql,
       maxResults: String(maxResults),
@@ -150,6 +169,38 @@ export class JiraClient {
     });
   }
 
+  async getProjects(args: { maxResults?: number }): Promise<ToolResult> {
+    const limit = args.maxResults ?? 50;
+    const data = await this.request<JiraProject[]>('GET', `/project?maxResults=${limit}`);
+    if (!data || data.length === 0) return text('No projects found.');
+    const lines = data.map((p, i) => `${i + 1}. [${p.key}] ${p.name} (${p.projectTypeKey})`);
+    return text(`${data.length} project(s):\n${lines.join('\n')}`);
+  }
+
+  async getIssueTypes(args: { projectKey?: string }): Promise<ToolResult> {
+    const projectKey = this.resolveProject(args.projectKey);
+    const data = await this.request<JiraIssueTypeStatuses[]>('GET', `/project/${projectKey}/statuses`);
+    if (!data || data.length === 0) return text('No issue types found.');
+    const lines = data.map((t) => {
+      const statuses = t.statuses.map((s) => s.name).join(', ');
+      return `${t.name}: ${statuses}`;
+    });
+    return text(`Issue types and statuses for ${projectKey}:\n${lines.join('\n')}`);
+  }
+
+  async searchUsers(args: { query: string; maxResults?: number }): Promise<ToolResult> {
+    const params = new URLSearchParams({
+      username: args.query,
+      maxResults: String(args.maxResults ?? 10),
+    });
+    const data = await this.request<JiraUser[]>('GET', `/user/search?${params}`);
+    if (!data || data.length === 0) return text('No users found.');
+    const lines = data
+      .filter((u) => u.active)
+      .map((u, i) => `${i + 1}. ${u.displayName} (${u.name}) — ${u.emailAddress}`);
+    return text(`${lines.length} user(s) found:\n${lines.join('\n')}`);
+  }
+
   async getIssue(args: { issueKey: string }): Promise<ToolResult> {
     const fields = 'summary,description,status,assignee,priority,issuetype,labels,components';
     const data = await this.request<JiraIssue>('GET', `/issue/${args.issueKey}?fields=${fields}`);
@@ -171,21 +222,22 @@ export class JiraClient {
   }
 
   async createIssue(args: {
-    projectKey: string;
+    projectKey?: string;
     issueType: string;
     summary: string;
     description?: string;
     assignee?: string;
     priority?: string;
   }): Promise<ToolResult> {
+    const projectKey = this.resolveProject(args.projectKey);
     const fields: Record<string, unknown> = {
-      project: { key: args.projectKey },
+      project: { key: projectKey },
       issuetype: { name: args.issueType },
       summary: args.summary,
     };
     if (args.description) fields.description = args.description;
-    if (args.assignee) fields.assignee = { name: args.assignee };
-    if (args.priority) fields.priority = { name: args.priority };
+    if (args.assignee)    fields.assignee = { name: args.assignee };
+    if (args.priority)    fields.priority = { name: args.priority };
     const data = await this.request<JiraCreatedIssue>('POST', '/issue', { fields });
     if (!data) return text('Issue created.');
     return text(`Created ${data.key}.`);
@@ -199,27 +251,13 @@ export class JiraClient {
     priority?: string;
   }): Promise<ToolResult> {
     const fields: Record<string, unknown> = {};
-    if (args.summary !== undefined) fields.summary = args.summary;
+    if (args.summary !== undefined)     fields.summary = args.summary;
     if (args.description !== undefined) fields.description = args.description;
-    if (args.assignee !== undefined) fields.assignee = { name: args.assignee };
-    if (args.priority !== undefined) fields.priority = { name: args.priority };
+    if (args.assignee !== undefined)    fields.assignee = { name: args.assignee };
+    if (args.priority !== undefined)    fields.priority = { name: args.priority };
     if (Object.keys(fields).length === 0) return text('Nothing to update.');
     await this.request('PUT', `/issue/${args.issueKey}`, { fields });
     return text(`Updated ${args.issueKey}.`);
-  }
-
-  async assignIssue(args: { issueKey: string; assignee: string | null }): Promise<ToolResult> {
-    await this.request('PUT', `/issue/${args.issueKey}/assignee`, { name: args.assignee });
-    const msg = args.assignee ? `Assigned ${args.issueKey} to ${args.assignee}.` : `Unassigned ${args.issueKey}.`;
-    return text(msg);
-  }
-
-  async getProjects(args: { maxResults?: number }): Promise<ToolResult> {
-    const limit = args.maxResults ?? 50;
-    const data = await this.request<JiraProject[]>('GET', `/project?maxResults=${limit}`);
-    if (!data || data.length === 0) return text('No projects found.');
-    const lines = data.map((p, i) => `${i + 1}. [${p.key}] ${p.name} (${p.projectTypeKey})`);
-    return text(`${data.length} project(s):\n${lines.join('\n')}`);
   }
 
   async getComments(args: { issueKey: string; maxResults?: number; startAt?: number }): Promise<ToolResult> {
@@ -243,10 +281,7 @@ export class JiraClient {
   }
 
   async getTransitions(args: { issueKey: string }): Promise<ToolResult> {
-    const data = await this.request<JiraTransitionsResult>(
-      'GET',
-      `/issue/${args.issueKey}/transitions`
-    );
+    const data = await this.request<JiraTransitionsResult>('GET', `/issue/${args.issueKey}/transitions`);
     if (!data || data.transitions.length === 0) return text('No transitions available.');
     const lines = data.transitions.map((t) => `${t.id}: ${t.name} → ${t.to.name}`);
     return text(`Available transitions for ${args.issueKey}:\n${lines.join('\n')}`);
