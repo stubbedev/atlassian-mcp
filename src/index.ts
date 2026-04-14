@@ -257,7 +257,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'bitbucket_get_pr_overview',
-      description: 'Use when you want one bulk PR snapshot in a single call: metadata, commits, comments/blockers, and optional diff.',
+      description: 'Use when you want one bulk PR snapshot in a single call: metadata, commits, comments, task-style BLOCKER comments, and optional diff.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -270,7 +270,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           includeComments: { type: 'boolean', description: 'Include review comments/blockers (default true)', default: true },
           includeDiff:     { type: 'boolean', description: 'Include diff text (default false)', default: false },
           commentsState:   { type: 'string', enum: ['OPEN', 'RESOLVED', 'PENDING'], description: 'Comment state filter (default OPEN)', default: 'OPEN' },
-          commentsSeverity:{ type: 'string', enum: ['ALL', 'NORMAL', 'BLOCKER'], description: 'Comment severity filter (default ALL)', default: 'ALL' },
+          commentsSeverity:{ type: 'string', enum: ['ALL', 'NORMAL', 'BLOCKER'], description: 'Comment severity filter (default ALL). BLOCKER means task/checklist-style review comments.', default: 'ALL' },
           commentsLimit:   { type: 'number', description: 'Max comments per page (default 50)', default: 50 },
           commentsStart:   { type: 'number', description: 'Comment pagination offset (default 0)', default: 0 },
           commitsLimit:    { type: 'number', description: 'Max commits per page (default 25)', default: 25 },
@@ -396,7 +396,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'bitbucket_get_pr_comments',
-      description: 'Use when you want PR review discussion in bulk: comment threads, blocker comments, and blocker counts with pagination. You can pass projectKey/repoSlug or project/repo.',
+      description: 'Use when you want PR review discussion in bulk: comment threads, task-style BLOCKER comments, and blocker counts with pagination. You can pass projectKey/repoSlug or project/repo.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -407,7 +407,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           prId:       { type: 'number', description: 'Pull request number (PR ID)' },
           path:       { type: 'string', description: 'Optional file path filter, e.g. "src/index.ts"' },
           state:      { type: 'string', enum: ['OPEN', 'RESOLVED', 'PENDING'], description: 'Comment state filter (default OPEN; BLOCKER mode supports OPEN/RESOLVED)', default: 'OPEN' },
-          severity:   { type: 'string', enum: ['ALL', 'NORMAL', 'BLOCKER'], description: 'Comment severity filter. Use BLOCKER for blocker comments.', default: 'ALL' },
+          severity:   { type: 'string', enum: ['ALL', 'NORMAL', 'BLOCKER'], description: 'Comment severity filter. BLOCKER means task/checklist-style review comments.', default: 'ALL' },
           countOnly:  { type: 'boolean', description: 'When true with severity=BLOCKER, returns counts instead of comment bodies', default: false },
           limit:      { type: 'number', description: 'Max items per page (default 50)', default: 50 },
           start:      { type: 'number', description: 'Offset for pagination (default 0)', default: 0 },
@@ -434,7 +434,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'bitbucket_update_pr_comment',
-      description: 'Use when you want to edit PR comments, resolve/reopen them, or set severity to BLOCKER. You can pass projectKey/repoSlug or project/repo.',
+      description: 'Use when you want to edit PR comments, resolve/reopen them, or mark comments as task-style BLOCKER items. You can pass projectKey/repoSlug or project/repo.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -446,7 +446,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           commentId:  { type: 'number', description: 'Comment ID to update' },
           text:       { type: 'string', description: 'New comment text (optional)' },
           state:      { type: 'string', enum: ['OPEN', 'RESOLVED'], description: 'Comment state (optional)' },
-          severity:   { type: 'string', enum: ['NORMAL', 'BLOCKER'], description: 'Comment severity (optional)' },
+          severity:   { type: 'string', enum: ['NORMAL', 'BLOCKER'], description: 'Comment severity (optional). BLOCKER marks it as a task/checklist item.' },
         },
         required: ['prId', 'commentId'],
       },

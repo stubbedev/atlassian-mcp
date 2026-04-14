@@ -38,16 +38,16 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 | `bitbucket_list_pull_requests` | List repository pull requests (filter by state, source branch, or text) |
 | `bitbucket_my_prs` | List PRs in your inbox (authored by you or awaiting review) |
 | `bitbucket_get_pull_request` | Get pull request details |
-| `bitbucket_get_pr_overview` | Get a one-call PR overview: metadata, commits, comments/blockers, and optional diff |
+| `bitbucket_get_pr_overview` | Get a one-call PR overview: metadata, commits, comments, task-style BLOCKER comments, and optional diff |
 | `bitbucket_get_pr_diff` | Get the code diff for a pull request |
 | `bitbucket_create_pull_request` | Create a new pull request |
 | `bitbucket_approve_pr` | Approve a pull request |
 | `bitbucket_unapprove_pr` | Remove your approval from a pull request |
 | `bitbucket_merge_pr` | Merge a pull request |
 | `bitbucket_decline_pr` | Decline a pull request |
-| `bitbucket_get_pr_comments` | Get PR comment threads in bulk, including blocker comments and blocker counts |
+| `bitbucket_get_pr_comments` | Get PR comment threads in bulk, including task-style BLOCKER comments and blocker counts |
 | `bitbucket_add_pr_comment` | Add a top-level PR comment or reply to an existing comment |
-| `bitbucket_update_pr_comment` | Update comment text, state, or severity (`NORMAL` / `BLOCKER`) |
+| `bitbucket_update_pr_comment` | Update comment text, state, or severity (`BLOCKER` = task/checklist item) |
 | `bitbucket_delete_pr_comment` | Delete a PR comment by comment ID |
 | `bitbucket_get_pr_commits` | List commits included in a pull request |
 | `bitbucket_get_branches` | List branches in a repository |
