@@ -1,3 +1,5 @@
+import { execSync } from 'child_process';
+
 type ToolResult = { content: Array<{ type: 'text'; text: string }> };
 
 interface JiraIssue {
@@ -66,6 +68,8 @@ interface JiraUser {
   active: boolean;
 }
 
+const JIRA_KEY_IN_BRANCH_RE = /\b([A-Z][A-Z0-9]+)-\d+\b/;
+
 function text(t: string): ToolResult {
   return { content: [{ type: 'text', text: t }] };
 }
@@ -96,6 +100,14 @@ function buildJQL(args: {
   return clauses.join(' AND ') + ' ORDER BY updated DESC';
 }
 
+function safeExec(cmd: string): string {
+  try {
+    return execSync(cmd, { encoding: 'utf-8' }).trim();
+  } catch {
+    return '';
+  }
+}
+
 export class JiraClient {
   private baseUrl: string;
   private headers: Record<string, string>;
@@ -119,6 +131,34 @@ export class JiraClient {
       throw new Error(`Jira ${res.status} ${method} ${path}: ${errText}`);
     }
     return res.status === 204 ? null : (res.json() as Promise<T>);
+  }
+
+  private async resolveProjectKey(projectKey?: string): Promise<string> {
+    if (projectKey) return projectKey;
+
+    const projects = (await this.request<JiraProject[]>('GET', '/project?maxResults=100')) ?? [];
+    if (projects.length === 0) {
+      throw new Error('No Jira projects found for your account.');
+    }
+
+    const keys = new Set(projects.map((p) => p.key));
+    const branch = safeExec('git rev-parse --abbrev-ref HEAD');
+    const branchMatch = branch.match(JIRA_KEY_IN_BRANCH_RE);
+    const branchProjectKey = branchMatch?.[1];
+    if (branchProjectKey && keys.has(branchProjectKey)) {
+      return branchProjectKey;
+    }
+
+    if (projects.length === 1) {
+      return projects[0].key;
+    }
+
+    const shown = projects.slice(0, 20);
+    const lines = shown.map((p, i) => `${i + 1}. ${p.key} — ${p.name}`);
+    const extra = projects.length > shown.length ? `\n...and ${projects.length - shown.length} more.` : '';
+    throw new Error(
+      `Please provide projectKey for this Jira action. Choose one of these project codes:\n${lines.join('\n')}${extra}`
+    );
   }
 
   async searchIssues(args: {
@@ -165,8 +205,8 @@ export class JiraClient {
     return text(`${data.length} project(s):\n${lines.join('\n')}`);
   }
 
-  async getIssueTypes(args: { projectKey: string }): Promise<ToolResult> {
-    const { projectKey } = args;
+  async getIssueTypes(args: { projectKey?: string }): Promise<ToolResult> {
+    const projectKey = await this.resolveProjectKey(args.projectKey);
     const data = await this.request<JiraIssueTypeStatuses[]>('GET', `/project/${projectKey}/statuses`);
     if (!data || data.length === 0) return text('No issue types found.');
     const lines = data.map((t) => {
@@ -210,14 +250,14 @@ export class JiraClient {
   }
 
   async createIssue(args: {
-    projectKey: string;
+    projectKey?: string;
     issueType: string;
     summary: string;
     description?: string;
     assignee?: string;
     priority?: string;
   }): Promise<ToolResult> {
-    const { projectKey } = args;
+    const projectKey = await this.resolveProjectKey(args.projectKey);
     const fields: Record<string, unknown> = {
       project: { key: projectKey },
       issuetype: { name: args.issueType },
@@ -268,17 +308,31 @@ export class JiraClient {
     return text(`Comment added to ${args.issueKey}.`);
   }
 
-  async getTransitions(args: { issueKey: string }): Promise<ToolResult> {
-    const data = await this.request<JiraTransitionsResult>('GET', `/issue/${args.issueKey}/transitions`);
-    if (!data || data.transitions.length === 0) return text('No transitions available.');
-    const lines = data.transitions.map((t) => `${t.id}: ${t.name} → ${t.to.name}`);
-    return text(`Available transitions for ${args.issueKey}:\n${lines.join('\n')}`);
-  }
+  async transitionIssue(args: { issueKey: string; transitionId?: string; transitionName?: string }): Promise<ToolResult> {
+    let transitionId = args.transitionId;
 
-  async transitionIssue(args: { issueKey: string; transitionId: string }): Promise<ToolResult> {
+    if (!transitionId) {
+      const requestedName = args.transitionName?.trim();
+      if (!requestedName) {
+        throw new Error('Provide transitionId or transitionName');
+      }
+
+      const data = await this.request<JiraTransitionsResult>('GET', `/issue/${args.issueKey}/transitions`);
+      const transitions = data?.transitions ?? [];
+      const lowered = requestedName.toLowerCase();
+      const match = transitions.find((t) => t.name.toLowerCase() === lowered);
+
+      if (!match) {
+        const available = transitions.map((t) => t.name).join(', ') || '(none)';
+        throw new Error(`Transition "${requestedName}" not found for ${args.issueKey}. Available: ${available}`);
+      }
+
+      transitionId = match.id;
+    }
+
     await this.request('POST', `/issue/${args.issueKey}/transitions`, {
-      transition: { id: args.transitionId },
+      transition: { id: transitionId },
     });
-    return text(`Transitioned ${args.issueKey} using transition ${args.transitionId}.`);
+    return text(`Transitioned ${args.issueKey} using transition ${transitionId}.`);
   }
 }

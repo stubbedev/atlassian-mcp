@@ -81,39 +81,3 @@ export async function getDevContext(
 
   return { content: [{ type: 'text', text: sections.join('\n\n') }] };
 }
-
-/**
- * Creates a Bitbucket PR using the current git repo to auto-detect project, repo, and branch.
- */
-export async function createPrFromContext(
-  args: {
-    repoPath?: string;
-    title: string;
-    description?: string;
-    toBranch?: string;
-    reviewers?: string[];
-  },
-  bitbucket: BitbucketClient
-): Promise<ToolResult> {
-  const repoPath = args.repoPath ?? process.cwd();
-
-  const remote = safeExec('git remote get-url origin', repoPath);
-  if (!remote) throw new Error('No git remote found — are you in a git repository?');
-
-  const parsed = parseBitbucketRemote(remote);
-  if (!parsed) throw new Error(`Could not parse Bitbucket project/repo from remote: ${remote}`);
-
-  const branch = safeExec('git rev-parse --abbrev-ref HEAD', repoPath);
-  if (!branch) throw new Error('Could not determine current branch.');
-  if (branch === 'HEAD') throw new Error('Detached HEAD state — check out a branch first.');
-
-  return bitbucket.createPullRequest({
-    projectKey: parsed.projectKey,
-    repoSlug: parsed.repoSlug,
-    title: args.title,
-    description: args.description,
-    fromBranch: branch,
-    toBranch: args.toBranch,
-    reviewers: args.reviewers,
-  });
-}

@@ -1,6 +1,6 @@
 # atlassian-mcp
 
-A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **self-hosted Jira** (Server / Data Center) and **self-hosted Bitbucket** (Server / Data Center). Exposes 37 tools to Claude for reading and managing issues, pull requests, comments, and git context.
+A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **self-hosted Jira** (Server / Data Center) and **self-hosted Bitbucket** (Server / Data Center). Exposes 32 tools for natural-language workflows around tickets, pull requests, review threads, and git context.
 
 > **Note:** This server only supports self-hosted instances. Jira Cloud and Bitbucket Cloud use different APIs and are not supported.
 
@@ -12,13 +12,13 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 
 | Tool | Description |
 |---|---|
-| `get_dev_context` | Unified snapshot: git state + linked Jira tickets (from branch name) + open PR for the current branch |
+| `get_dev_context` | One-shot coding context: local git state + linked Jira tickets + open PR for current branch |
 
 ### Jira
 
 | Tool | Description |
 |---|---|
-| `jira_search_issues` | Search issues by text, JQL, project, status, assignee, or issue type |
+| `jira_search_issues` | Find tickets by plain language, JQL, project, status, assignee, or type |
 | `jira_my_issues` | List issues assigned to you, ordered by last updated |
 | `jira_get_projects` | List all accessible projects |
 | `jira_get_issue_types` | List issue types and their available statuses for a project |
@@ -28,27 +28,23 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 | `jira_search_users` | Search for users by name or email |
 | `jira_get_comments` | List comments on an issue |
 | `jira_add_comment` | Add a comment to an issue |
-| `jira_get_transitions` | List available status transitions |
-| `jira_transition_issue` | Change issue status via transition ID |
+| `jira_transition_issue` | Move issue status via transition name or transition ID |
 
 ### Bitbucket
 
 | Tool | Description |
 |---|---|
 | `bitbucket_list_repos` | List repositories (optionally by project) |
-| `bitbucket_list_pull_requests` | List pull requests for a repository |
+| `bitbucket_list_pull_requests` | List repository pull requests (filter by state, source branch, or text) |
 | `bitbucket_my_prs` | List PRs in your inbox (authored by you or awaiting review) |
 | `bitbucket_get_pull_request` | Get pull request details |
 | `bitbucket_get_pr_diff` | Get the code diff for a pull request |
 | `bitbucket_create_pull_request` | Create a new pull request |
-| `bitbucket_create_pr_from_context` | Create a PR auto-detecting project, repo, and branch from the current git repo |
 | `bitbucket_approve_pr` | Approve a pull request |
 | `bitbucket_unapprove_pr` | Remove your approval from a pull request |
 | `bitbucket_merge_pr` | Merge a pull request |
 | `bitbucket_decline_pr` | Decline a pull request |
-| `bitbucket_get_pr_comments` | Get PR comment threads with IDs/states (optional `path` filter) |
-| `bitbucket_get_pr_tasks` | List PR tasks (blocker comments), with `OPEN`/`RESOLVED` filter |
-| `bitbucket_get_pr_task_count` | Get total OPEN and RESOLVED PR task counts |
+| `bitbucket_get_pr_comments` | Get PR comment threads in bulk, including blocker comments and blocker counts |
 | `bitbucket_add_pr_comment` | Add a top-level PR comment or reply to an existing comment |
 | `bitbucket_update_pr_comment` | Update comment text, state, or severity (`NORMAL` / `BLOCKER`) |
 | `bitbucket_delete_pr_comment` | Delete a PR comment by comment ID |
@@ -65,6 +61,17 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 | `git_get_diff` | Diff of uncommitted changes or between two refs |
 
 All list tools support `limit` and `start`/`startAt` for pagination.
+
+### Natural language examples
+
+- "show my PRs waiting for review" → `bitbucket_my_prs`
+- "list open PRs for this repo from branch feature/ABC-123" → `bitbucket_list_pull_requests`
+- "open a PR from my current branch to master" → `bitbucket_create_pull_request`
+- "show review comments on PR 42" → `bitbucket_get_pr_comments`
+- "how many open blockers are on PR 42" → `bitbucket_get_pr_comments` with `severity=BLOCKER` and `countOnly=true`
+- "move FOO-123 to In Progress" → `jira_transition_issue` with `transitionName="In Progress"`
+- "find bugs assigned to me in PAY project" → `jira_search_issues`
+- "give me my coding context for this branch" → `get_dev_context`
 
 ---
 
@@ -88,7 +95,15 @@ Create `~/.atlassian-mcp.json`:
 }
 ```
 
-The `$schema` field is optional but enables editor autocomplete and validation. For Bitbucket tools, `projectKey` and `repoSlug` are auto-detected from your local `origin` remote when omitted. Jira project-specific tools still require `projectKey` in the tool call.
+The `$schema` field is optional but enables editor autocomplete and validation.
+
+- `projectKey` means a project code:
+  - Jira example: `PAY` in ticket `PAY-123`
+  - Bitbucket example: project `ENG` in repo path `ENG/payments-service`
+- For Bitbucket tools, `projectKey` and `repoSlug` are usually auto-detected from your local `origin` remote.
+- `bitbucket_create_pull_request` also auto-detects `fromBranch` from your current branch.
+- Jira project-scoped calls accept `projectKey` and work best when provided.
+- If `projectKey` is omitted for Jira issue creation/type lookup, the server tries to infer it from your current branch ticket key, falls back to auto-select when only one project is visible, and otherwise returns a numbered project list to pick from.
 
 Alternatively, use environment variables (or a `.env` file in this directory):
 
