@@ -36,7 +36,7 @@ Create `~/.atlassian-mcp.json`:
 
 ```json
 {
-  "$schema": "~/atlassian-mcp/atlassian-mcp.schema.json",
+  "$schema": "https://raw.githubusercontent.com/stubbedev/atlassian-mcp/master/atlassian-mcp.schema.json",
   "jira": {
     "url": "https://jira.example.com",
     "token": "your-jira-personal-access-token"
@@ -48,7 +48,7 @@ Create `~/.atlassian-mcp.json`:
 }
 ```
 
-The `$schema` field is optional but enables editor autocomplete and validation. Point it at `atlassian-mcp.schema.json` in this repo.
+The `$schema` field is optional but enables editor autocomplete and validation.
 
 Alternatively, use environment variables (or a `.env` file in this directory):
 
