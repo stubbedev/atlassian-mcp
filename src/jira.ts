@@ -68,6 +68,37 @@ interface JiraUser {
   active: boolean;
 }
 
+interface JiraPage<T> {
+  total?: number;
+  startAt: number;
+  maxResults: number;
+  isLast?: boolean;
+  values: T[];
+}
+
+interface JiraSprint {
+  id: number;
+  name: string;
+  state: string;
+  startDate?: string;
+  endDate?: string;
+  goal?: string;
+}
+
+interface JiraBoard {
+  id: number;
+  name: string;
+  type: string;
+}
+
+interface JiraAgileIssue {
+  key: string;
+  fields?: {
+    sprint?: JiraSprint;
+    closedSprints?: JiraSprint[];
+  };
+}
+
 interface JiraErrorPayload {
   errorMessages?: string[];
   errors?: Record<string, string>;
@@ -175,8 +206,8 @@ export class JiraClient {
     };
   }
 
-  private async request<T>(method: string, path: string, body?: unknown): Promise<T | null> {
-    const url = `${this.baseUrl}/rest/api/2${path}`;
+  private async requestWithBase<T>(apiBase: string, method: string, path: string, body?: unknown): Promise<T | null> {
+    const url = `${this.baseUrl}${apiBase}${path}`;
     const opts: RequestInit = { method, headers: this.headers };
     if (body !== undefined) opts.body = JSON.stringify(body);
     const res = await fetch(url, opts);
@@ -186,6 +217,82 @@ export class JiraClient {
       throw new Error(formatJiraError(res.status, method, path, details));
     }
     return res.status === 204 ? null : (res.json() as Promise<T>);
+  }
+
+  private async request<T>(method: string, path: string, body?: unknown): Promise<T | null> {
+    return this.requestWithBase<T>('/rest/api/2', method, path, body);
+  }
+
+  private async requestAgile<T>(method: string, path: string, body?: unknown): Promise<T | null> {
+    return this.requestWithBase<T>('/rest/agile/1.0', method, path, body);
+  }
+
+  private async addIssuesToSprintInternal(sprintId: number, issueKeys: string[]): Promise<void> {
+    await this.requestAgile('POST', `/sprint/${sprintId}/issue`, { issues: issueKeys });
+  }
+
+  private async createIssueInternal(args: {
+    projectKey?: string;
+    issueType: string;
+    summary: string;
+    description?: string;
+    assignee?: string;
+    priority?: string;
+  }): Promise<JiraCreatedIssue | null> {
+    const projectKey = await this.resolveProjectKey(args.projectKey);
+    const fields: Record<string, unknown> = {
+      project: { key: projectKey },
+      issuetype: { name: args.issueType },
+      summary: args.summary,
+    };
+    if (args.description) fields.description = args.description;
+    if (args.assignee)    fields.assignee = { name: args.assignee };
+    if (args.priority)    fields.priority = { name: args.priority };
+    return this.request<JiraCreatedIssue>('POST', '/issue', { fields });
+  }
+
+  private async updateIssueFieldsInternal(args: {
+    issueKey: string;
+    summary?: string;
+    description?: string;
+    assignee?: string;
+    priority?: string;
+  }): Promise<boolean> {
+    const fields: Record<string, unknown> = {};
+    if (args.summary !== undefined)     fields.summary = args.summary;
+    if (args.description !== undefined) fields.description = args.description;
+    if (args.assignee !== undefined)    fields.assignee = { name: args.assignee };
+    if (args.priority !== undefined)    fields.priority = { name: args.priority };
+    if (Object.keys(fields).length === 0) return false;
+    await this.request('PUT', `/issue/${args.issueKey}`, { fields });
+    return true;
+  }
+
+  private async resolveTransitionId(issueKey: string, transitionId?: string, transitionName?: string): Promise<string> {
+    if (transitionId) return transitionId;
+
+    const requestedName = transitionName?.trim();
+    if (!requestedName) {
+      throw new Error('Provide transitionId or transitionName');
+    }
+
+    const data = await this.request<JiraTransitionsResult>('GET', `/issue/${issueKey}/transitions`);
+    const transitions = data?.transitions ?? [];
+    const lowered = requestedName.toLowerCase();
+    const match = transitions.find((t) => t.name.toLowerCase() === lowered);
+
+    if (!match) {
+      const available = transitions.map((t) => t.name).join(', ') || '(none)';
+      throw new Error(`Transition "${requestedName}" not found for ${issueKey}. Available: ${available}`);
+    }
+
+    return match.id;
+  }
+
+  private async transitionIssueInternal(issueKey: string, transitionId: string): Promise<void> {
+    await this.request('POST', `/issue/${issueKey}/transitions`, {
+      transition: { id: transitionId },
+    });
   }
 
   private async resolveProjectKey(projectKey?: string): Promise<string> {
@@ -271,6 +378,33 @@ export class JiraClient {
     return text(`Issue types and statuses for ${projectKey}:\n${lines.join('\n')}`);
   }
 
+  async getSprints(args: {
+    boardId: number;
+    state?: string;
+    maxResults?: number;
+    startAt?: number;
+  }): Promise<ToolResult> {
+    const { boardId, maxResults = 20, startAt = 0 } = args;
+    const params = new URLSearchParams({
+      maxResults: String(maxResults),
+      startAt: String(startAt),
+    });
+    if (args.state) params.set('state', args.state);
+
+    const data = await this.requestAgile<JiraPage<JiraSprint>>('GET', `/board/${boardId}/sprint?${params}`);
+    if (!data || data.values.length === 0) return text(`No sprints found for board ${boardId}.`);
+
+    const lines = data.values.map((s, i) => {
+      const window = [s.startDate?.slice(0, 10), s.endDate?.slice(0, 10)].filter(Boolean).join(' -> ');
+      const goal = s.goal?.trim() ? ` | Goal: ${s.goal}` : '';
+      return `${startAt + i + 1}. [${s.id}] ${s.name} | ${s.state}${window ? ` | ${window}` : ''}${goal}`;
+    });
+
+    const rangeEnd = startAt + data.values.length;
+    const page = data.isLast ? '' : ` (showing ${startAt + 1}-${rangeEnd}, use startAt=${rangeEnd} for next page)`;
+    return text(`Sprints for board ${boardId}${page}:\n${lines.join('\n')}`);
+  }
+
   async searchUsers(args: { query: string; maxResults?: number }): Promise<ToolResult> {
     const params = new URLSearchParams({
       username: args.query,
@@ -304,6 +438,177 @@ export class JiraClient {
     return text(lines.join('\n'));
   }
 
+  async issueOverview(args: {
+    issueKey: string;
+    includeComments?: boolean;
+    commentsMaxResults?: number;
+    commentsStartAt?: number;
+    includeTransitions?: boolean;
+    includeSprint?: boolean;
+  }): Promise<ToolResult> {
+    const includeComments = args.includeComments ?? true;
+    const includeTransitions = args.includeTransitions ?? true;
+    const includeSprint = args.includeSprint ?? true;
+    const commentsMaxResults = args.commentsMaxResults ?? 10;
+    const commentsStartAt = args.commentsStartAt ?? 0;
+
+    const fields = 'summary,description,status,assignee,priority,issuetype,labels,components';
+    const issue = await this.request<JiraIssue>('GET', `/issue/${args.issueKey}?fields=${fields}`);
+    if (!issue) return text('Issue not found.');
+
+    const f = issue.fields;
+    const lines = [
+      `Issue: ${issue.key} — ${f.summary}`,
+      `Status:     ${f.status.name}`,
+      `Type:       ${f.issuetype.name}`,
+      `Priority:   ${f.priority?.name ?? 'None'}`,
+      `Assignee:   ${f.assignee?.displayName ?? 'Unassigned'}`,
+      `Labels:     ${f.labels?.join(', ') || 'None'}`,
+      `Components: ${f.components?.map((c) => c.name).join(', ') || 'None'}`,
+    ];
+
+    if (includeSprint) {
+      try {
+        const agileIssue = await this.requestAgile<JiraAgileIssue>('GET', `/issue/${args.issueKey}?fields=sprint,closedSprints`);
+        const activeSprint = agileIssue?.fields?.sprint;
+        const closedSprints = agileIssue?.fields?.closedSprints ?? [];
+        if (activeSprint) {
+          lines.push(`Sprint:     [${activeSprint.id}] ${activeSprint.name} (${activeSprint.state})`);
+        } else {
+          lines.push('Sprint:     None');
+        }
+        if (closedSprints.length > 0) {
+          const closed = closedSprints.slice(0, 5).map((s) => `[${s.id}] ${s.name}`).join(', ');
+          const more = closedSprints.length > 5 ? ` (+${closedSprints.length - 5} more)` : '';
+          lines.push(`History:    ${closed}${more}`);
+        }
+      } catch (err) {
+        lines.push(`Sprint:     unavailable (${(err as Error).message})`);
+      }
+    }
+
+    if (includeTransitions) {
+      const transitions = await this.request<JiraTransitionsResult>('GET', `/issue/${args.issueKey}/transitions`);
+      const names = (transitions?.transitions ?? []).map((t) => `${t.name} -> ${t.to.name}`);
+      lines.push(`Transitions: ${names.length > 0 ? names.join(', ') : '(none)'}`);
+    }
+
+    lines.push('', 'Description:', f.description ?? '(no description)');
+
+    if (includeComments) {
+      const comments = await this.request<JiraCommentResult>(
+        'GET',
+        `/issue/${args.issueKey}/comment?startAt=${commentsStartAt}&maxResults=${commentsMaxResults}`
+      );
+      const items = comments?.comments ?? [];
+      const total = comments?.total ?? 0;
+      const page = comments ? pagination(total, commentsStartAt, items.length) : '';
+      lines.push('', `Comments: ${total}${page}`);
+      if (items.length === 0) {
+        lines.push('(none)');
+      } else {
+        for (const c of items) {
+          const date = c.created.slice(0, 10);
+          lines.push(`--- ${c.author.displayName} (${date}) ---`, c.body, '');
+        }
+      }
+    }
+
+    return text(lines.join('\n').trimEnd());
+  }
+
+  async boardOverview(args: {
+    boardId: number;
+    sprintState?: string;
+    sprintMaxResults?: number;
+    sprintStartAt?: number;
+    includeIssues?: boolean;
+    issueMaxResults?: number;
+    issueStartAt?: number;
+    assignee?: string;
+    status?: string;
+  }): Promise<ToolResult> {
+    const includeIssues = args.includeIssues ?? true;
+    const sprintMaxResults = args.sprintMaxResults ?? 10;
+    const sprintStartAt = args.sprintStartAt ?? 0;
+    const issueMaxResults = args.issueMaxResults ?? 25;
+    const issueStartAt = args.issueStartAt ?? 0;
+
+    const board = await this.requestAgile<JiraBoard>('GET', `/board/${args.boardId}`);
+    const sprintParams = new URLSearchParams({
+      maxResults: String(sprintMaxResults),
+      startAt: String(sprintStartAt),
+    });
+    if (args.sprintState) {
+      sprintParams.set('state', args.sprintState);
+    } else {
+      sprintParams.set('state', 'active,future');
+    }
+
+    const sprints = await this.requestAgile<JiraPage<JiraSprint>>('GET', `/board/${args.boardId}/sprint?${sprintParams}`);
+    if (!sprints || sprints.values.length === 0) {
+      return text(`Board ${args.boardId}${board?.name ? ` (${board.name})` : ''}: no matching sprints.`);
+    }
+
+    const issueFilterClauses: string[] = [];
+    if (args.assignee) issueFilterClauses.push(`assignee = ${JSON.stringify(args.assignee)}`);
+    if (args.status) issueFilterClauses.push(`status = ${JSON.stringify(args.status)}`);
+    const issueJql = issueFilterClauses.length > 0 ? issueFilterClauses.join(' AND ') : '';
+
+    const sprintIssueData = includeIssues
+      ? await Promise.all(
+        sprints.values.map(async (sprint) => {
+          const params = new URLSearchParams({
+            maxResults: String(issueMaxResults),
+            startAt: String(issueStartAt),
+            fields: 'summary,status,assignee,priority,issuetype',
+          });
+          if (issueJql) params.set('jql', issueJql);
+          const issues = await this.requestAgile<JiraSearchResult>('GET', `/sprint/${sprint.id}/issue?${params}`);
+          return { sprintId: sprint.id, issues };
+        })
+      )
+      : [];
+
+    const issueBySprint = new Map(sprintIssueData.map((entry) => [entry.sprintId, entry.issues]));
+
+    const lines = [
+      `Board: [${args.boardId}] ${board?.name ?? '(unknown)'} | ${board?.type ?? '(unknown type)'}`,
+      `Sprints: ${sprints.values.length}`,
+      '',
+    ];
+
+    sprints.values.forEach((sprint, idx) => {
+      const window = [sprint.startDate?.slice(0, 10), sprint.endDate?.slice(0, 10)].filter(Boolean).join(' -> ');
+      lines.push(`${sprintStartAt + idx + 1}. [${sprint.id}] ${sprint.name} | ${sprint.state}${window ? ` | ${window}` : ''}`);
+      if (sprint.goal?.trim()) {
+        lines.push(`   Goal: ${sprint.goal}`);
+      }
+
+      if (includeIssues) {
+        const issueData = issueBySprint.get(sprint.id);
+        const issues = issueData?.issues ?? [];
+        lines.push(`   Issues: ${issueData?.total ?? 0}`);
+        for (const issue of issues) {
+          const assignee = issue.fields.assignee?.displayName ?? 'Unassigned';
+          lines.push(`   - [${issue.key}] ${issue.fields.summary} | ${issue.fields.status.name} | ${assignee}`);
+        }
+        if ((issueData?.total ?? 0) > issues.length) {
+          lines.push(`   ...and ${(issueData?.total ?? 0) - issues.length} more (adjust issueStartAt/issueMaxResults).`);
+        }
+      }
+
+      lines.push('');
+    });
+
+    const sprintRangeEnd = sprintStartAt + sprints.values.length;
+    if (!sprints.isLast) {
+      lines.push(`More sprints available: use sprintStartAt=${sprintRangeEnd}.`);
+    }
+
+    return text(lines.join('\n').trimEnd());
+  }
+
   async createIssue(args: {
     projectKey?: string;
     issueType: string;
@@ -311,18 +616,16 @@ export class JiraClient {
     description?: string;
     assignee?: string;
     priority?: string;
+    sprintId?: number;
   }): Promise<ToolResult> {
-    const projectKey = await this.resolveProjectKey(args.projectKey);
-    const fields: Record<string, unknown> = {
-      project: { key: projectKey },
-      issuetype: { name: args.issueType },
-      summary: args.summary,
-    };
-    if (args.description) fields.description = args.description;
-    if (args.assignee)    fields.assignee = { name: args.assignee };
-    if (args.priority)    fields.priority = { name: args.priority };
-    const data = await this.request<JiraCreatedIssue>('POST', '/issue', { fields });
+    const data = await this.createIssueInternal(args);
     if (!data) return text('Issue created.');
+
+    if (args.sprintId !== undefined) {
+      await this.addIssuesToSprintInternal(args.sprintId, [data.key]);
+      return text(`Created ${data.key} and added it to sprint ${args.sprintId}.`);
+    }
+
     return text(`Created ${data.key}.`);
   }
 
@@ -332,15 +635,106 @@ export class JiraClient {
     description?: string;
     assignee?: string;
     priority?: string;
+    sprintId?: number;
   }): Promise<ToolResult> {
-    const fields: Record<string, unknown> = {};
-    if (args.summary !== undefined)     fields.summary = args.summary;
-    if (args.description !== undefined) fields.description = args.description;
-    if (args.assignee !== undefined)    fields.assignee = { name: args.assignee };
-    if (args.priority !== undefined)    fields.priority = { name: args.priority };
-    if (Object.keys(fields).length === 0) return text('Nothing to update.');
-    await this.request('PUT', `/issue/${args.issueKey}`, { fields });
-    return text(`Updated ${args.issueKey}.`);
+    const hasFieldUpdates = await this.updateIssueFieldsInternal(args);
+
+    if (!hasFieldUpdates && args.sprintId === undefined) return text('Nothing to update.');
+    if (args.sprintId !== undefined) {
+      await this.addIssuesToSprintInternal(args.sprintId, [args.issueKey]);
+    }
+
+    if (hasFieldUpdates && args.sprintId !== undefined) {
+      return text(`Updated ${args.issueKey} and added it to sprint ${args.sprintId}.`);
+    }
+    if (hasFieldUpdates) {
+      return text(`Updated ${args.issueKey}.`);
+    }
+    return text(`Added ${args.issueKey} to sprint ${args.sprintId}.`);
+  }
+
+  async addIssuesToSprint(args: {
+    sprintId: number;
+    issueKey?: string;
+    issueKeys?: string[];
+  }): Promise<ToolResult> {
+    const keys = new Set<string>();
+    if (args.issueKey?.trim()) keys.add(args.issueKey.trim());
+    for (const issueKey of args.issueKeys ?? []) {
+      const trimmed = issueKey.trim();
+      if (trimmed) keys.add(trimmed);
+    }
+
+    if (keys.size === 0) {
+      throw new Error('Provide issueKey or issueKeys with at least one Jira issue key.');
+    }
+
+    const issueKeys = Array.from(keys);
+    await this.addIssuesToSprintInternal(args.sprintId, issueKeys);
+    return text(`Added ${issueKeys.length} issue(s) to sprint ${args.sprintId}.`);
+  }
+
+  async mutateIssue(args: {
+    issueKey?: string;
+    create?: {
+      projectKey?: string;
+      issueType: string;
+      summary: string;
+      description?: string;
+      assignee?: string;
+      priority?: string;
+    };
+    update?: {
+      summary?: string;
+      description?: string;
+      assignee?: string;
+      priority?: string;
+    };
+    sprintId?: number;
+    transitionId?: string;
+    transitionName?: string;
+    comment?: string;
+  }): Promise<ToolResult> {
+    let issueKey = args.issueKey?.trim();
+    const actions: string[] = [];
+
+    if (args.create) {
+      const created = await this.createIssueInternal(args.create);
+      if (!created) throw new Error('Issue creation did not return an issue key.');
+      issueKey = created.key;
+      actions.push('created issue');
+    }
+
+    if (!issueKey) {
+      throw new Error('Provide issueKey, or provide create with issueType and summary.');
+    }
+
+    if (args.update) {
+      const updated = await this.updateIssueFieldsInternal({ issueKey, ...args.update });
+      if (updated) actions.push('updated fields');
+    }
+
+    if (args.sprintId !== undefined) {
+      await this.addIssuesToSprintInternal(args.sprintId, [issueKey]);
+      actions.push(`added to sprint ${args.sprintId}`);
+    }
+
+    if (args.transitionId || args.transitionName) {
+      const transitionId = await this.resolveTransitionId(issueKey, args.transitionId, args.transitionName);
+      await this.transitionIssueInternal(issueKey, transitionId);
+      actions.push(`transitioned via ${transitionId}`);
+    }
+
+    if (args.comment !== undefined) {
+      await this.request('POST', `/issue/${issueKey}/comment`, { body: validateCommentBody(args.comment) });
+      actions.push('added comment');
+    }
+
+    if (actions.length === 0) {
+      return text('Nothing to mutate.');
+    }
+
+    return text(`Mutated ${issueKey}: ${actions.join(', ')}.`);
   }
 
   async getComments(args: { issueKey: string; maxResults?: number; startAt?: number }): Promise<ToolResult> {
@@ -364,30 +758,8 @@ export class JiraClient {
   }
 
   async transitionIssue(args: { issueKey: string; transitionId?: string; transitionName?: string }): Promise<ToolResult> {
-    let transitionId = args.transitionId;
-
-    if (!transitionId) {
-      const requestedName = args.transitionName?.trim();
-      if (!requestedName) {
-        throw new Error('Provide transitionId or transitionName');
-      }
-
-      const data = await this.request<JiraTransitionsResult>('GET', `/issue/${args.issueKey}/transitions`);
-      const transitions = data?.transitions ?? [];
-      const lowered = requestedName.toLowerCase();
-      const match = transitions.find((t) => t.name.toLowerCase() === lowered);
-
-      if (!match) {
-        const available = transitions.map((t) => t.name).join(', ') || '(none)';
-        throw new Error(`Transition "${requestedName}" not found for ${args.issueKey}. Available: ${available}`);
-      }
-
-      transitionId = match.id;
-    }
-
-    await this.request('POST', `/issue/${args.issueKey}/transitions`, {
-      transition: { id: transitionId },
-    });
+    const transitionId = await this.resolveTransitionId(args.issueKey, args.transitionId, args.transitionName);
+    await this.transitionIssueInternal(args.issueKey, transitionId);
     return text(`Transitioned ${args.issueKey} using transition ${transitionId}.`);
   }
 }

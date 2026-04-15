@@ -1,6 +1,6 @@
 # atlassian-mcp
 
-A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **self-hosted Jira** (Server / Data Center) and **self-hosted Bitbucket** (Server / Data Center). Exposes 33 tools for natural-language workflows around tickets, pull requests, review threads, and git context.
+A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **self-hosted Jira** (Server / Data Center) and **self-hosted Bitbucket** (Server / Data Center). Exposes tools for natural-language workflows around tickets, pull requests, review threads, and git context.
 
 > **Note:** This server only supports self-hosted instances. Jira Cloud and Bitbucket Cloud use different APIs and are not supported.
 
@@ -22,9 +22,14 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 | `jira_my_issues` | List issues assigned to you, ordered by last updated |
 | `jira_get_projects` | List all accessible projects |
 | `jira_get_issue_types` | List issue types and their available statuses for a project |
+| `jira_get_sprints` | List sprints for a board (with sprint IDs for assignment) |
 | `jira_get_issue` | Get issue details by key |
+| `jira_issue_overview` | Get one-call issue overview (details, transitions, sprint context, optional comments) |
+| `jira_board_overview` | Get one-call board overview (board info, sprints, optional sprint issues) |
 | `jira_create_issue` | Create a new issue |
 | `jira_update_issue` | Update summary, description, assignee, or priority |
+| `jira_add_issues_to_sprint` | Add one or more issues to a sprint by sprint ID |
+| `jira_mutate_issue` | Bundle create/update/sprint/transition/comment actions into one call |
 | `jira_search_users` | Search for users by name or email |
 | `jira_get_comments` | List comments on an issue |
 | `jira_add_comment` | Add a comment to an issue |

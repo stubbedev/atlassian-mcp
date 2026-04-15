@@ -40,6 +40,16 @@ function normalizeJiraProjectArgs(args: unknown): Record<string, unknown> {
   return out;
 }
 
+function normalizeJiraMutateArgs(args: unknown): Record<string, unknown> {
+  const out = normalizeJiraProjectArgs(args);
+  if (out.create && typeof out.create === 'object') {
+    const create = { ...(out.create as Record<string, unknown>) };
+    if (typeof create.project === 'string' && typeof create.projectKey !== 'string') create.projectKey = create.project;
+    out.create = create;
+  }
+  return out;
+}
+
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     // ── Context ───────────────────────────────────────────────────────────
@@ -104,6 +114,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'jira_get_sprints',
+      description: 'Use when you need sprint IDs for planning or assignment. Returns sprints for a Jira board.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          boardId:    { type: 'number', description: 'Jira board ID' },
+          state:      { type: 'string', description: 'Optional sprint state filter, e.g. "active", "future", or "closed"' },
+          maxResults: { type: 'number', description: 'Max sprints per page (default 20)', default: 20 },
+          startAt:    { type: 'number', description: 'Offset for pagination (default 0)', default: 0 },
+        },
+        required: ['boardId'],
+      },
+    },
+    {
       name: 'jira_search_users',
       description: 'Use when assigning tickets and you need to find the correct Jira username by name or email.',
       inputSchema: {
@@ -127,6 +151,22 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'jira_issue_overview',
+      description: 'Use when you want one Jira issue snapshot in a single call: details, transitions, sprint context, and optional comments.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          issueKey:          { type: 'string', description: 'Jira issue key, e.g. "FOO-123"' },
+          includeComments:   { type: 'boolean', description: 'Include comments in the overview (default true)', default: true },
+          commentsMaxResults:{ type: 'number', description: 'Max comments when includeComments=true (default 10)', default: 10 },
+          commentsStartAt:   { type: 'number', description: 'Comment pagination offset (default 0)', default: 0 },
+          includeTransitions:{ type: 'boolean', description: 'Include available transitions (default true)', default: true },
+          includeSprint:     { type: 'boolean', description: 'Include sprint data via Jira Agile API (default true)', default: true },
+        },
+        required: ['issueKey'],
+      },
+    },
+    {
       name: 'jira_create_issue',
       description: 'Use when you want to create a new Jira ticket (bug, story, task, etc.). If projectKey/project is omitted, the server auto-picks from branch context or asks you to choose.',
       inputSchema: {
@@ -139,6 +179,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           description: { type: 'string', description: 'Issue description (optional)' },
           assignee:    { type: 'string', description: 'Username to assign to (optional)' },
           priority:    { type: 'string', description: 'Priority name, e.g. "High" (optional)' },
+          sprintId:    { type: 'number', description: 'Sprint ID to immediately add the new issue into (optional)' },
         },
         required: ['issueType', 'summary'],
       },
@@ -154,8 +195,77 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           description: { type: 'string', description: 'New description (optional)' },
           assignee:    { type: 'string', description: 'New assignee username, or empty string to unassign (optional)' },
           priority:    { type: 'string', description: 'New priority name (optional)' },
+          sprintId:    { type: 'number', description: 'Sprint ID to add this issue into (optional)' },
         },
         required: ['issueKey'],
+      },
+    },
+    {
+      name: 'jira_add_issues_to_sprint',
+      description: 'Use when you want to assign one or more Jira issues to a sprint by sprint ID.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          sprintId:  { type: 'number', description: 'Sprint ID' },
+          issueKey:  { type: 'string', description: 'Single issue key (optional)' },
+          issueKeys: { type: 'array', items: { type: 'string' }, description: 'Multiple issue keys (optional)' },
+        },
+        required: ['sprintId'],
+      },
+    },
+    {
+      name: 'jira_mutate_issue',
+      description: 'Use when you want to bundle Jira mutations in one call: create or target an issue, then optional update, sprint assignment, transition, and comment.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          issueKey: { type: 'string', description: 'Existing issue key to mutate (optional if create is provided)' },
+          create: {
+            type: 'object',
+            properties: {
+              projectKey:  { type: 'string', description: 'Jira project code (optional, auto-resolved when omitted)' },
+              project:     { type: 'string', description: 'Alias for projectKey' },
+              issueType:   { type: 'string', description: 'Issue type name, e.g. Bug, Story, Task' },
+              summary:     { type: 'string', description: 'Issue title' },
+              description: { type: 'string', description: 'Issue description (optional)' },
+              assignee:    { type: 'string', description: 'Username to assign to (optional)' },
+              priority:    { type: 'string', description: 'Priority name (optional)' },
+            },
+            required: ['issueType', 'summary'],
+          },
+          update: {
+            type: 'object',
+            properties: {
+              summary:     { type: 'string', description: 'New summary (optional)' },
+              description: { type: 'string', description: 'New description (optional)' },
+              assignee:    { type: 'string', description: 'New assignee username, or empty string to unassign (optional)' },
+              priority:    { type: 'string', description: 'New priority name (optional)' },
+            },
+          },
+          sprintId:       { type: 'number', description: 'Sprint ID to add the issue into (optional)' },
+          transitionId:   { type: 'string', description: 'Transition ID (optional if transitionName is provided)' },
+          transitionName: { type: 'string', description: 'Transition name, e.g. In Progress (optional if transitionId is provided)' },
+          comment:        { type: 'string', description: 'Comment to add after other mutations (optional, no emoji)' },
+        },
+      },
+    },
+    {
+      name: 'jira_board_overview',
+      description: 'Use when you want one board-level planning snapshot: board info, sprints, and optional sprint issues in one call.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          boardId:         { type: 'number', description: 'Jira board ID' },
+          sprintState:     { type: 'string', description: 'Sprint state filter, e.g. "active,future" (default active,future)' },
+          sprintMaxResults:{ type: 'number', description: 'Max sprints per page (default 10)', default: 10 },
+          sprintStartAt:   { type: 'number', description: 'Sprints pagination offset (default 0)', default: 0 },
+          includeIssues:   { type: 'boolean', description: 'Include sprint issues (default true)', default: true },
+          issueMaxResults: { type: 'number', description: 'Max issues per sprint when includeIssues=true (default 25)', default: 25 },
+          issueStartAt:    { type: 'number', description: 'Issue pagination offset per sprint (default 0)', default: 0 },
+          assignee:        { type: 'string', description: 'Optional assignee filter for sprint issues' },
+          status:          { type: 'string', description: 'Optional status filter for sprint issues' },
+        },
+        required: ['boardId'],
       },
     },
     {
@@ -554,14 +664,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return await jira.getProjects(args as Parameters<typeof jira.getProjects>[0]);
       case 'jira_get_issue_types':
         return await jira.getIssueTypes(normalizeJiraProjectArgs(args) as Parameters<typeof jira.getIssueTypes>[0]);
+      case 'jira_get_sprints':
+        return await jira.getSprints(args as Parameters<typeof jira.getSprints>[0]);
       case 'jira_search_users':
         return await jira.searchUsers(args as Parameters<typeof jira.searchUsers>[0]);
       case 'jira_get_issue':
         return await jira.getIssue(args as Parameters<typeof jira.getIssue>[0]);
+      case 'jira_issue_overview':
+        return await jira.issueOverview(args as Parameters<typeof jira.issueOverview>[0]);
       case 'jira_create_issue':
         return await jira.createIssue(normalizeJiraProjectArgs(args) as Parameters<typeof jira.createIssue>[0]);
       case 'jira_update_issue':
         return await jira.updateIssue(args as Parameters<typeof jira.updateIssue>[0]);
+      case 'jira_add_issues_to_sprint':
+        return await jira.addIssuesToSprint(args as Parameters<typeof jira.addIssuesToSprint>[0]);
+      case 'jira_mutate_issue':
+        return await jira.mutateIssue(normalizeJiraMutateArgs(args) as Parameters<typeof jira.mutateIssue>[0]);
+      case 'jira_board_overview':
+        return await jira.boardOverview(args as Parameters<typeof jira.boardOverview>[0]);
       case 'jira_get_comments':
         return await jira.getComments(args as Parameters<typeof jira.getComments>[0]);
       case 'jira_add_comment':
