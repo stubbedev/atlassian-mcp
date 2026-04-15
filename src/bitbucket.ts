@@ -637,8 +637,8 @@ export class BitbucketClient {
     );
     if (!existing) throw new Error(`PR #${args.prId} not found.`);
 
-    const buildBody = (version: number): Record<string, unknown> => {
-      const body: Record<string, unknown> = { version };
+    const buildBody = (pr: BBPullRequest): Record<string, unknown> => {
+      const body: Record<string, unknown> = { version: pr.version };
       if (args.title !== undefined) body.title = args.title;
       if (args.description !== undefined) body.description = args.description;
       if (args.toBranch !== undefined) {
@@ -647,9 +647,11 @@ export class BitbucketClient {
           repository: { slug: repoSlug, project: { key: projectKey } },
         };
       }
-      if (args.reviewers !== undefined) {
-        body.reviewers = args.reviewers.map((name) => ({ user: { name } }));
-      }
+      // Always include reviewers to avoid Bitbucket clearing them on PUT.
+      // Only replace them when explicitly provided by the caller.
+      body.reviewers = args.reviewers !== undefined
+        ? args.reviewers.map((name) => ({ user: { name } }))
+        : pr.reviewers.map((r) => ({ user: { name: r.user.name } }));
       return body;
     };
 
@@ -658,7 +660,7 @@ export class BitbucketClient {
       updated = await this.request<BBPullRequest>(
         'PUT',
         `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}`,
-        buildBody(existing.version)
+        buildBody(existing)
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -673,7 +675,7 @@ export class BitbucketClient {
       updated = await this.request<BBPullRequest>(
         'PUT',
         `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}`,
-        buildBody(latest.version)
+        buildBody(latest)
       );
     }
 
