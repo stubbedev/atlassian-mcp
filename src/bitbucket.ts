@@ -252,6 +252,14 @@ export class BitbucketClient {
     };
   }
 
+  private pullRequestUrl(projectKey: string, repoSlug: string, prId: number, pr?: BBPullRequest | null): string {
+    const apiUrl = pr?.links?.self?.[0]?.href?.trim();
+    if (apiUrl) {
+      return apiUrl;
+    }
+    return `${this.baseUrl}/projects/${encodeURIComponent(projectKey)}/repos/${encodeURIComponent(repoSlug)}/pull-requests/${prId}`;
+  }
+
   private resolveProjectAndRepo(
     projectKey?: string,
     repoSlug?: string
@@ -546,8 +554,8 @@ export class BitbucketClient {
       body
     );
     if (!data) return text('Pull request created.');
-    const url = data.links?.self?.[0]?.href ?? '';
-    return text(`Created PR #${data.id}: "${data.title}"${url ? `\n${url}` : ''}`);
+    const url = this.pullRequestUrl(projectKey, repoSlug, data.id, data);
+    return text(`Created PR #${data.id}: "${data.title}"\n${url}`);
   }
 
   async approvePr(args: { projectKey?: string; repoSlug?: string; prId: number }): Promise<ToolResult> {
@@ -556,8 +564,9 @@ export class BitbucketClient {
       'POST',
       `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/approve`
     );
-    if (!data) return text(`Approved PR #${args.prId}.`);
-    return text(`Approved PR #${args.prId} as ${data.user.displayName}.`);
+    const url = this.pullRequestUrl(projectKey, repoSlug, args.prId);
+    if (!data) return text(`Approved PR #${args.prId}.\n${url}`);
+    return text(`Approved PR #${args.prId} as ${data.user.displayName}.\n${url}`);
   }
 
   async unapprovePr(args: { projectKey?: string; repoSlug?: string; prId: number }): Promise<ToolResult> {
@@ -566,7 +575,7 @@ export class BitbucketClient {
       'DELETE',
       `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/approve`
     );
-    return text(`Approval removed from PR #${args.prId}.`);
+    return text(`Approval removed from PR #${args.prId}.\n${this.pullRequestUrl(projectKey, repoSlug, args.prId)}`);
   }
 
   async declinePr(args: { projectKey?: string; repoSlug?: string; prId: number; message?: string }): Promise<ToolResult> {
@@ -583,8 +592,8 @@ export class BitbucketClient {
       `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/decline`,
       body
     );
-    if (!data) return text(`Declined PR #${args.prId}.`);
-    return text(`Declined PR #${data.id}: "${data.title}".`);
+    if (!data) return text(`Declined PR #${args.prId}.\n${this.pullRequestUrl(projectKey, repoSlug, args.prId)}`);
+    return text(`Declined PR #${data.id}: "${data.title}".\n${this.pullRequestUrl(projectKey, repoSlug, data.id, data)}`);
   }
 
   async mergePr(args: {
@@ -608,8 +617,8 @@ export class BitbucketClient {
       `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/merge`,
       body
     );
-    if (!data) return text(`Merged PR #${args.prId}.`);
-    return text(`Merged PR #${data.id}: "${data.title}" (${data.fromRef.displayId} → ${data.toRef.displayId}).`);
+    if (!data) return text(`Merged PR #${args.prId}.\n${this.pullRequestUrl(projectKey, repoSlug, args.prId)}`);
+    return text(`Merged PR #${data.id}: "${data.title}" (${data.fromRef.displayId} → ${data.toRef.displayId}).\n${this.pullRequestUrl(projectKey, repoSlug, data.id, data)}`);
   }
 
   async getBranches(args: {

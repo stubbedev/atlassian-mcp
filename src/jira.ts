@@ -206,6 +206,22 @@ export class JiraClient {
     };
   }
 
+  private issueUrl(issueKey: string): string {
+    return `${this.baseUrl}/browse/${encodeURIComponent(issueKey)}`;
+  }
+
+  private projectUrl(projectKey: string): string {
+    return `${this.baseUrl}/projects/${encodeURIComponent(projectKey)}`;
+  }
+
+  private boardUrl(boardId: number): string {
+    return `${this.baseUrl}/secure/RapidBoard.jspa?rapidView=${boardId}`;
+  }
+
+  private sprintUrl(boardId: number, sprintId: number): string {
+    return `${this.boardUrl(boardId)}&sprint=${sprintId}`;
+  }
+
   private async requestWithBase<T>(apiBase: string, method: string, path: string, body?: unknown): Promise<T | null> {
     const url = `${this.baseUrl}${apiBase}${path}`;
     const opts: RequestInit = { method, headers: this.headers };
@@ -345,7 +361,7 @@ export class JiraClient {
     if (!data) return text('No results.');
     const lines = data.issues.map((i, idx) => {
       const assignee = i.fields.assignee?.displayName ?? 'Unassigned';
-      return `${startAt + idx + 1}. [${i.key}] ${i.fields.summary} | ${i.fields.status.name} | ${assignee}`;
+      return `${startAt + idx + 1}. [${i.key}] ${i.fields.summary} | ${i.fields.status.name} | ${assignee} | ${this.issueUrl(i.key)}`;
     });
     const page = pagination(data.total, startAt, data.issues.length);
     return text(`Found ${data.total} issues${page}:\n${lines.join('\n')}`);
@@ -363,7 +379,7 @@ export class JiraClient {
     const limit = args.maxResults ?? 50;
     const data = await this.request<JiraProject[]>('GET', `/project?maxResults=${limit}`);
     if (!data || data.length === 0) return text('No projects found.');
-    const lines = data.map((p, i) => `${i + 1}. [${p.key}] ${p.name} (${p.projectTypeKey})`);
+    const lines = data.map((p, i) => `${i + 1}. [${p.key}] ${p.name} (${p.projectTypeKey}) | ${this.projectUrl(p.key)}`);
     return text(`${data.length} project(s):\n${lines.join('\n')}`);
   }
 
@@ -397,12 +413,12 @@ export class JiraClient {
     const lines = data.values.map((s, i) => {
       const window = [s.startDate?.slice(0, 10), s.endDate?.slice(0, 10)].filter(Boolean).join(' -> ');
       const goal = s.goal?.trim() ? ` | Goal: ${s.goal}` : '';
-      return `${startAt + i + 1}. [${s.id}] ${s.name} | ${s.state}${window ? ` | ${window}` : ''}${goal}`;
+      return `${startAt + i + 1}. [${s.id}] ${s.name} | ${s.state}${window ? ` | ${window}` : ''}${goal} | ${this.sprintUrl(boardId, s.id)}`;
     });
 
     const rangeEnd = startAt + data.values.length;
     const page = data.isLast ? '' : ` (showing ${startAt + 1}-${rangeEnd}, use startAt=${rangeEnd} for next page)`;
-    return text(`Sprints for board ${boardId}${page}:\n${lines.join('\n')}`);
+    return text(`Sprints for board ${boardId}${page}:\nBoard URL: ${this.boardUrl(boardId)}\n${lines.join('\n')}`);
   }
 
   async searchUsers(args: { query: string; maxResults?: number }): Promise<ToolResult> {
@@ -459,6 +475,7 @@ export class JiraClient {
     const f = issue.fields;
     const lines = [
       `Issue: ${issue.key} — ${f.summary}`,
+      `URL:        ${this.issueUrl(issue.key)}`,
       `Status:     ${f.status.name}`,
       `Type:       ${f.issuetype.name}`,
       `Priority:   ${f.priority?.name ?? 'None'}`,
@@ -574,13 +591,14 @@ export class JiraClient {
 
     const lines = [
       `Board: [${args.boardId}] ${board?.name ?? '(unknown)'} | ${board?.type ?? '(unknown type)'}`,
+      `URL: ${this.boardUrl(args.boardId)}`,
       `Sprints: ${sprints.values.length}`,
       '',
     ];
 
     sprints.values.forEach((sprint, idx) => {
       const window = [sprint.startDate?.slice(0, 10), sprint.endDate?.slice(0, 10)].filter(Boolean).join(' -> ');
-      lines.push(`${sprintStartAt + idx + 1}. [${sprint.id}] ${sprint.name} | ${sprint.state}${window ? ` | ${window}` : ''}`);
+      lines.push(`${sprintStartAt + idx + 1}. [${sprint.id}] ${sprint.name} | ${sprint.state}${window ? ` | ${window}` : ''} | ${this.sprintUrl(args.boardId, sprint.id)}`);
       if (sprint.goal?.trim()) {
         lines.push(`   Goal: ${sprint.goal}`);
       }
@@ -591,7 +609,7 @@ export class JiraClient {
         lines.push(`   Issues: ${issueData?.total ?? 0}`);
         for (const issue of issues) {
           const assignee = issue.fields.assignee?.displayName ?? 'Unassigned';
-          lines.push(`   - [${issue.key}] ${issue.fields.summary} | ${issue.fields.status.name} | ${assignee}`);
+          lines.push(`   - [${issue.key}] ${issue.fields.summary} | ${issue.fields.status.name} | ${assignee} | ${this.issueUrl(issue.key)}`);
         }
         if ((issueData?.total ?? 0) > issues.length) {
           lines.push(`   ...and ${(issueData?.total ?? 0) - issues.length} more (adjust issueStartAt/issueMaxResults).`);
@@ -620,13 +638,14 @@ export class JiraClient {
   }): Promise<ToolResult> {
     const data = await this.createIssueInternal(args);
     if (!data) return text('Issue created.');
+    const url = this.issueUrl(data.key);
 
     if (args.sprintId !== undefined) {
       await this.addIssuesToSprintInternal(args.sprintId, [data.key]);
-      return text(`Created ${data.key} and added it to sprint ${args.sprintId}.`);
+      return text(`Created ${data.key} and added it to sprint ${args.sprintId}.\n${url}`);
     }
 
-    return text(`Created ${data.key}.`);
+    return text(`Created ${data.key}.\n${url}`);
   }
 
   async updateIssue(args: {
@@ -645,12 +664,12 @@ export class JiraClient {
     }
 
     if (hasFieldUpdates && args.sprintId !== undefined) {
-      return text(`Updated ${args.issueKey} and added it to sprint ${args.sprintId}.`);
+      return text(`Updated ${args.issueKey} and added it to sprint ${args.sprintId}.\n${this.issueUrl(args.issueKey)}`);
     }
     if (hasFieldUpdates) {
-      return text(`Updated ${args.issueKey}.`);
+      return text(`Updated ${args.issueKey}.\n${this.issueUrl(args.issueKey)}`);
     }
-    return text(`Added ${args.issueKey} to sprint ${args.sprintId}.`);
+    return text(`Added ${args.issueKey} to sprint ${args.sprintId}.\n${this.issueUrl(args.issueKey)}`);
   }
 
   async addIssuesToSprint(args: {
@@ -671,7 +690,14 @@ export class JiraClient {
 
     const issueKeys = Array.from(keys);
     await this.addIssuesToSprintInternal(args.sprintId, issueKeys);
-    return text(`Added ${issueKeys.length} issue(s) to sprint ${args.sprintId}.`);
+    if (issueKeys.length === 1) {
+      return text(`Added ${issueKeys[0]} to sprint ${args.sprintId}.\n${this.issueUrl(issueKeys[0])}`);
+    }
+    const lines = [
+      `Added ${issueKeys.length} issue(s) to sprint ${args.sprintId}.`,
+      ...issueKeys.map((issueKey) => `${issueKey}: ${this.issueUrl(issueKey)}`),
+    ];
+    return text(lines.join('\n'));
   }
 
   async mutateIssue(args: {
@@ -734,7 +760,7 @@ export class JiraClient {
       return text('Nothing to mutate.');
     }
 
-    return text(`Mutated ${issueKey}: ${actions.join(', ')}.`);
+    return text(`Mutated ${issueKey}: ${actions.join(', ')}.\n${this.issueUrl(issueKey)}`);
   }
 
   async getComments(args: { issueKey: string; maxResults?: number; startAt?: number }): Promise<ToolResult> {
@@ -760,6 +786,6 @@ export class JiraClient {
   async transitionIssue(args: { issueKey: string; transitionId?: string; transitionName?: string }): Promise<ToolResult> {
     const transitionId = await this.resolveTransitionId(args.issueKey, args.transitionId, args.transitionName);
     await this.transitionIssueInternal(args.issueKey, transitionId);
-    return text(`Transitioned ${args.issueKey} using transition ${transitionId}.`);
+    return text(`Transitioned ${args.issueKey} using transition ${transitionId}.\n${this.issueUrl(args.issueKey)}`);
   }
 }
