@@ -384,7 +384,10 @@ export class BitbucketClient {
     const { projectKey, repoSlug } = this.resolveProjectAndRepo(args.projectKey, args.repoSlug);
     const { state = 'OPEN', fromBranch, text: searchText, limit = 25, start = 0 } = args;
     const qs = new URLSearchParams({ state, limit: String(limit), start: String(start) });
-    if (fromBranch) qs.set('at', toBranchRef(fromBranch));
+    if (fromBranch) {
+      qs.set('at', toBranchRef(fromBranch));
+      qs.set('direction', 'OUTGOING');
+    }
     if (searchText) qs.set('filterText', searchText);
     const path = `/projects/${projectKey}/repos/${repoSlug}/pull-requests?${qs}`;
     const data = await this.request<BBPagedResult<BBPullRequest>>('GET', path);
