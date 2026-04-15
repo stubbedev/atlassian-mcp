@@ -1,6 +1,7 @@
 import { execSync } from 'child_process';
 
 type ToolResult = { content: Array<{ type: 'text'; text: string }> };
+const EMOJI_RE = /\p{Extended_Pictographic}/u;
 
 function safeExec(cmd: string): string {
   try {
@@ -225,6 +226,17 @@ function formatBitbucketError(status: number, method: string, path: string, deta
   if (status === 404) return `${prefix}. Resource not found. Verify project/repo/PR identifiers and access.`;
   if (status === 409) return `${prefix}. Conflict (often stale version/state). Refresh and retry. ${details}`.trim();
   return details ? `${prefix}. ${details}` : prefix;
+}
+
+function validateCommentText(textValue: string): string {
+  const trimmed = textValue.trim();
+  if (!trimmed) {
+    throw new Error('Bitbucket comment text must not be empty.');
+  }
+  if (EMOJI_RE.test(trimmed)) {
+    throw new Error('Bitbucket comments must not include emoji. Use concise plain text only.');
+  }
+  return trimmed;
 }
 
 export class BitbucketClient {
@@ -749,7 +761,7 @@ export class BitbucketClient {
     text: string;
   }): Promise<ToolResult> {
     const { projectKey, repoSlug } = this.resolveProjectAndRepo(args.projectKey, args.repoSlug);
-    const body: Record<string, unknown> = { text: args.text };
+    const body: Record<string, unknown> = { text: validateCommentText(args.text) };
     if (args.parentCommentId) body.parent = { id: args.parentCommentId };
     const created = await this.request<BBComment>(
       'POST',
@@ -785,7 +797,7 @@ export class BitbucketClient {
 
     const body: Record<string, unknown> = {
       version: current.version,
-      text: args.text ?? current.text,
+      text: args.text !== undefined ? validateCommentText(args.text) : current.text,
     };
     if (args.state) body.state = args.state;
     if (args.severity) body.severity = args.severity;

@@ -173,12 +173,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'jira_add_comment',
-      description: 'Use when you want to leave a comment on a Jira ticket.',
+      description: 'Use when you want to leave a comment on a Jira ticket. Keep comments concise, plain text, and free of filler. Never include emojis.',
       inputSchema: {
         type: 'object',
         properties: {
           issueKey: { type: 'string', description: 'Jira issue key' },
-          body:     { type: 'string', description: 'Comment text (plain text or Jira wiki markup)' },
+          body:     { type: 'string', description: 'Concise comment text only. No filler. Do not include emojis.' },
         },
         required: ['issueKey', 'body'],
       },
@@ -417,7 +417,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'bitbucket_add_pr_comment',
-      description: 'Use when you want to add a PR review comment or reply to an existing thread. You can pass projectKey/repoSlug or project/repo.',
+      description: 'Use when you want to add a PR review comment or reply to an existing thread. Keep comments concise, plain text, and free of filler. Never include emojis. You can pass projectKey/repoSlug or project/repo.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -427,14 +427,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           repo:       { type: 'string', description: 'Alias for repoSlug' },
           prId:       { type: 'number', description: 'Pull request number (PR ID)' },
           parentCommentId: { type: 'number', description: 'Parent comment ID for reply mode (optional)' },
-          text:       { type: 'string', description: 'Comment text' },
+          text:       { type: 'string', description: 'Concise comment text only. No filler. Do not include emojis.' },
         },
         required: ['prId', 'text'],
       },
     },
     {
       name: 'bitbucket_update_pr_comment',
-      description: 'Use when you want to edit PR comments, resolve/reopen them, or mark comments as task-style BLOCKER items. You can pass projectKey/repoSlug or project/repo.',
+      description: 'Use when you want to edit PR comments, resolve/reopen them, or mark comments as task-style BLOCKER items. Keep comments concise, plain text, and free of filler. Never include emojis. You can pass projectKey/repoSlug or project/repo.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -444,7 +444,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           repo:       { type: 'string', description: 'Alias for repoSlug' },
           prId:       { type: 'number', description: 'Pull request number (PR ID)' },
           commentId:  { type: 'number', description: 'Comment ID to update' },
-          text:       { type: 'string', description: 'New comment text (optional)' },
+          text:       { type: 'string', description: 'New concise comment text only. No filler. Do not include emojis. (optional)' },
           state:      { type: 'string', enum: ['OPEN', 'RESOLVED'], description: 'Comment state (optional)' },
           severity:   { type: 'string', enum: ['NORMAL', 'BLOCKER'], description: 'Comment severity (optional). BLOCKER marks it as a task/checklist item.' },
         },

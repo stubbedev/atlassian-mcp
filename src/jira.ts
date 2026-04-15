@@ -74,6 +74,7 @@ interface JiraErrorPayload {
 }
 
 const JIRA_KEY_IN_BRANCH_RE = /\b([A-Z][A-Z0-9]+)-\d+\b/;
+const EMOJI_RE = /\p{Extended_Pictographic}/u;
 
 function text(t: string): ToolResult {
   return { content: [{ type: 'text', text: t }] };
@@ -148,6 +149,17 @@ function formatJiraError(status: number, method: string, path: string, details: 
   if (status === 404) return `${prefix}. Resource not found. Verify issue/project identifiers and access.`;
   if (status === 409) return `${prefix}. Conflict. Refresh and retry. ${details}`.trim();
   return details ? `${prefix}. ${details}` : prefix;
+}
+
+function validateCommentBody(body: string): string {
+  const trimmed = body.trim();
+  if (!trimmed) {
+    throw new Error('Jira comment body must not be empty.');
+  }
+  if (EMOJI_RE.test(trimmed)) {
+    throw new Error('Jira comments must not include emoji. Use concise plain text only.');
+  }
+  return trimmed;
 }
 
 export class JiraClient {
@@ -347,7 +359,7 @@ export class JiraClient {
   }
 
   async addComment(args: { issueKey: string; body: string }): Promise<ToolResult> {
-    await this.request('POST', `/issue/${args.issueKey}/comment`, { body: args.body });
+    await this.request('POST', `/issue/${args.issueKey}/comment`, { body: validateCommentBody(args.body) });
     return text(`Comment added to ${args.issueKey}.`);
   }
 
