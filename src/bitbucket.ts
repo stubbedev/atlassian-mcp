@@ -57,6 +57,8 @@ interface BBComment {
   id: number;
   version: number;
   text: string;
+  deleted?: boolean;
+  threadResolved?: boolean;
   state?: 'OPEN' | 'RESOLVED' | 'PENDING';
   severity?: 'NORMAL' | 'BLOCKER';
   author?: { displayName?: string; name?: string };
@@ -131,8 +133,11 @@ function formatCommentThread(comment: BBComment, indent = ''): string[] {
   const date = comment.createdDate ? ` (${formatDate(comment.createdDate)})` : '';
   const state = comment.state ?? 'OPEN';
   const severity = comment.severity ?? 'NORMAL';
+  const threadStatus = comment.threadResolved !== undefined
+    ? ` thread=${comment.threadResolved ? 'RESOLVED' : 'OPEN'}`
+    : '';
   const lines = [
-    `${indent}#${comment.id} [${state}/${severity}] ${author}${date} (v${comment.version})`,
+    `${indent}#${comment.id} [${state}/${severity}${threadStatus}] ${author}${date} (v${comment.version})`,
     `${indent}${comment.text}`,
   ];
 
@@ -146,6 +151,10 @@ function formatCommentThread(comment: BBComment, indent = ''): string[] {
 }
 
 function commentMatchesState(comment: BBComment, state: 'OPEN' | 'RESOLVED' | 'PENDING'): boolean {
+  if (state !== 'PENDING' && (comment.severity ?? 'NORMAL') !== 'BLOCKER' && comment.threadResolved !== undefined) {
+    const threadState = comment.threadResolved ? 'RESOLVED' : 'OPEN';
+    if (threadState === state) return true;
+  }
   const currentState = comment.state ?? 'OPEN';
   if (currentState === state) return true;
   return (comment.comments ?? []).some((child) => commentMatchesState(child, state));
@@ -161,11 +170,33 @@ function commentMatchesSeverity(comment: BBComment, severity: 'ALL' | 'NORMAL' |
 function uniqueCommentsFromActivities(activities: BBActivity[]): BBComment[] {
   const byId = new Map<number, BBComment>();
   for (const activity of activities) {
-    if (activity.action === 'COMMENTED' && activity.comment && !byId.has(activity.comment.id)) {
-      byId.set(activity.comment.id, activity.comment);
+    const comment = activity.comment;
+    if (!comment) continue;
+    const existing = byId.get(comment.id);
+    if (!existing) {
+      byId.set(comment.id, comment);
+      continue;
+    }
+
+    const commentVersion = comment.version ?? -1;
+    const existingVersion = existing.version ?? -1;
+
+    if (commentVersion > existingVersion) {
+      byId.set(comment.id, comment);
+      continue;
+    }
+
+    if (commentVersion === existingVersion) {
+      const commentUpdated = comment.updatedDate ?? comment.createdDate ?? 0;
+      const existingUpdated = existing.updatedDate ?? existing.createdDate ?? 0;
+      if (commentUpdated > existingUpdated) {
+        byId.set(comment.id, comment);
+      }
     }
   }
-  return Array.from(byId.values()).sort((a, b) => (a.createdDate ?? 0) - (b.createdDate ?? 0));
+  return Array.from(byId.values())
+    .filter((comment) => !comment.deleted)
+    .sort((a, b) => (a.createdDate ?? 0) - (b.createdDate ?? 0));
 }
 
 function pageHint(data: BBPagedResult<unknown>): string {
@@ -792,10 +823,11 @@ export class BitbucketClient {
     text?: string;
     state?: 'OPEN' | 'RESOLVED';
     severity?: 'NORMAL' | 'BLOCKER';
+    threadResolved?: boolean;
   }): Promise<ToolResult> {
     const { projectKey, repoSlug } = this.resolveProjectAndRepo(args.projectKey, args.repoSlug);
-    if (!args.text && !args.state && !args.severity) {
-      throw new Error('At least one field is required: text, state, or severity');
+    if (!args.text && !args.state && !args.severity && args.threadResolved === undefined) {
+      throw new Error('At least one field is required: text, state, severity, or threadResolved');
     }
 
     const current = await this.request<BBComment>(
@@ -804,23 +836,57 @@ export class BitbucketClient {
     );
     if (!current) throw new Error(`Comment #${args.commentId} not found.`);
 
-    const body: Record<string, unknown> = {
-      version: current.version,
-      text: args.text !== undefined ? validateCommentText(args.text) : current.text,
-    };
-    if (args.state) body.state = args.state;
-    if (args.severity) body.severity = args.severity;
+    const targetSeverity = args.severity ?? current.severity ?? 'NORMAL';
 
-    const updated = await this.request<BBComment>(
-      'PUT',
-      `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/comments/${args.commentId}`,
-      body
-    );
+    if (args.state && targetSeverity !== 'BLOCKER') {
+      throw new Error('state is only supported for BLOCKER comments (tasks). Use threadResolved for normal comment threads.');
+    }
+    if (args.threadResolved !== undefined && targetSeverity === 'BLOCKER') {
+      throw new Error('threadResolved is only supported for normal comments. Use state for BLOCKER comment tasks.');
+    }
+
+    const commentPath = (targetSeverity === 'BLOCKER' || current.severity === 'BLOCKER')
+      ? `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/blocker-comments/${args.commentId}`
+      : `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/comments/${args.commentId}`;
+
+    const buildBody = (version: number): Record<string, unknown> => {
+      const body: Record<string, unknown> = { version };
+      if (args.text !== undefined) body.text = validateCommentText(args.text);
+      if (args.state && targetSeverity === 'BLOCKER') body.state = args.state;
+      if (args.severity) body.severity = args.severity;
+      if (args.threadResolved !== undefined) {
+        body.threadResolved = args.threadResolved;
+      }
+      return body;
+    };
+
+    let updated: BBComment | null;
+    try {
+      updated = await this.request<BBComment>(
+        'PUT',
+        commentPath,
+        buildBody(current.version)
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.includes('Bitbucket 409')) throw error;
+
+      const latest = await this.request<BBComment>('GET', commentPath);
+      if (!latest) throw error;
+
+      updated = await this.request<BBComment>(
+        'PUT',
+        commentPath,
+        buildBody(latest.version)
+      );
+    }
 
     if (!updated) return text(`Comment #${args.commentId} updated.`);
     const state = updated.state ?? current.state ?? 'OPEN';
     const severity = updated.severity ?? current.severity ?? 'NORMAL';
-    return text(`Comment #${updated.id} updated (${state}/${severity}).`);
+    const threadResolved = updated.threadResolved ?? current.threadResolved;
+    const threadStatus = threadResolved === undefined ? '' : `, thread=${threadResolved ? 'RESOLVED' : 'OPEN'}`;
+    return text(`Comment #${updated.id} updated (${state}/${severity}${threadStatus}).`);
   }
 
   async deletePrComment(args: {

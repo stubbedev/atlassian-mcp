@@ -516,7 +516,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           repo:       { type: 'string', description: 'Alias for repoSlug' },
           prId:       { type: 'number', description: 'Pull request number (PR ID)' },
           path:       { type: 'string', description: 'Optional file path filter, e.g. "src/index.ts"' },
-          state:      { type: 'string', enum: ['OPEN', 'RESOLVED', 'PENDING'], description: 'Comment state filter (default OPEN; BLOCKER mode supports OPEN/RESOLVED)', default: 'OPEN' },
+          state:      { type: 'string', enum: ['OPEN', 'RESOLVED', 'PENDING'], description: 'State filter. For normal comments this maps to threadResolved (OPEN/RESOLVED). For BLOCKER tasks this uses task state (OPEN/RESOLVED; PENDING allowed only for non-BLOCKER).', default: 'OPEN' },
           severity:   { type: 'string', enum: ['ALL', 'NORMAL', 'BLOCKER'], description: 'Comment severity filter. BLOCKER means task/checklist-style review comments.', default: 'ALL' },
           countOnly:  { type: 'boolean', description: 'When true with severity=BLOCKER, returns counts instead of comment bodies', default: false },
           limit:      { type: 'number', description: 'Max items per page (default 50)', default: 50 },
@@ -544,7 +544,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'bitbucket_update_pr_comment',
-      description: 'Use when you want to edit PR comments, resolve/reopen them, or mark comments as task-style BLOCKER items. Keep comments concise, plain text, and free of filler. Never include emojis. You can pass projectKey/repoSlug or project/repo.',
+      description: 'Use when you want to edit PR comments, resolve/reopen normal discussion threads, or manage task-style BLOCKER comments. Hint: for normal comments, resolve/reopen means threadResolved; for BLOCKER tasks, resolve/reopen uses state. Keep comments concise, plain text, and free of filler. Never include emojis. You can pass projectKey/repoSlug or project/repo.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -555,7 +555,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           prId:       { type: 'number', description: 'Pull request number (PR ID)' },
           commentId:  { type: 'number', description: 'Comment ID to update' },
           text:       { type: 'string', description: 'New concise comment text only. No filler. Do not include emojis. (optional)' },
-          state:      { type: 'string', enum: ['OPEN', 'RESOLVED'], description: 'Comment state (optional)' },
+          state:      { type: 'string', enum: ['OPEN', 'RESOLVED'], description: 'Task state for BLOCKER comments only (optional). Rejected for normal comments; use threadResolved instead.' },
+          threadResolved: { type: 'boolean', description: 'Resolve/reopen normal comment threads in Bitbucket UI only (optional). Rejected for BLOCKER comments; use state instead.' },
           severity:   { type: 'string', enum: ['NORMAL', 'BLOCKER'], description: 'Comment severity (optional). BLOCKER marks it as a task/checklist item.' },
         },
         required: ['prId', 'commentId'],

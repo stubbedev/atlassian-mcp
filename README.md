@@ -52,7 +52,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 | `bitbucket_decline_pr` | Decline a pull request |
 | `bitbucket_get_pr_comments` | Get PR comment threads in bulk, including task-style BLOCKER comments and blocker counts |
 | `bitbucket_add_pr_comment` | Add a top-level PR comment or reply to an existing comment |
-| `bitbucket_update_pr_comment` | Update comment text, state, or severity (`BLOCKER` = task/checklist item) |
+| `bitbucket_update_pr_comment` | Update comment text/severity, resolve or reopen normal threads via `threadResolved`, and resolve/reopen BLOCKER tasks via `state` (strictly enforced) |
 | `bitbucket_delete_pr_comment` | Delete a PR comment by comment ID |
 | `bitbucket_get_pr_commits` | List commits included in a pull request |
 | `bitbucket_get_branches` | List branches in a repository |
@@ -76,6 +76,8 @@ All list tools support `limit` and `start`/`startAt` for pagination.
 - "show review comments on PR 42" → `bitbucket_get_pr_comments`
 - "give me one full overview of PR 42" → `bitbucket_get_pr_overview`
 - "how many open blockers are on PR 42" → `bitbucket_get_pr_comments` with `severity=BLOCKER` and `countOnly=true`
+- "resolve this review thread on PR 42" → `bitbucket_update_pr_comment` with `threadResolved=true`
+- "resolve this blocker task on PR 42" → `bitbucket_update_pr_comment` with `severity=BLOCKER` and `state=RESOLVED`
 - "move FOO-123 to In Progress" → `jira_transition_issue` with `transitionName="In Progress"`
 - "find bugs assigned to me in PAY project" → `jira_search_issues`
 - "give me my coding context for this branch" → `get_dev_context`
