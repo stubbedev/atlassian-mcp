@@ -580,17 +580,31 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'bitbucket_add_pr_comment',
-      description: 'Use when you want to add a PR review comment or reply to an existing thread. Keep comments concise, plain text, and free of filler. Never include emojis. You can pass projectKey/repoSlug or project/repo.',
+      description: `Add a PR review comment or reply to an existing thread.
+
+INLINE COMMENTS ARE STRONGLY PREFERRED: Whenever your comment refers to a specific line or block of code, you MUST provide filePath and line to anchor it as an inline comment on the diff. General top-level comments (no filePath/line) should only be used for overall PR feedback that does not relate to any particular line.
+
+SUGGESTIONS ARE STRONGLY PREFERRED OVER PLAIN COMMENTS: When you are pointing out something that should be changed, always provide a suggestion (the corrected code) rather than describing the change in words. A suggestion lets the author apply the fix with one click. Only omit suggestion if you are asking a question or raising a concern that has no clear single answer.
+
+Keep comments concise, plain text, and free of filler. Never include emojis. You can pass projectKey/repoSlug or project/repo.`,
       inputSchema: {
         type: 'object',
         properties: {
-          projectKey: { type: 'string', description: 'Bitbucket project code, e.g. "ENG" (usually auto-detected)' },
-          project:    { type: 'string', description: 'Alias for projectKey' },
-          repoSlug:   { type: 'string', description: 'Repository slug, e.g. "payments-service" (usually auto-detected)' },
-          repo:       { type: 'string', description: 'Alias for repoSlug' },
-          prId:       { type: 'number', description: 'Pull request number (PR ID)' },
-          parentCommentId: { type: 'number', description: 'Parent comment ID for reply mode (optional)' },
-          text:       { type: 'string', description: 'Concise comment text only. No filler. Do not include emojis.' },
+          projectKey:             { type: 'string', description: 'Bitbucket project code, e.g. "ENG" (usually auto-detected)' },
+          project:                { type: 'string', description: 'Alias for projectKey' },
+          repoSlug:               { type: 'string', description: 'Repository slug, e.g. "payments-service" (usually auto-detected)' },
+          repo:                   { type: 'string', description: 'Alias for repoSlug' },
+          prId:                   { type: 'number', description: 'Pull request number (PR ID)' },
+          parentCommentId:        { type: 'number', description: 'Parent comment ID for reply mode (optional)' },
+          text:                   { type: 'string', description: 'Concise comment text. No filler. Do not include emojis. If suggestion is also provided, this text appears above the suggestion block.' },
+          filePath:               { type: 'string', description: 'Destination file path for inline comment, e.g. "src/index.ts". Must be provided together with line.' },
+          srcPath:                { type: 'string', description: 'Source file path. Only needed when the file was renamed; otherwise omit (defaults to filePath).' },
+          line:                   { type: 'number', description: 'Line number in the file to anchor the comment to. Must be provided together with filePath.' },
+          lineType:               { type: 'string', enum: ['ADDED', 'REMOVED', 'CONTEXT'], description: 'The type of the anchored line in the diff. Defaults to ADDED. Use CONTEXT for unchanged lines, REMOVED for deleted lines.' },
+          fileType:               { type: 'string', enum: ['TO', 'FROM'], description: 'Which side of the diff the anchor refers to: TO (destination/new file, default) or FROM (source/old file).' },
+          multilineStartLine:     { type: 'number', description: 'First line of a multiline anchor. Set together with line (last line) to span multiple lines.' },
+          multilineStartLineType: { type: 'string', enum: ['ADDED', 'REMOVED', 'CONTEXT'], description: 'Line type for the multilineStartLine. Defaults to lineType.' },
+          suggestion:             { type: 'string', description: 'Replacement code to suggest. Rendered as a suggestion block the author can apply with one click. STRONGLY PREFERRED whenever you are proposing a code change. Must be used with filePath and line.' },
         },
         required: ['prId', 'text'],
       },

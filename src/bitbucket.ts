@@ -47,8 +47,8 @@ interface BBPullRequest {
   description?: string;
   state: string;
   author: { user: { displayName: string; name: string } };
-  fromRef: { displayId: string; repository: { slug: string; project: { key: string } } };
-  toRef: { displayId: string; repository: { slug: string; project: { key: string } } };
+  fromRef: { displayId: string; latestCommit?: string; repository: { slug: string; project: { key: string } } };
+  toRef: { displayId: string; latestCommit?: string; repository: { slug: string; project: { key: string } } };
   reviewers: Array<{ user: { displayName: string; name?: string }; approved: boolean }>;
   links?: { self?: Array<{ href: string }> };
 }
@@ -980,10 +980,48 @@ export class BitbucketClient {
     prId: number;
     parentCommentId?: number;
     text: string;
+    filePath?: string;
+    srcPath?: string;
+    line?: number;
+    lineType?: 'ADDED' | 'REMOVED' | 'CONTEXT';
+    fileType?: 'TO' | 'FROM';
+    multilineStartLine?: number;
+    multilineStartLineType?: 'ADDED' | 'REMOVED' | 'CONTEXT';
+    suggestion?: string;
   }): Promise<ToolResult> {
     const { projectKey, repoSlug } = this.resolveProjectAndRepo(args.projectKey, args.repoSlug);
-    const body: Record<string, unknown> = { text: validateCommentText(args.text) };
+
+    let commentText = args.text;
+    if (args.suggestion !== undefined) {
+      const suggestionBlock = `\`\`\`suggestion\n${args.suggestion}\n\`\`\``;
+      commentText = args.text ? `${args.text}\n\n${suggestionBlock}` : suggestionBlock;
+    }
+
+    const body: Record<string, unknown> = { text: validateCommentText(commentText) };
     if (args.parentCommentId) body.parent = { id: args.parentCommentId };
+
+    if (args.filePath !== undefined && args.line !== undefined) {
+      const pr = await this.request<BBPullRequest>(
+        'GET',
+        `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}`
+      );
+      const anchor: Record<string, unknown> = {
+        diffType: 'EFFECTIVE',
+        fileType: args.fileType ?? 'TO',
+        fromHash: pr?.fromRef.latestCommit ?? '',
+        toHash: pr?.toRef.latestCommit ?? '',
+        line: args.line,
+        lineType: args.lineType ?? 'ADDED',
+        path: args.filePath,
+        srcPath: args.srcPath ?? args.filePath,
+      };
+      if (args.multilineStartLine !== undefined) {
+        anchor.multilineStartLine = args.multilineStartLine;
+        anchor.multilineStartLineType = args.multilineStartLineType ?? args.lineType ?? 'ADDED';
+      }
+      body.anchor = anchor;
+    }
+
     const created = await this.request<BBComment>(
       'POST',
       `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/comments`,
@@ -993,7 +1031,8 @@ export class BitbucketClient {
     if (args.parentCommentId) {
       return text(`Reply #${created.id} added to comment #${args.parentCommentId} on PR #${args.prId}.`);
     }
-    return text(`Comment #${created.id} added to PR #${args.prId}.`);
+    const location = args.filePath && args.line ? ` on ${args.filePath}:${args.line}` : '';
+    return text(`Comment #${created.id} added to PR #${args.prId}${location}.`);
   }
 
   async updatePrComment(args: {
