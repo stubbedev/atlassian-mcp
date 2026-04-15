@@ -55,7 +55,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     // ── Context ───────────────────────────────────────────────────────────
     {
       name: 'get_dev_context',
-      description: 'Use when you want one quick snapshot before coding or reviewing: current git branch/status, Jira tickets detected from branch name, and the open Bitbucket PR for that branch.',
+      description: 'Use when you want one quick snapshot before coding or reviewing: current git branch/status, Jira tickets detected from branch name, and the open Bitbucket PR for that branch. For review requests, use this first to resolve the branch and PR without assuming it is in your personal inbox.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -322,7 +322,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'bitbucket_list_pull_requests',
-      description: 'Use when you want pull requests for a repo (open, merged, or declined) with pagination. You can pass projectKey/repoSlug or project/repo.',
+      description: 'Use when you want pull requests for a repo (open, merged, or declined) with pagination. Primary review-discovery flow: resolve the branch, then filter by fromBranch to find the PR for that branch (do not assume it is your own PR). You can pass projectKey/repoSlug or project/repo.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -340,7 +340,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'bitbucket_my_prs',
-      description: 'Use when you want your personal PR inbox (reviews requested, authored by you, or participated PRs).',
+      description: 'Use only when you explicitly want your personal PR inbox (reviews requested, authored by you, or participated PRs). Do not use this for branch-based review targeting.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -367,7 +367,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'bitbucket_get_pr_overview',
-      description: 'Use when you want one bulk PR snapshot in a single call: metadata, commits, comments, task-style BLOCKER comments, and optional diff.',
+      description: 'Use when you want one bulk PR snapshot in a single call: metadata, commits, comments, task-style BLOCKER comments, and optional diff. If prId is unknown during review, discover it from branch context first (get_dev_context or bitbucket_list_pull_requests with fromBranch).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -559,7 +559,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'bitbucket_get_pr_comments',
-      description: 'Use when you want PR review discussion in bulk: comment threads, task-style BLOCKER comments, and blocker counts with pagination. You can pass projectKey/repoSlug or project/repo.',
+      description: 'Use when you want PR review discussion in bulk: comment threads, task-style BLOCKER comments, and blocker counts with pagination. For review tasks, locate PR by branch first instead of assuming it is in your inbox. You can pass projectKey/repoSlug or project/repo.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -581,6 +581,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'bitbucket_add_pr_comment',
       description: `Add a PR review comment or reply to an existing thread.
+
+FOR REVIEW FEEDBACK, DEFAULT TO INLINE + EXAMPLE: Prefer anchored inline comments with a concrete code change example (suggestion) over top-level prose. Use top-level comments only for overall PR-wide feedback.
 
 INLINE COMMENTS ARE STRONGLY PREFERRED: Whenever your comment refers to a specific line or block of code, you MUST provide filePath and line to anchor it as an inline comment on the diff. General top-level comments (no filePath/line) should only be used for overall PR feedback that does not relate to any particular line.
 

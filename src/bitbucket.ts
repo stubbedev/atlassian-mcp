@@ -1003,33 +1003,66 @@ export class BitbucketClient {
     const body: Record<string, unknown> = { text: validateCommentText(commentText) };
     if (args.parentCommentId) body.parent = { id: args.parentCommentId };
 
-    if (args.filePath !== undefined && args.line !== undefined) {
+    let inlineAnchor: Record<string, unknown> | undefined;
+    if (args.filePath !== undefined || args.line !== undefined) {
+      if (args.filePath === undefined || args.line === undefined) {
+        throw new Error('filePath and line must be provided together for inline comments.');
+      }
+
       const pr = await this.request<BBPullRequest>(
         'GET',
         `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}`
       );
-      const anchor: Record<string, unknown> = {
+
+      inlineAnchor = {
         diffType: 'EFFECTIVE',
         fileType: args.fileType ?? 'TO',
-        fromHash: pr?.fromRef.latestCommit ?? '',
-        toHash: pr?.toRef.latestCommit ?? '',
         line: args.line,
         lineType: args.lineType ?? 'ADDED',
         path: args.filePath,
-        srcPath: args.srcPath ?? args.filePath,
       };
-      if (args.multilineStartLine !== undefined) {
-        anchor.multilineStartLine = args.multilineStartLine;
-        anchor.multilineStartLineType = args.multilineStartLineType ?? args.lineType ?? 'ADDED';
+
+      if (args.srcPath !== undefined) {
+        inlineAnchor.srcPath = args.srcPath;
       }
-      body.anchor = anchor;
+
+      const fromHash = pr?.toRef.latestCommit;
+      const toHash = pr?.fromRef.latestCommit;
+      if (fromHash && toHash) {
+        inlineAnchor.fromHash = fromHash;
+        inlineAnchor.toHash = toHash;
+      }
+
+      if (args.multilineStartLine !== undefined) {
+        inlineAnchor.multilineStartLine = args.multilineStartLine;
+        inlineAnchor.multilineStartLineType = args.multilineStartLineType ?? args.lineType ?? 'ADDED';
+      }
+
+      body.anchor = inlineAnchor;
     }
 
-    const created = await this.request<BBComment>(
-      'POST',
-      `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/comments`,
-      body
-    );
+    let created: BBComment | null;
+    try {
+      created = await this.request<BBComment>(
+        'POST',
+        `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/comments`,
+        body
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!inlineAnchor || !message.includes('Bitbucket 409') || !('fromHash' in inlineAnchor) || !('toHash' in inlineAnchor)) {
+        throw error;
+      }
+
+      const { fromHash: _fromHash, toHash: _toHash, ...anchorWithoutHashes } = inlineAnchor;
+      body.anchor = anchorWithoutHashes;
+      created = await this.request<BBComment>(
+        'POST',
+        `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/comments`,
+        body
+      );
+    }
+
     if (!created) return text(`Comment added to PR #${args.prId}.`);
     if (args.parentCommentId) {
       return text(`Reply #${created.id} added to comment #${args.parentCommentId} on PR #${args.prId}.`);
