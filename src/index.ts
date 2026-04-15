@@ -367,7 +367,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'bitbucket_get_pr_overview',
-      description: 'Use when you want one bulk PR snapshot in a single call: metadata, commits, comments, task-style BLOCKER comments, and optional diff. If prId is unknown during review, discover it from branch context first (get_dev_context or bitbucket_list_pull_requests with fromBranch).',
+      description: 'Use when you want one bulk PR snapshot in a single call: metadata, commits, comments, task-style BLOCKER comments, and optional diff. If prId is unknown during review, discover it from branch context first (get_dev_context or bitbucket_list_pull_requests with fromBranch). For complete file context while reviewing, follow up with bitbucket_get_file at the PR source ref instead of relying on local checkout state.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -392,7 +392,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'bitbucket_get_pr_diff',
-      description: 'Use when you want the code changes for one PR as a unified diff. You can pass projectKey/repoSlug or project/repo.',
+      description: 'Use when you want the code changes for one PR as a unified diff. During review, treat this as patch context only and fetch full files with bitbucket_get_file (using the PR source ref) before making final judgments. You can pass projectKey/repoSlug or project/repo.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -665,7 +665,7 @@ Keep comments concise, plain text, and free of filler. Never include emojis. You
     },
     {
       name: 'bitbucket_get_file',
-      description: 'Use when you want raw file content from Bitbucket at a branch, tag, or commit. You can pass projectKey/repoSlug or project/repo.',
+      description: 'Use when you want raw file content from Bitbucket at a branch, tag, or commit. In PR reviews, this is the preferred way to get full-file context so review quality does not depend on having the reviewed branch checked out locally. You can pass projectKey/repoSlug or project/repo.',
       inputSchema: {
         type: 'object',
         properties: {
