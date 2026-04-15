@@ -45,7 +45,9 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 | `bitbucket_get_pull_request` | Get pull request details |
 | `bitbucket_get_pr_overview` | Get a one-call PR overview: metadata, commits, comments, task-style BLOCKER comments, and optional diff |
 | `bitbucket_get_pr_diff` | Get the code diff for a pull request |
-| `bitbucket_create_pull_request` | Create a new pull request |
+| `bitbucket_create_pull_request` | Create a new pull request (checks for an existing open PR from the source branch first) |
+| `bitbucket_update_pull_request` | Update pull request title, description, destination branch, or reviewers |
+| `bitbucket_mutate_pull_request` | Create or update a pull request in one call (target by PR ID or source branch) |
 | `bitbucket_approve_pr` | Approve a pull request |
 | `bitbucket_unapprove_pr` | Remove your approval from a pull request |
 | `bitbucket_merge_pr` | Merge a pull request |
@@ -73,6 +75,8 @@ All list tools support `limit` and `start`/`startAt` for pagination.
 - "show my PRs waiting for review" → `bitbucket_my_prs`
 - "list open PRs for this repo from branch feature/ABC-123" → `bitbucket_list_pull_requests`
 - "open a PR from my current branch to master" → `bitbucket_create_pull_request`
+- "update PR 42 title and reviewers" → `bitbucket_update_pull_request`
+- "create or update PR from this branch in one call" → `bitbucket_mutate_pull_request`
 - "show review comments on PR 42" → `bitbucket_get_pr_comments`
 - "give me one full overview of PR 42" → `bitbucket_get_pr_overview`
 - "how many open blockers are on PR 42" → `bitbucket_get_pr_comments` with `severity=BLOCKER` and `countOnly=true`
@@ -113,7 +117,7 @@ The `$schema` field is optional but enables editor autocomplete and validation.
   - Jira: `project` (alias of `projectKey`)
   - Bitbucket: `project` and `repo` (aliases of `projectKey` and `repoSlug`)
 - For Bitbucket tools, `projectKey` and `repoSlug` are usually auto-detected from your local `origin` remote.
-- `bitbucket_create_pull_request` also auto-detects `fromBranch` from your current branch.
+- `bitbucket_create_pull_request` also auto-detects `fromBranch` from your current branch and returns the existing open PR if one already exists for that branch.
 - Jira project-scoped calls accept `projectKey` and work best when provided.
 - If `projectKey` is omitted for Jira issue creation/type lookup, the server tries to infer it from your current branch ticket key, falls back to auto-select when only one project is visible, and otherwise returns a numbered project list to pick from.
 

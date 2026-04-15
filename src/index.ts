@@ -424,7 +424,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'bitbucket_create_pull_request',
-      description: 'Use when you want to open a new PR. Project/repo auto-detect from git remote, source branch auto-detects from current branch if omitted, and you can pass projectKey/repoSlug or project/repo.',
+      description: 'Use when you want to open a new PR. Project/repo auto-detect from git remote, source branch auto-detects from current branch if omitted, and this call first checks for an existing open PR from that source branch.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -439,6 +439,59 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           reviewers:   { type: 'array', items: { type: 'string' }, description: 'Reviewer usernames (optional)' },
         },
         required: ['title'],
+      },
+    },
+    {
+      name: 'bitbucket_update_pull_request',
+      description: 'Use when you want to update an existing PR title, description, destination branch, or reviewers. You can pass projectKey/repoSlug or project/repo.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          projectKey:  { type: 'string', description: 'Bitbucket project code, e.g. "ENG" (usually auto-detected)' },
+          project:     { type: 'string', description: 'Alias for projectKey' },
+          repoSlug:    { type: 'string', description: 'Repository slug, e.g. "payments-service" (usually auto-detected)' },
+          repo:        { type: 'string', description: 'Alias for repoSlug' },
+          prId:        { type: 'number', description: 'Pull request number (PR ID)' },
+          title:       { type: 'string', description: 'Updated PR title (optional)' },
+          description: { type: 'string', description: 'Updated PR description, or empty string to clear (optional)' },
+          toBranch:    { type: 'string', description: 'Updated target branch name (optional)' },
+          reviewers:   { type: 'array', items: { type: 'string' }, description: 'Updated reviewer usernames (optional). Pass an empty array to clear reviewers.' },
+        },
+        required: ['prId'],
+      },
+    },
+    {
+      name: 'bitbucket_mutate_pull_request',
+      description: 'Use when you want one ergonomic PR mutation call: target a PR by prId, or auto-target the open PR from create.fromBranch/current branch, then optionally update it; if none exists and create is provided, create a new PR.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          projectKey:  { type: 'string', description: 'Bitbucket project code, e.g. "ENG" (usually auto-detected)' },
+          project:     { type: 'string', description: 'Alias for projectKey' },
+          repoSlug:    { type: 'string', description: 'Repository slug, e.g. "payments-service" (usually auto-detected)' },
+          repo:        { type: 'string', description: 'Alias for repoSlug' },
+          prId:        { type: 'number', description: 'Target pull request number (optional). If omitted, tool targets the open PR for create.fromBranch/current branch.' },
+          create: {
+            type: 'object',
+            properties: {
+              title:       { type: 'string', description: 'PR title' },
+              description: { type: 'string', description: 'PR description (optional)' },
+              fromBranch:  { type: 'string', description: 'Source branch to target/create from (defaults to current branch)' },
+              toBranch:    { type: 'string', description: 'Destination branch (default: master when creating)' },
+              reviewers:   { type: 'array', items: { type: 'string' }, description: 'Reviewer usernames (optional)' },
+            },
+            required: ['title'],
+          },
+          update: {
+            type: 'object',
+            properties: {
+              title:       { type: 'string', description: 'Updated PR title (optional)' },
+              description: { type: 'string', description: 'Updated PR description, or empty string to clear (optional)' },
+              toBranch:    { type: 'string', description: 'Updated target branch (optional)' },
+              reviewers:   { type: 'array', items: { type: 'string' }, description: 'Updated reviewer usernames (optional). Pass an empty array to clear reviewers.' },
+            },
+          },
+        },
       },
     },
     {
@@ -706,6 +759,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return await bitbucket.getPrCommits(normalizeBitbucketArgs(args) as Parameters<typeof bitbucket.getPrCommits>[0]);
       case 'bitbucket_create_pull_request':
         return await bitbucket.createPullRequest(normalizeBitbucketArgs(args) as Parameters<typeof bitbucket.createPullRequest>[0]);
+      case 'bitbucket_update_pull_request':
+        return await bitbucket.updatePullRequest(normalizeBitbucketArgs(args) as Parameters<typeof bitbucket.updatePullRequest>[0]);
+      case 'bitbucket_mutate_pull_request':
+        return await bitbucket.mutatePullRequest(normalizeBitbucketArgs(args) as Parameters<typeof bitbucket.mutatePullRequest>[0]);
       case 'bitbucket_approve_pr':
         return await bitbucket.approvePr(normalizeBitbucketArgs(args) as Parameters<typeof bitbucket.approvePr>[0]);
       case 'bitbucket_unapprove_pr':

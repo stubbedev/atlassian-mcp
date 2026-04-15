@@ -49,7 +49,7 @@ interface BBPullRequest {
   author: { user: { displayName: string; name: string } };
   fromRef: { displayId: string; repository: { slug: string; project: { key: string } } };
   toRef: { displayId: string; repository: { slug: string; project: { key: string } } };
-  reviewers: Array<{ user: { displayName: string }; approved: boolean }>;
+  reviewers: Array<{ user: { displayName: string; name?: string }; approved: boolean }>;
   links?: { self?: Array<{ href: string }> };
 }
 
@@ -122,6 +122,10 @@ function text(t: string): ToolResult {
 
 function toBranchRef(branch: string): string {
   return branch.startsWith('refs/') ? branch : `refs/heads/${branch}`;
+}
+
+function branchDisplayId(branch: string): string {
+  return branch.replace(/^refs\/heads\//, '');
 }
 
 function formatDate(ms: number): string {
@@ -340,11 +344,20 @@ export class BitbucketClient {
 
   // Used internally by context tools — finds the open PR for a given source branch
   async findOpenPrForBranch(projectKey: string, repoSlug: string, branch: string): Promise<BBPullRequest | null> {
-    const data = await this.request<BBPagedResult<BBPullRequest>>(
-      'GET',
-      `/projects/${projectKey}/repos/${repoSlug}/pull-requests?state=OPEN&limit=50`
-    );
-    return data?.values.find((pr) => pr.fromRef.displayId === branch) ?? null;
+    const targetBranch = branchDisplayId(branch);
+    let start = 0;
+
+    while (true) {
+      const data = await this.request<BBPagedResult<BBPullRequest>>(
+        'GET',
+        `/projects/${projectKey}/repos/${repoSlug}/pull-requests?state=OPEN&limit=50&start=${start}`
+      );
+
+      const match = data?.values.find((pr) => branchDisplayId(pr.fromRef.displayId) === targetBranch) ?? null;
+      if (match) return match;
+      if (!data || data.isLastPage || data.nextPageStart === undefined) return null;
+      start = data.nextPageStart;
+    }
   }
 
   async listRepos(args: { projectKey?: string; limit?: number; start?: number }): Promise<ToolResult> {
@@ -571,6 +584,16 @@ export class BitbucketClient {
     if (!sourceBranch || sourceBranch === 'HEAD') {
       throw new Error('Could not determine source branch. Provide fromBranch or run from a checked-out branch.');
     }
+
+    const sourceBranchName = branchDisplayId(sourceBranch);
+    const existing = await this.findOpenPrForBranch(projectKey, repoSlug, sourceBranchName);
+    if (existing) {
+      const url = this.pullRequestUrl(projectKey, repoSlug, existing.id, existing);
+      return text(
+        `Open PR already exists for branch "${sourceBranchName}": #${existing.id} "${existing.title}"\n${url}`
+      );
+    }
+
     const { title, description, toBranch = 'master', reviewers = [] } = args;
     const body = {
       title,
@@ -587,6 +610,162 @@ export class BitbucketClient {
     if (!data) return text('Pull request created.');
     const url = this.pullRequestUrl(projectKey, repoSlug, data.id, data);
     return text(`Created PR #${data.id}: "${data.title}"\n${url}`);
+  }
+
+  async updatePullRequest(args: {
+    projectKey?: string;
+    repoSlug?: string;
+    prId: number;
+    title?: string;
+    description?: string;
+    toBranch?: string;
+    reviewers?: string[];
+  }): Promise<ToolResult> {
+    const { projectKey, repoSlug } = this.resolveProjectAndRepo(args.projectKey, args.repoSlug);
+    if (
+      args.title === undefined
+      && args.description === undefined
+      && args.toBranch === undefined
+      && args.reviewers === undefined
+    ) {
+      throw new Error('At least one field is required: title, description, toBranch, or reviewers');
+    }
+
+    const existing = await this.request<BBPullRequest>(
+      'GET',
+      `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}`
+    );
+    if (!existing) throw new Error(`PR #${args.prId} not found.`);
+
+    const buildBody = (version: number): Record<string, unknown> => {
+      const body: Record<string, unknown> = { version };
+      if (args.title !== undefined) body.title = args.title;
+      if (args.description !== undefined) body.description = args.description;
+      if (args.toBranch !== undefined) {
+        body.toRef = {
+          id: toBranchRef(args.toBranch),
+          repository: { slug: repoSlug, project: { key: projectKey } },
+        };
+      }
+      if (args.reviewers !== undefined) {
+        body.reviewers = args.reviewers.map((name) => ({ user: { name } }));
+      }
+      return body;
+    };
+
+    let updated: BBPullRequest | null;
+    try {
+      updated = await this.request<BBPullRequest>(
+        'PUT',
+        `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}`,
+        buildBody(existing.version)
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.includes('Bitbucket 409')) throw error;
+
+      const latest = await this.request<BBPullRequest>(
+        'GET',
+        `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}`
+      );
+      if (!latest) throw error;
+
+      updated = await this.request<BBPullRequest>(
+        'PUT',
+        `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}`,
+        buildBody(latest.version)
+      );
+    }
+
+    if (!updated) return text(`Updated PR #${args.prId}.`);
+    const url = this.pullRequestUrl(projectKey, repoSlug, updated.id, updated);
+    return text(`Updated PR #${updated.id}: "${updated.title}" (${updated.fromRef.displayId} → ${updated.toRef.displayId}).\n${url}`);
+  }
+
+  async mutatePullRequest(args: {
+    projectKey?: string;
+    repoSlug?: string;
+    prId?: number;
+    create?: {
+      title: string;
+      description?: string;
+      fromBranch?: string;
+      toBranch?: string;
+      reviewers?: string[];
+    };
+    update?: {
+      title?: string;
+      description?: string;
+      toBranch?: string;
+      reviewers?: string[];
+    };
+  }): Promise<ToolResult> {
+    const { projectKey, repoSlug } = this.resolveProjectAndRepo(args.projectKey, args.repoSlug);
+
+    const hasUpdate = args.update !== undefined && (
+      args.update.title !== undefined
+      || args.update.description !== undefined
+      || args.update.toBranch !== undefined
+      || args.update.reviewers !== undefined
+    );
+
+    if (args.prId !== undefined) {
+      if (!hasUpdate) {
+        return this.getPullRequest({ projectKey, repoSlug, prId: args.prId });
+      }
+      return this.updatePullRequest({
+        projectKey,
+        repoSlug,
+        prId: args.prId,
+        ...args.update,
+      });
+    }
+
+    const sourceBranch = args.create?.fromBranch ?? safeExec('git rev-parse --abbrev-ref HEAD');
+    if (!sourceBranch || sourceBranch === 'HEAD') {
+      if (args.create) {
+        return this.createPullRequest({
+          projectKey,
+          repoSlug,
+          title: args.create.title,
+          description: args.create.description,
+          fromBranch: args.create.fromBranch,
+          toBranch: args.create.toBranch,
+          reviewers: args.create.reviewers,
+        });
+      }
+      throw new Error('Could not determine source branch. Provide create.fromBranch or run from a checked-out branch.');
+    }
+
+    const existing = await this.findOpenPrForBranch(projectKey, repoSlug, sourceBranch);
+    if (existing) {
+      if (hasUpdate) {
+        return this.updatePullRequest({
+          projectKey,
+          repoSlug,
+          prId: existing.id,
+          ...args.update,
+        });
+      }
+
+      return this.getPullRequest({ projectKey, repoSlug, prId: existing.id });
+    }
+
+    if (!args.create) {
+      throw new Error(
+        `No open PR found for branch "${branchDisplayId(sourceBranch)}". Provide create to open one.`
+      );
+    }
+
+    return this.createPullRequest({
+      projectKey,
+      repoSlug,
+      title: args.create.title,
+      description: args.create.description,
+      fromBranch: args.create.fromBranch,
+      toBranch: args.create.toBranch,
+      reviewers: args.create.reviewers,
+    });
   }
 
   async approvePr(args: { projectKey?: string; repoSlug?: string; prId: number }): Promise<ToolResult> {
