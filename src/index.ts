@@ -559,7 +559,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'bitbucket_get_pr_comments',
-      description: 'Use when you want PR review discussion in bulk: comment threads, task-style BLOCKER comments, and blocker counts with pagination. For review tasks, locate PR by branch first instead of assuming it is in your inbox. You can pass projectKey/repoSlug or project/repo.',
+      description: 'Use when you want PR review discussion in bulk: comment threads, task-style BLOCKER comments, and blocker counts with pagination. The returned comment IDs are used as commentId in bitbucket_add_pr_comment (reply mode), bitbucket_update_pr_comment, and bitbucket_delete_pr_comment. For review tasks, locate PR by branch first instead of assuming it is in your inbox. You can pass projectKey/repoSlug or project/repo.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -582,6 +582,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: 'bitbucket_add_pr_comment',
       description: `Add a PR review comment or reply to an existing thread.
 
+REPLIES TO SPECIFIC COMMENTS ARE MANDATORY: If your remark is about an existing comment/thread, you MUST reply in that thread by setting commentId. Do not post a new top-level PR comment or a new inline thread for follow-up remarks on an existing comment.
+
 FOR REVIEW FEEDBACK, DEFAULT TO INLINE + EXAMPLE: Prefer anchored inline comments with a concrete code change example (suggestion) over top-level prose. Use top-level comments only for overall PR-wide feedback.
 
 INLINE COMMENTS ARE STRONGLY PREFERRED: Whenever your comment refers to a specific line or block of code, you MUST provide filePath and line to anchor it as an inline comment on the diff. General top-level comments (no filePath/line) should only be used for overall PR feedback that does not relate to any particular line.
@@ -597,7 +599,7 @@ Keep comments concise, plain text, and free of filler. Never include emojis. You
           repoSlug:               { type: 'string', description: 'Repository slug, e.g. "payments-service" (usually auto-detected)' },
           repo:                   { type: 'string', description: 'Alias for repoSlug' },
           prId:                   { type: 'number', description: 'Pull request number (PR ID)' },
-          parentCommentId:        { type: 'number', description: 'Parent comment ID for reply mode (optional)' },
+          commentId:              { type: 'number', description: 'Comment ID to reply to. Same identifier style as update/delete tools (optional).' },
           text:                   { type: 'string', description: 'Concise comment text. No filler. Do not include emojis. If suggestion is also provided, this text appears above the suggestion block.' },
           filePath:               { type: 'string', description: 'Destination file path for inline comment, e.g. "src/index.ts". Must be provided together with line.' },
           srcPath:                { type: 'string', description: 'Source file path. Only needed when the file was renamed; otherwise omit (defaults to filePath).' },

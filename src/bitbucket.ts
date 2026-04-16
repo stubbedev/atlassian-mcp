@@ -981,7 +981,7 @@ export class BitbucketClient {
     projectKey?: string;
     repoSlug?: string;
     prId: number;
-    parentCommentId?: number;
+    commentId?: number;
     text: string;
     filePath?: string;
     srcPath?: string;
@@ -994,6 +994,22 @@ export class BitbucketClient {
   }): Promise<ToolResult> {
     const { projectKey, repoSlug } = this.resolveProjectAndRepo(args.projectKey, args.repoSlug);
 
+    const replyToCommentId = args.commentId;
+    if (
+      replyToCommentId !== undefined
+      && (
+        args.filePath !== undefined
+        || args.srcPath !== undefined
+        || args.line !== undefined
+        || args.lineType !== undefined
+        || args.fileType !== undefined
+        || args.multilineStartLine !== undefined
+        || args.multilineStartLineType !== undefined
+      )
+    ) {
+      throw new Error('Replies must target an existing comment thread only. Omit filePath/line and other anchor fields when replying.');
+    }
+
     let commentText = args.text;
     if (args.suggestion !== undefined) {
       const suggestionBlock = `\`\`\`suggestion\n${args.suggestion}\n\`\`\``;
@@ -1001,7 +1017,7 @@ export class BitbucketClient {
     }
 
     const body: Record<string, unknown> = { text: validateCommentText(commentText) };
-    if (args.parentCommentId) body.parent = { id: args.parentCommentId };
+    if (replyToCommentId !== undefined) body.parent = { id: replyToCommentId };
 
     let inlineAnchor: Record<string, unknown> | undefined;
     if (args.filePath !== undefined || args.line !== undefined) {
@@ -1064,8 +1080,8 @@ export class BitbucketClient {
     }
 
     if (!created) return text(`Comment added to PR #${args.prId}.`);
-    if (args.parentCommentId) {
-      return text(`Reply #${created.id} added to comment #${args.parentCommentId} on PR #${args.prId}.`);
+    if (replyToCommentId !== undefined) {
+      return text(`Reply #${created.id} added to comment #${replyToCommentId} on PR #${args.prId}.`);
     }
     const location = args.filePath && args.line ? ` on ${args.filePath}:${args.line}` : '';
     return text(`Comment #${created.id} added to PR #${args.prId}${location}.`);

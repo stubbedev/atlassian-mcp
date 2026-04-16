@@ -53,7 +53,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 | `bitbucket_merge_pr` | Merge a pull request |
 | `bitbucket_decline_pr` | Decline a pull request |
 | `bitbucket_get_pr_comments` | Get PR comment threads in bulk, including task-style BLOCKER comments and blocker counts |
-| `bitbucket_add_pr_comment` | Add a top-level PR comment or reply to an existing comment |
+| `bitbucket_add_pr_comment` | Add a PR comment; when remarking on an existing comment, pass `commentId` so it is posted as a thread reply |
 | `bitbucket_update_pr_comment` | Update comment text/severity, resolve or reopen normal threads via `threadResolved`, and resolve/reopen BLOCKER tasks via `state` (strictly enforced) |
 | `bitbucket_delete_pr_comment` | Delete a PR comment by comment ID |
 | `bitbucket_get_pr_commits` | List commits included in a pull request |
@@ -78,6 +78,7 @@ All list tools support `limit` and `start`/`startAt` for pagination.
 - "update PR 42 title and reviewers" → `bitbucket_update_pull_request`
 - "create or update PR from this branch in one call" → `bitbucket_mutate_pull_request`
 - "show review comments on PR 42" → `bitbucket_get_pr_comments`
+- "reply to comment 123 on PR 42" → `bitbucket_add_pr_comment` with `commentId=123`
 - "give me one full overview of PR 42" → `bitbucket_get_pr_overview`
 - "how many open blockers are on PR 42" → `bitbucket_get_pr_comments` with `severity=BLOCKER` and `countOnly=true`
 - "resolve this review thread on PR 42" → `bitbucket_update_pr_comment` with `threadResolved=true`
