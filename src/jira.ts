@@ -441,6 +441,7 @@ export class JiraClient {
     const f = data.fields;
     const lines = [
       `Issue: ${data.key} — ${f.summary}`,
+      `URL:        ${this.issueUrl(data.key)}`,
       `Status:     ${f.status.name}`,
       `Type:       ${f.issuetype.name}`,
       `Priority:   ${f.priority?.name ?? 'None'}`,
