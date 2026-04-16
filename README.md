@@ -273,23 +273,29 @@ This package is published to npm as `@stubbedev/atlassian-mcp`.
 
 Use semantic versioning for releases. Breaking tool-surface changes should bump the minor version while `<1.0.0` (for example `0.0.x` -> `0.1.0`).
 
-Automatic publish is configured in `.github/workflows/publish.yml`:
+Automatic publish is configured in `.github/workflows/publish.yml` and runs when a new version tag is pushed.
 
-- Push a tag like `v1.0.1` to publish from CI
-- Or run the workflow manually via **Actions → Publish Package**
+Release flow:
+
+```bash
+# choose one: patch | minor | major
+increment=patch
+
+# bumps package.json + package-lock.json,
+# creates a version commit, and creates a git tag (for example v0.1.17)
+npm version "$increment"
+
+# push commit and tag to GitHub
+git push origin HEAD --follow-tags
+```
+
+GitHub Actions will publish the npm release from that pushed tag.
 
 - The workflow is configured for npm Trusted Publisher (OIDC), so no `NPM_TOKEN` secret is required
 
 Required npm setup (one-time):
 
 - In npm package settings, add this GitHub repo/workflow as a Trusted Publisher
-
-Manual publish from local machine:
-
-```bash
-npm run build
-npm publish --access public
-```
 
 ---
 

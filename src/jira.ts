@@ -188,7 +188,7 @@ function validateCommentBody(body: string): string {
     throw new Error('Jira comment body must not be empty.');
   }
   if (EMOJI_RE.test(trimmed)) {
-    throw new Error('Jira comments must not include emoji. Use concise plain text only.');
+    throw new Error('Jira comments must not include emoji. Use concise Jira wiki markup or plain text only.');
   }
   return trimmed;
 }

@@ -50,6 +50,8 @@ function normalizeJiraMutateArgs(args: unknown): Record<string, unknown> {
   return out;
 }
 
+const JIRA_WIKI_MARKUP_HINT = 'Use Jira wiki markup (Atlassian renderer syntax), not GitHub/CommonMark markdown.';
+
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     // ── Context ───────────────────────────────────────────────────────────
@@ -168,7 +170,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'jira_create_issue',
-      description: 'Use when you want to create a new Jira ticket (bug, story, task, etc.). If projectKey/project is omitted, the server auto-picks from branch context or asks you to choose.',
+      description: `Use when you want to create a new Jira ticket (bug, story, task, etc.). If projectKey/project is omitted, the server auto-picks from branch context or asks you to choose. ${JIRA_WIKI_MARKUP_HINT}`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -176,7 +178,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           project:     { type: 'string', description: 'Alias for projectKey' },
           issueType:   { type: 'string', description: 'Issue type name, for example "Bug", "Story", or "Task"' },
           summary:     { type: 'string', description: 'Issue title' },
-          description: { type: 'string', description: 'Issue description (optional)' },
+          description: { type: 'string', description: `Issue description (optional). ${JIRA_WIKI_MARKUP_HINT}` },
           assignee:    { type: 'string', description: 'Username to assign to (optional)' },
           priority:    { type: 'string', description: 'Priority name, e.g. "High" (optional)' },
           sprintId:    { type: 'number', description: 'Sprint ID to immediately add the new issue into (optional)' },
@@ -186,13 +188,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'jira_update_issue',
-      description: 'Use when you want to edit an existing Jira ticket: title, description, assignee, or priority.',
+      description: `Use when you want to edit an existing Jira ticket: title, description, assignee, or priority. ${JIRA_WIKI_MARKUP_HINT}`,
       inputSchema: {
         type: 'object',
         properties: {
           issueKey:    { type: 'string', description: 'Jira issue key' },
           summary:     { type: 'string', description: 'New summary (optional)' },
-          description: { type: 'string', description: 'New description (optional)' },
+          description: { type: 'string', description: `New description (optional). ${JIRA_WIKI_MARKUP_HINT}` },
           assignee:    { type: 'string', description: 'New assignee username, or empty string to unassign (optional)' },
           priority:    { type: 'string', description: 'New priority name (optional)' },
           sprintId:    { type: 'number', description: 'Sprint ID to add this issue into (optional)' },
@@ -215,7 +217,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'jira_mutate_issue',
-      description: 'Use when you want to bundle Jira mutations in one call: create or target an issue, then optional update, sprint assignment, transition, and comment.',
+      description: `Use when you want to bundle Jira mutations in one call: create or target an issue, then optional update, sprint assignment, transition, and comment. ${JIRA_WIKI_MARKUP_HINT}`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -227,7 +229,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
               project:     { type: 'string', description: 'Alias for projectKey' },
               issueType:   { type: 'string', description: 'Issue type name, e.g. Bug, Story, Task' },
               summary:     { type: 'string', description: 'Issue title' },
-              description: { type: 'string', description: 'Issue description (optional)' },
+              description: { type: 'string', description: `Issue description (optional). ${JIRA_WIKI_MARKUP_HINT}` },
               assignee:    { type: 'string', description: 'Username to assign to (optional)' },
               priority:    { type: 'string', description: 'Priority name (optional)' },
             },
@@ -237,7 +239,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: 'object',
             properties: {
               summary:     { type: 'string', description: 'New summary (optional)' },
-              description: { type: 'string', description: 'New description (optional)' },
+              description: { type: 'string', description: `New description (optional). ${JIRA_WIKI_MARKUP_HINT}` },
               assignee:    { type: 'string', description: 'New assignee username, or empty string to unassign (optional)' },
               priority:    { type: 'string', description: 'New priority name (optional)' },
             },
@@ -245,7 +247,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           sprintId:       { type: 'number', description: 'Sprint ID to add the issue into (optional)' },
           transitionId:   { type: 'string', description: 'Transition ID (optional if transitionName is provided)' },
           transitionName: { type: 'string', description: 'Transition name, e.g. In Progress (optional if transitionId is provided)' },
-          comment:        { type: 'string', description: 'Comment to add after other mutations (optional, no emoji)' },
+          comment:        { type: 'string', description: `Comment to add after other mutations (optional, no emoji). ${JIRA_WIKI_MARKUP_HINT}` },
         },
       },
     },
@@ -283,12 +285,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'jira_add_comment',
-      description: 'Use when you want to leave a comment on a Jira ticket. Keep comments concise, plain text, and free of filler. Never include emojis.',
+      description: `Use when you want to leave a comment on a Jira ticket. Keep comments concise and free of filler. Never include emojis. ${JIRA_WIKI_MARKUP_HINT}`,
       inputSchema: {
         type: 'object',
         properties: {
           issueKey: { type: 'string', description: 'Jira issue key' },
-          body:     { type: 'string', description: 'Concise comment text only. No filler. Do not include emojis.' },
+          body:     { type: 'string', description: `Concise comment text. No filler. Do not include emojis. ${JIRA_WIKI_MARKUP_HINT}` },
         },
         required: ['issueKey', 'body'],
       },
