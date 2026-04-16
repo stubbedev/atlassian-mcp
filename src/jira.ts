@@ -23,7 +23,8 @@ interface JiraSearchResult {
 }
 
 interface JiraComment {
-  author: { displayName: string };
+  id: string;
+  author: { name?: string; key?: string; displayName: string };
   created: string;
   body: string;
 }
@@ -66,6 +67,12 @@ interface JiraUser {
   displayName: string;
   emailAddress: string;
   active: boolean;
+}
+
+interface JiraCurrentUser {
+  name?: string;
+  key?: string;
+  displayName?: string;
 }
 
 interface JiraPage<T> {
@@ -196,6 +203,7 @@ function validateCommentBody(body: string): string {
 export class JiraClient {
   private baseUrl: string;
   private headers: Record<string, string>;
+  private currentUserCache?: JiraCurrentUser;
 
   constructor(baseUrl: string, token: string) {
     this.baseUrl = baseUrl.replace(/\/$/, '');
@@ -241,6 +249,49 @@ export class JiraClient {
 
   private async requestAgile<T>(method: string, path: string, body?: unknown): Promise<T | null> {
     return this.requestWithBase<T>('/rest/agile/1.0', method, path, body);
+  }
+
+  private normalizeIdentity(value?: string): string {
+    return (value ?? '').trim().toLowerCase();
+  }
+
+  private async getCurrentUser(): Promise<JiraCurrentUser> {
+    if (this.currentUserCache) return this.currentUserCache;
+    const me = await this.request<JiraCurrentUser>('GET', '/myself');
+    if (!me) {
+      throw new Error('Could not determine current Jira user identity.');
+    }
+    this.currentUserCache = me;
+    return me;
+  }
+
+  private async assertOwnComment(comment: JiraComment): Promise<void> {
+    const me = await this.getCurrentUser();
+    const commentAuthorName = this.normalizeIdentity(comment.author.name);
+    const commentAuthorKey = this.normalizeIdentity(comment.author.key);
+    const commentAuthorDisplayName = this.normalizeIdentity(comment.author.displayName);
+    const meName = this.normalizeIdentity(me.name);
+    const meKey = this.normalizeIdentity(me.key);
+    const meDisplayName = this.normalizeIdentity(me.displayName);
+
+    const hasStrongCommentIdentity = commentAuthorName.length > 0 || commentAuthorKey.length > 0;
+    const hasStrongUserIdentity = meName.length > 0 || meKey.length > 0;
+
+    const matchesByNameOrKey = (commentAuthorName.length > 0 && (commentAuthorName === meName || commentAuthorName === meKey))
+      || (commentAuthorKey.length > 0 && (commentAuthorKey === meName || commentAuthorKey === meKey));
+
+    const matchesByDisplayNameFallback = !hasStrongCommentIdentity
+      && !hasStrongUserIdentity
+      && commentAuthorDisplayName.length > 0
+      && commentAuthorDisplayName === meDisplayName;
+
+    if (matchesByNameOrKey || matchesByDisplayNameFallback) {
+      return;
+    }
+
+    throw new Error(
+      `You can only edit your own Jira comments. Comment ${comment.id} is authored by ${comment.author.displayName}.`
+    );
   }
 
   private async addIssuesToSprintInternal(sprintId: number, issueKeys: string[]): Promise<void> {
@@ -527,7 +578,7 @@ export class JiraClient {
       } else {
         for (const c of items) {
           const date = c.created.slice(0, 10);
-          lines.push(`--- ${c.author.displayName} (${date}) ---`, c.body, '');
+          lines.push(`--- #${c.id} ${c.author.displayName} (${date}) ---`, c.body, '');
         }
       }
     }
@@ -773,7 +824,7 @@ export class JiraClient {
     if (!data || data.comments.length === 0) return text('No comments found.');
     const blocks = data.comments.map((c) => {
       const date = c.created.slice(0, 10);
-      return `--- ${c.author.displayName} (${date}) ---\n${c.body}`;
+      return `--- #${c.id} ${c.author.displayName} (${date}) ---\n${c.body}`;
     });
     const page = pagination(data.total, startAt, data.comments.length);
     return text(`${data.total} comment(s) on ${issueKey}${page}:\n\n${blocks.join('\n\n')}`);
@@ -782,6 +833,36 @@ export class JiraClient {
   async addComment(args: { issueKey: string; body: string }): Promise<ToolResult> {
     await this.request('POST', `/issue/${args.issueKey}/comment`, { body: validateCommentBody(args.body) });
     return text(`Comment added to ${args.issueKey}.`);
+  }
+
+  async editComment(args: { issueKey: string; commentId: string | number; body: string }): Promise<ToolResult> {
+    const commentId = String(args.commentId).trim();
+    if (!commentId) {
+      throw new Error('commentId is required.');
+    }
+
+    const path = `/issue/${args.issueKey}/comment/${commentId}`;
+    const current = await this.request<JiraComment>('GET', path);
+    if (!current) throw new Error(`Comment ${commentId} not found on ${args.issueKey}.`);
+    await this.assertOwnComment(current);
+
+    await this.request('PUT', path, { body: validateCommentBody(args.body) });
+    return text(`Comment ${commentId} updated on ${args.issueKey}.`);
+  }
+
+  async deleteComment(args: { issueKey: string; commentId: string | number }): Promise<ToolResult> {
+    const commentId = String(args.commentId).trim();
+    if (!commentId) {
+      throw new Error('commentId is required.');
+    }
+
+    const path = `/issue/${args.issueKey}/comment/${commentId}`;
+    const current = await this.request<JiraComment>('GET', path);
+    if (!current) throw new Error(`Comment ${commentId} not found on ${args.issueKey}.`);
+    await this.assertOwnComment(current);
+
+    await this.request('DELETE', path);
+    return text(`Comment ${commentId} deleted from ${args.issueKey}.`);
   }
 
   async transitionIssue(args: { issueKey: string; transitionId?: string; transitionName?: string }): Promise<ToolResult> {

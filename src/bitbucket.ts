@@ -104,6 +104,12 @@ interface BBParticipant {
   status: string;
 }
 
+interface BBCurrentUser {
+  name?: string;
+  slug?: string;
+  displayName?: string;
+}
+
 interface BBCommit {
   id: string;
   displayId: string;
@@ -277,6 +283,7 @@ function validateCommentText(textValue: string): string {
 export class BitbucketClient {
   private baseUrl: string;
   private headers: Record<string, string>;
+  private currentUserCache?: BBCurrentUser;
 
   constructor(baseUrl: string, token: string) {
     this.baseUrl = baseUrl.replace(/\/$/, '');
@@ -340,6 +347,45 @@ export class BitbucketClient {
       throw new Error(formatBitbucketError(res.status, 'GET', path, details));
     }
     return res.text();
+  }
+
+  private normalizeIdentity(value?: string): string {
+    return (value ?? '').trim().toLowerCase();
+  }
+
+  private async getCurrentUser(): Promise<BBCurrentUser> {
+    if (this.currentUserCache) return this.currentUserCache;
+    const me = await this.request<BBCurrentUser>('GET', '/users/~self');
+    if (!me) {
+      throw new Error('Could not determine current Bitbucket user identity.');
+    }
+    this.currentUserCache = me;
+    return me;
+  }
+
+  private async assertOwnComment(comment: BBComment): Promise<void> {
+    const me = await this.getCurrentUser();
+    const commentAuthorName = this.normalizeIdentity(comment.author?.name);
+    const commentAuthorDisplayName = this.normalizeIdentity(comment.author?.displayName);
+    const meName = this.normalizeIdentity(me.name);
+    const meSlug = this.normalizeIdentity(me.slug);
+    const meDisplayName = this.normalizeIdentity(me.displayName);
+
+    const hasStrongCommentIdentity = commentAuthorName.length > 0;
+    const hasStrongUserIdentity = meName.length > 0 || meSlug.length > 0;
+    const matchesByName = commentAuthorName.length > 0 && (commentAuthorName === meName || commentAuthorName === meSlug);
+    const matchesByDisplayNameFallback = !hasStrongCommentIdentity
+      && !hasStrongUserIdentity
+      && commentAuthorDisplayName.length > 0
+      && commentAuthorDisplayName === meDisplayName;
+
+    if (matchesByName || matchesByDisplayNameFallback) {
+      return;
+    }
+
+    throw new Error(
+      `You can only edit your own Bitbucket comments. Comment #${comment.id} is authored by ${comment.author?.displayName ?? comment.author?.name ?? 'another user'}.`
+    );
   }
 
   // Used internally by context tools — finds the open PR for a given source branch
@@ -1107,6 +1153,7 @@ export class BitbucketClient {
       `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/comments/${args.commentId}`
     );
     if (!current) throw new Error(`Comment #${args.commentId} not found.`);
+    await this.assertOwnComment(current);
 
     const targetSeverity = args.severity ?? current.severity ?? 'NORMAL';
 
@@ -1173,8 +1220,12 @@ export class BitbucketClient {
       `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/comments/${args.commentId}`
     );
     if (!current) throw new Error(`Comment #${args.commentId} not found.`);
+    await this.assertOwnComment(current);
 
-    const path = `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/comments/${args.commentId}?version=${current.version}`;
+    const commentPath = current.severity === 'BLOCKER'
+      ? `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/blocker-comments/${args.commentId}`
+      : `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/comments/${args.commentId}`;
+    const path = `${commentPath}?version=${current.version}`;
     await this.request('DELETE', path);
     return text(`Comment #${args.commentId} deleted from PR #${args.prId}.`);
   }

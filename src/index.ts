@@ -272,7 +272,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'jira_get_comments',
-      description: 'Use when you want the discussion thread on a Jira ticket, with pagination for long threads.',
+      description: 'Use when you want the discussion thread on a Jira ticket, with pagination for long threads. Includes comment IDs for follow-up edits.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -293,6 +293,31 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           body:     { type: 'string', description: `Concise comment text. No filler. Do not include emojis. ${JIRA_WIKI_MARKUP_HINT}` },
         },
         required: ['issueKey', 'body'],
+      },
+    },
+    {
+      name: 'jira_edit_comment',
+      description: `Use when you want to edit one of your own comments on a Jira ticket. Editing comments from other users is rejected. Never include emojis. ${JIRA_WIKI_MARKUP_HINT}`,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          issueKey:  { type: 'string', description: 'Jira issue key' },
+          commentId: { type: 'string', description: 'Jira comment ID (from jira_get_comments or jira_issue_overview output)' },
+          body:      { type: 'string', description: `Updated concise comment text. No filler. Do not include emojis. ${JIRA_WIKI_MARKUP_HINT}` },
+        },
+        required: ['issueKey', 'commentId', 'body'],
+      },
+    },
+    {
+      name: 'jira_delete_comment',
+      description: 'Use when you want to delete one of your own comments on a Jira ticket by comment ID. Deleting comments from other users is rejected.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          issueKey:  { type: 'string', description: 'Jira issue key' },
+          commentId: { type: 'string', description: 'Jira comment ID to delete (from jira_get_comments or jira_issue_overview output)' },
+        },
+        required: ['issueKey', 'commentId'],
       },
     },
     {
@@ -617,7 +642,7 @@ Keep comments concise, plain text, and free of filler. Never include emojis. You
     },
     {
       name: 'bitbucket_update_pr_comment',
-      description: 'Use when you want to edit PR comments, resolve/reopen normal discussion threads, or manage task-style BLOCKER comments. Hint: for normal comments, resolve/reopen means threadResolved; for BLOCKER tasks, resolve/reopen uses state. Keep comments concise, plain text, and free of filler. Never include emojis. You can pass projectKey/repoSlug or project/repo.',
+      description: 'Use when you want to edit your own PR comments, resolve/reopen normal discussion threads, or manage task-style BLOCKER comments. Editing comments from other users is rejected. Hint: for normal comments, resolve/reopen means threadResolved; for BLOCKER tasks, resolve/reopen uses state. Keep comments concise, plain text, and free of filler. Never include emojis. You can pass projectKey/repoSlug or project/repo.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -637,7 +662,7 @@ Keep comments concise, plain text, and free of filler. Never include emojis. You
     },
     {
       name: 'bitbucket_delete_pr_comment',
-      description: 'Use when you want to delete a PR comment by comment ID. You can pass projectKey/repoSlug or project/repo.',
+      description: 'Use when you want to delete one of your own PR comments by comment ID. Deleting comments from other users is rejected. You can pass projectKey/repoSlug or project/repo.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -760,6 +785,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return await jira.getComments(args as Parameters<typeof jira.getComments>[0]);
       case 'jira_add_comment':
         return await jira.addComment(args as Parameters<typeof jira.addComment>[0]);
+      case 'jira_edit_comment':
+        return await jira.editComment(args as Parameters<typeof jira.editComment>[0]);
+      case 'jira_delete_comment':
+        return await jira.deleteComment(args as Parameters<typeof jira.deleteComment>[0]);
       case 'jira_transition_issue':
         return await jira.transitionIssue(args as Parameters<typeof jira.transitionIssue>[0]);
       // Bitbucket
