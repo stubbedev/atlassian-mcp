@@ -1153,9 +1153,17 @@ export class BitbucketClient {
       `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/comments/${args.commentId}`
     );
     if (!current) throw new Error(`Comment #${args.commentId} not found.`);
-    await this.assertOwnComment(current);
+    const currentSeverity = current.severity ?? 'NORMAL';
+    const severityIsChanging = args.severity !== undefined && args.severity !== currentSeverity;
+    const isResolutionOnlyUpdate = (args.state !== undefined || args.threadResolved !== undefined)
+      && args.text === undefined
+      && !severityIsChanging;
 
-    const targetSeverity = args.severity ?? current.severity ?? 'NORMAL';
+    if (!isResolutionOnlyUpdate) {
+      await this.assertOwnComment(current);
+    }
+
+    const targetSeverity = args.severity ?? currentSeverity;
 
     if (args.state && targetSeverity !== 'BLOCKER') {
       throw new Error('state is only supported for BLOCKER comments (tasks). Use threadResolved for normal comment threads.');

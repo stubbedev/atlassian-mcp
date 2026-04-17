@@ -642,7 +642,7 @@ Keep comments concise, plain text, and free of filler. Never include emojis. You
     },
     {
       name: 'bitbucket_update_pr_comment',
-      description: 'Use when you want to edit your own PR comments, resolve/reopen normal discussion threads, or manage task-style BLOCKER comments. Editing comments from other users is rejected. Hint: for normal comments, resolve/reopen means threadResolved; for BLOCKER tasks, resolve/reopen uses state. Keep comments concise, plain text, and free of filler. Never include emojis. You can pass projectKey/repoSlug or project/repo.',
+      description: 'Use when you want to edit your own PR comments, resolve/reopen normal discussion threads, or manage task-style BLOCKER comments. Text/severity edits are limited to your own comments, but thread/task resolution via threadResolved/state is allowed for comments from other users. Hint: for normal comments, resolve/reopen means threadResolved; for BLOCKER tasks, resolve/reopen uses state. Keep comments concise, plain text, and free of filler. Never include emojis. You can pass projectKey/repoSlug or project/repo.',
       inputSchema: {
         type: 'object',
         properties: {

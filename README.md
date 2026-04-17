@@ -54,7 +54,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 | `bitbucket_decline_pr` | Decline a pull request |
 | `bitbucket_get_pr_comments` | Get PR comment threads in bulk, including task-style BLOCKER comments and blocker counts |
 | `bitbucket_add_pr_comment` | Add a PR comment; when remarking on an existing comment, pass `commentId` so it is posted as a thread reply |
-| `bitbucket_update_pr_comment` | Update comment text/severity, resolve or reopen normal threads via `threadResolved`, and resolve/reopen BLOCKER tasks via `state` (strictly enforced) |
+| `bitbucket_update_pr_comment` | Update comment text/severity (own comments only), resolve or reopen normal threads via `threadResolved`, and resolve/reopen BLOCKER tasks via `state` |
 | `bitbucket_delete_pr_comment` | Delete a PR comment by comment ID |
 | `bitbucket_get_pr_commits` | List commits included in a pull request |
 | `bitbucket_get_branches` | List branches in a repository |
