@@ -515,18 +515,21 @@ export class BitbucketClient {
 
   async myPrs(args: { limit?: number; start?: number; role?: 'author' | 'reviewer' | 'participant' }): Promise<ToolResult> {
     const { limit = 25, start = 0, role } = args;
-    const qs = new URLSearchParams({ limit: String(limit), start: String(start) });
-    if (role) qs.set('role', role);
+    const me = await this.getCurrentUser();
+    const userSlug = me.slug ?? me.name;
+    if (!userSlug) throw new Error('Could not determine your Bitbucket user slug. Check token permissions.');
+    const qs = new URLSearchParams({ limit: String(limit), start: String(start), state: 'OPEN' });
+    if (role) qs.set('role', role.toUpperCase());
     const data = await this.request<BBPagedResult<BBPullRequest>>(
       'GET',
-      `/inbox/pull-requests?${qs}`
+      `/users/${encodeURIComponent(userSlug)}/pull-requests?${qs}`
     );
-    if (!data || data.values.length === 0) return text('No pull requests in your inbox.');
+    if (!data || data.values.length === 0) return text('No pull requests found.');
     const lines = data.values.map((pr) => {
       const repo = `${pr.toRef.repository.project.key}/${pr.toRef.repository.slug}`;
       return `#${pr.id} [${pr.state}] ${pr.title} | ${repo} | ${pr.fromRef.displayId} → ${pr.toRef.displayId}`;
     });
-    return text(`${data.values.length} PR(s) in your inbox${pageHint(data)}:\n${lines.join('\n')}`);
+    return text(`${data.values.length} PR(s)${pageHint(data)}:\n${lines.join('\n')}`);
   }
 
   async getPullRequest(args: { projectKey?: string; repoSlug?: string; prId: number }): Promise<ToolResult> {
@@ -1444,7 +1447,7 @@ export class BitbucketClient {
     const task = await this.request<BBTask>('GET', `/tasks/${args.taskId}`);
     if (!task) throw new Error(`Task #${args.taskId} not found.`);
     const newState = args.action === 'resolve' ? 'RESOLVED' : 'OPEN';
-    const updated = await this.request<BBTask>('PUT', `/tasks/${args.taskId}`, {
+    const updated = await this.request<BBTask>('PUT', `/tasks/${args.taskId}?version=${task.version}`, {
       id: task.id,
       state: newState,
       text: task.text,
