@@ -121,6 +121,7 @@ interface BBBuildStatus {
 
 interface BBTask {
   id: number;
+  version: number;
   text: string;
   state: 'OPEN' | 'RESOLVED';
   author?: { displayName?: string; name?: string };
@@ -1184,6 +1185,7 @@ export class BitbucketClient {
     multilineStartLine?: number;
     multilineStartLineType?: 'ADDED' | 'REMOVED' | 'CONTEXT';
     suggestion?: string;
+    severity?: 'NORMAL' | 'BLOCKER';
   }): Promise<ToolResult> {
     const { projectKey, repoSlug } = this.resolveProjectAndRepo(args.projectKey, args.repoSlug);
 
@@ -1210,6 +1212,7 @@ export class BitbucketClient {
     }
 
     const body: Record<string, unknown> = { text: validateCommentText(commentText) };
+    if (args.severity) body.severity = args.severity;
     if (replyToCommentId !== undefined) body.parent = { id: replyToCommentId };
 
     let inlineAnchor: Record<string, unknown> | undefined;
@@ -1433,7 +1436,7 @@ export class BitbucketClient {
     if (args.action === 'delete') {
       const task = await this.request<BBTask>('GET', `/tasks/${args.taskId}`);
       if (!task) throw new Error(`Task #${args.taskId} not found.`);
-      await this.request('DELETE', `/tasks/${args.taskId}?version=${task.id}`);
+      await this.request('DELETE', `/tasks/${args.taskId}?version=${task.version}`);
       return text(`Task #${args.taskId} deleted.`);
     }
 

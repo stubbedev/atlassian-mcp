@@ -356,7 +356,7 @@ export class JiraClient {
     const fields: Record<string, unknown> = {};
     if (args.summary !== undefined)     fields.summary = args.summary;
     if (args.description !== undefined) fields.description = args.description;
-    if (args.assignee !== undefined)    fields.assignee = { name: args.assignee };
+    if (args.assignee !== undefined)    fields.assignee = args.assignee ? { name: args.assignee } : null;
     if (args.priority !== undefined)    fields.priority = { name: args.priority };
     if (args.labels !== undefined)      fields.labels = args.labels;
     if (args.fixVersion !== undefined)  fields.fixVersions = args.fixVersion ? [{ name: args.fixVersion }] : [];
@@ -917,8 +917,8 @@ export class JiraClient {
   }
 
   async editComment(args: { issueKey: string; commentId: string | number; body: string }): Promise<ToolResult> {
-    const commentId = String(args.commentId).trim();
-    if (!commentId) {
+    const commentId = String(args.commentId ?? '').trim();
+    if (!commentId || commentId === 'undefined') {
       throw new Error('commentId is required.');
     }
 
@@ -932,8 +932,8 @@ export class JiraClient {
   }
 
   async deleteComment(args: { issueKey: string; commentId: string | number }): Promise<ToolResult> {
-    const commentId = String(args.commentId).trim();
-    if (!commentId) {
+    const commentId = String(args.commentId ?? '').trim();
+    if (!commentId || commentId === 'undefined') {
       throw new Error('commentId is required.');
     }
 
