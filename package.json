@@ -32,6 +32,7 @@
   "devDependencies": {
     "@types/node": "^25.6.0",
     "npm-check-updates": "^21.0.2",
+    "tsx": "^4.0.0",
     "typescript": "^6.0.3"
   },
   "engines": {
@@ -44,5 +45,8 @@
     "type": "git",
     "url": "git+https://github.com/stubbedev/atlassian-mcp.git"
   },
-  "homepage": "https://github.com/stubbedev/atlassian-mcp#readme"
+  "homepage": "https://github.com/stubbedev/atlassian-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/stubbedev/atlassian-mcp/issues"
+  }
 }
