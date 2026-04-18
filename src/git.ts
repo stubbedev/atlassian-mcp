@@ -116,7 +116,6 @@ export function getDiff(args: {
   toRef?: string;
 }): ToolResult {
   const repoPath = args.repoPath ?? process.cwd();
-  const MAX_CHARS = 8000;
   try {
     let cmd: string;
     if (args.fromRef && args.toRef) {
@@ -128,9 +127,6 @@ export function getDiff(args: {
     }
     const diff = safeGit(cmd, repoPath, '');
     if (!diff) return text('No differences found.');
-    if (diff.length > MAX_CHARS) {
-      return text(diff.slice(0, MAX_CHARS) + `\n\n... (truncated, ${diff.length - MAX_CHARS} more chars)`);
-    }
     return text(diff);
   } catch (err) {
     return text(`Error reading diff: ${(err as Error).message}`);

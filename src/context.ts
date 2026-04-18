@@ -32,9 +32,24 @@ export async function getDevContext(
   const recentCommits = safeExec('git log --oneline -5', repoPath) || '(none)';
   const status = safeExec('git status --short', repoPath) || '(clean)';
 
+  // Upstream ahead/behind
+  const upstream = safeExec('git rev-parse --abbrev-ref @{u}', repoPath);
+  let upstreamLine = '';
+  if (upstream) {
+    const ab = safeExec(`git rev-list --left-right --count ${upstream}...HEAD`, repoPath);
+    if (ab.includes('\t')) {
+      const [behind, ahead] = ab.split('\t').map(Number);
+      const parts: string[] = [];
+      if (ahead) parts.push(`${ahead} ahead`);
+      if (behind) parts.push(`${behind} behind`);
+      upstreamLine = `${upstream}${parts.length ? ` (${parts.join(', ')})` : ' (up to date)'}`;
+    }
+  }
+
   sections.push([
     `Repository: ${repoPath}`,
     `Branch:     ${branch}`,
+    ...(upstreamLine ? [`Upstream:   ${upstreamLine}`] : []),
     `Remote:     ${remote}`,
     '',
     'Recent commits:',
@@ -44,22 +59,25 @@ export async function getDevContext(
     status,
   ].join('\n'));
 
-  // Jira — fetch overview for any tickets referenced in the branch name
+  // Jira — fetch overview for any tickets referenced in the branch name (parallel)
   const jiraKeys = jira ? [...new Set(branch.match(JIRA_KEY_RE) ?? [])] : [];
-  for (const key of jiraKeys) {
-    try {
-      const result = await jira!.issueOverview({
-        issueKey: key,
-        includeComments: true,
-        commentsMaxResults: 5,
-        includeTransitions: true,
-        includeSprint: true,
-      });
-      sections.push(`── Jira ${key} ──\n${result.content[0].text}`);
-    } catch {
-      sections.push(`── Jira ${key} ── (could not fetch)`);
-    }
-  }
+  const jiraResults = await Promise.all(
+    jiraKeys.map(async (key) => {
+      try {
+        const result = await jira!.issueOverview({
+          issueKey: key,
+          includeComments: true,
+          commentsMaxResults: 5,
+          includeTransitions: true,
+          includeSprint: true,
+        });
+        return `── Jira ${key} ──\n${result.content[0].text}`;
+      } catch {
+        return `── Jira ${key} ── (could not fetch)`;
+      }
+    })
+  );
+  sections.push(...jiraResults);
 
   // Bitbucket — find the open PR for this branch (only if remote points to this instance)
   const parsed = bitbucket?.isRemoteForThisInstance(remote) ? parseBitbucketRemote(remote) : null;
