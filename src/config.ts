@@ -54,7 +54,8 @@ export function loadConfig(): Config {
 
   if (jiraUrl && jiraToken) {
     config.jira = { url: jiraUrl, token: jiraToken };
-  } else {
+  } else if (jiraUrl || jiraToken) {
+    // Partially configured — log which piece is missing so the user can fix it
     const missing: string[] = [];
     if (!jiraUrl) missing.push('jira.url (or JIRA_URL)');
     if (!jiraToken) missing.push('jira.token (or JIRA_ACCESS_TOKEN)');
@@ -63,7 +64,7 @@ export function loadConfig(): Config {
 
   if (bitbucketUrl && bitbucketToken) {
     config.bitbucket = { url: bitbucketUrl, token: bitbucketToken };
-  } else {
+  } else if (bitbucketUrl || bitbucketToken) {
     const missing: string[] = [];
     if (!bitbucketUrl) missing.push('bitbucket.url (or BITBUCKET_URL)');
     if (!bitbucketToken) missing.push('bitbucket.token (or BITBUCKET_ACCESS_TOKEN)');

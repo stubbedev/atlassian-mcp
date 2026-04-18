@@ -151,7 +151,10 @@ function buildJQL(args: {
   assignee?: string;
   issueType?: string;
 }): string {
-  if (args.jql) return args.jql;
+  if (args.jql) {
+    if (args.jql.length > 2000) throw new Error('JQL query too long (max 2000 characters).');
+    return args.jql;
+  }
 
   const clauses: string[] = [];
   if (args.query)     clauses.push(`text ~ ${JSON.stringify(args.query)}`);
@@ -224,6 +227,7 @@ export class JiraClient {
   private baseUrl: string;
   private headers: Record<string, string>;
   private currentUserCache?: JiraCurrentUser;
+  private projectsCache?: JiraProject[];
 
   constructor(baseUrl: string, token: string) {
     this.baseUrl = baseUrl.replace(/\/$/, '');
@@ -252,7 +256,7 @@ export class JiraClient {
 
   private async requestWithBase<T>(apiBase: string, method: string, path: string, body?: unknown): Promise<T | null> {
     const url = `${this.baseUrl}${apiBase}${path}`;
-    const opts: RequestInit = { method, headers: this.headers };
+    const opts: RequestInit = { method, headers: this.headers, signal: AbortSignal.timeout(30_000) };
     if (body !== undefined) opts.body = JSON.stringify(body);
     const res = await fetch(url, opts);
     if (!res.ok) {
@@ -361,7 +365,7 @@ export class JiraClient {
     if (args.labels !== undefined)      fields.labels = args.labels;
     if (args.fixVersion !== undefined)  fields.fixVersions = args.fixVersion ? [{ name: args.fixVersion }] : [];
     if (Object.keys(fields).length === 0) return false;
-    await this.request('PUT', `/issue/${args.issueKey}`, { fields });
+    await this.request('PUT', `/issue/${encodeURIComponent(args.issueKey)}`, { fields });
     return true;
   }
 
@@ -373,7 +377,7 @@ export class JiraClient {
       throw new Error('Provide transitionId or transitionName');
     }
 
-    const data = await this.request<JiraTransitionsResult>('GET', `/issue/${issueKey}/transitions`);
+    const data = await this.request<JiraTransitionsResult>('GET', `/issue/${encodeURIComponent(issueKey)}/transitions`);
     const transitions = data?.transitions ?? [];
     const lowered = requestedName.toLowerCase();
     const match = transitions.find((t) => t.name.toLowerCase() === lowered);
@@ -387,7 +391,7 @@ export class JiraClient {
   }
 
   private async transitionIssueInternal(issueKey: string, transitionId: string): Promise<void> {
-    await this.request('POST', `/issue/${issueKey}/transitions`, {
+    await this.request('POST', `/issue/${encodeURIComponent(issueKey)}/transitions`, {
       transition: { id: transitionId },
     });
   }
@@ -395,7 +399,10 @@ export class JiraClient {
   private async resolveProjectKey(projectKey?: string): Promise<string> {
     if (projectKey) return projectKey;
 
-    const projects = (await this.request<JiraProject[]>('GET', '/project?maxResults=100')) ?? [];
+    if (!this.projectsCache) {
+      this.projectsCache = (await this.request<JiraProject[]>('GET', '/project?maxResults=100')) ?? [];
+    }
+    const projects = this.projectsCache;
     if (projects.length === 0) {
       throw new Error('No Jira projects found for your account.');
     }
@@ -466,7 +473,7 @@ export class JiraClient {
 
   async getIssueTypes(args: { projectKey?: string }): Promise<ToolResult> {
     const projectKey = await this.resolveProjectKey(args.projectKey);
-    const data = await this.request<JiraIssueTypeStatuses[]>('GET', `/project/${projectKey}/statuses`);
+    const data = await this.request<JiraIssueTypeStatuses[]>('GET', `/project/${encodeURIComponent(projectKey)}/statuses`);
     if (!data || data.length === 0) return text('No issue types found.');
     const lines = data.map((t) => {
       const statuses = t.statuses.map((s) => s.name).join(', ');
@@ -516,7 +523,7 @@ export class JiraClient {
   }
 
   async getIssueFields(issueKey: string): Promise<{ summary: string; status: string; type: string }> {
-    const data = await this.request<JiraIssue>('GET', `/issue/${issueKey}?fields=summary,status,issuetype`);
+    const data = await this.request<JiraIssue>('GET', `/issue/${encodeURIComponent(issueKey)}?fields=summary,status,issuetype`);
     if (!data) throw new Error(`Issue ${issueKey} not found`);
     return {
       summary: data.fields.summary,
@@ -527,7 +534,7 @@ export class JiraClient {
 
   async getIssue(args: { issueKey: string }): Promise<ToolResult> {
     const fields = 'summary,description,status,assignee,priority,issuetype,labels,components';
-    const data = await this.request<JiraIssue>('GET', `/issue/${args.issueKey}?fields=${fields}`);
+    const data = await this.request<JiraIssue>('GET', `/issue/${encodeURIComponent(args.issueKey)}?fields=${fields}`);
     if (!data) return text('Issue not found.');
     const f = data.fields;
     const lines = [
@@ -561,7 +568,7 @@ export class JiraClient {
     const commentsStartAt = args.commentsStartAt ?? 0;
 
     const fields = 'summary,description,status,assignee,priority,issuetype,labels,components,parent,fixVersions,issuelinks,subtasks';
-    const issue = await this.request<JiraIssue>('GET', `/issue/${args.issueKey}?fields=${fields}`);
+    const issue = await this.request<JiraIssue>('GET', `/issue/${encodeURIComponent(args.issueKey)}?fields=${fields}`);
     if (!issue) return text('Issue not found.');
 
     const f = issue.fields;
@@ -588,7 +595,7 @@ export class JiraClient {
 
     if (includeSprint) {
       try {
-        const agileIssue = await this.requestAgile<JiraAgileIssue>('GET', `/issue/${args.issueKey}?fields=sprint,closedSprints`);
+        const agileIssue = await this.requestAgile<JiraAgileIssue>('GET', `/issue/${encodeURIComponent(args.issueKey)}?fields=sprint,closedSprints`);
         const activeSprint = agileIssue?.fields?.sprint;
         const closedSprints = agileIssue?.fields?.closedSprints ?? [];
         if (activeSprint) {
@@ -607,7 +614,7 @@ export class JiraClient {
     }
 
     if (includeTransitions) {
-      const transitions = await this.request<JiraTransitionsResult>('GET', `/issue/${args.issueKey}/transitions`);
+      const transitions = await this.request<JiraTransitionsResult>('GET', `/issue/${encodeURIComponent(args.issueKey)}/transitions`);
       const names = (transitions?.transitions ?? []).map((t) => `${t.name} -> ${t.to.name}`);
       lines.push(`Transitions: ${names.length > 0 ? names.join(', ') : '(none)'}`);
     }
@@ -617,7 +624,7 @@ export class JiraClient {
     if (includeComments) {
       const comments = await this.request<JiraCommentResult>(
         'GET',
-        `/issue/${args.issueKey}/comment?startAt=${commentsStartAt}&maxResults=${commentsMaxResults}`
+        `/issue/${encodeURIComponent(args.issueKey)}/comment?startAt=${commentsStartAt}&maxResults=${commentsMaxResults}`
       );
       const items = comments?.comments ?? [];
       const total = comments?.total ?? 0;
@@ -867,7 +874,7 @@ export class JiraClient {
     }
 
     if (args.comment !== undefined) {
-      await this.request('POST', `/issue/${issueKey}/comment`, { body: validateCommentBody(args.comment) });
+      await this.request('POST', `/issue/${encodeURIComponent(issueKey)}/comment`, { body: validateCommentBody(args.comment) });
       actions.push('added comment');
     }
 
@@ -885,7 +892,7 @@ export class JiraClient {
       const wBody: Record<string, unknown> = { timeSpent: args.worklog.timeSpent };
       if (args.worklog.comment) wBody.comment = args.worklog.comment;
       if (args.worklog.started) wBody.started = args.worklog.started;
-      await this.request('POST', `/issue/${issueKey}/worklog`, wBody);
+      await this.request('POST', `/issue/${encodeURIComponent(issueKey)}/worklog`, wBody);
       actions.push(`logged ${args.worklog.timeSpent}`);
     }
 
@@ -900,7 +907,7 @@ export class JiraClient {
     const { issueKey, maxResults = 50, startAt = 0 } = args;
     const data = await this.request<JiraCommentResult>(
       'GET',
-      `/issue/${issueKey}/comment?startAt=${startAt}&maxResults=${maxResults}`
+      `/issue/${encodeURIComponent(issueKey)}/comment?startAt=${startAt}&maxResults=${maxResults}`
     );
     if (!data || data.comments.length === 0) return text('No comments found.');
     const blocks = data.comments.map((c) => {
@@ -912,17 +919,17 @@ export class JiraClient {
   }
 
   async addComment(args: { issueKey: string; body: string }): Promise<ToolResult> {
-    await this.request('POST', `/issue/${args.issueKey}/comment`, { body: validateCommentBody(args.body) });
+    await this.request('POST', `/issue/${encodeURIComponent(args.issueKey)}/comment`, { body: validateCommentBody(args.body) });
     return text(`Comment added to ${args.issueKey}.`);
   }
 
   async editComment(args: { issueKey: string; commentId: string | number; body: string }): Promise<ToolResult> {
     const commentId = String(args.commentId ?? '').trim();
-    if (!commentId || commentId === 'undefined') {
+    if (!commentId || commentId === 'undefined' || commentId === 'null') {
       throw new Error('commentId is required.');
     }
 
-    const path = `/issue/${args.issueKey}/comment/${commentId}`;
+    const path = `/issue/${encodeURIComponent(args.issueKey)}/comment/${encodeURIComponent(commentId)}`;
     const current = await this.request<JiraComment>('GET', path);
     if (!current) throw new Error(`Comment ${commentId} not found on ${args.issueKey}.`);
     await this.assertOwnComment(current);
@@ -933,11 +940,11 @@ export class JiraClient {
 
   async deleteComment(args: { issueKey: string; commentId: string | number }): Promise<ToolResult> {
     const commentId = String(args.commentId ?? '').trim();
-    if (!commentId || commentId === 'undefined') {
+    if (!commentId || commentId === 'undefined' || commentId === 'null') {
       throw new Error('commentId is required.');
     }
 
-    const path = `/issue/${args.issueKey}/comment/${commentId}`;
+    const path = `/issue/${encodeURIComponent(args.issueKey)}/comment/${encodeURIComponent(commentId)}`;
     const current = await this.request<JiraComment>('GET', path);
     if (!current) throw new Error(`Comment ${commentId} not found on ${args.issueKey}.`);
     await this.assertOwnComment(current);

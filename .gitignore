@@ -8,5 +8,4 @@ dist/
 .env
 .atlassian-mcp.json
 
-# locks (keep package-lock.json if you want reproducible installs, remove this line if so)
-# package-lock.json
+# package-lock.json is tracked for reproducible installs (required by npm ci in CI)

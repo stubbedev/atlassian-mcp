@@ -4,7 +4,6 @@
   "title": "Atlassian MCP Config",
   "description": "Configuration file for the atlassian-mcp MCP server",
   "type": "object",
-  "required": ["jira", "bitbucket"],
   "additionalProperties": false,
   "properties": {
     "$schema": {

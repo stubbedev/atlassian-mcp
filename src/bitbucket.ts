@@ -157,7 +157,8 @@ function formatDate(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
-function formatCommentThread(comment: BBComment, indent = ''): string[] {
+function formatCommentThread(comment: BBComment, indent = '', depth = 0): string[] {
+  if (depth > 20) return [`${indent}... (deeply nested replies omitted)`];
   const author = comment.author?.displayName ?? comment.author?.name ?? 'Unknown';
   const date = comment.createdDate ? ` (${formatDate(comment.createdDate)})` : '';
   const state = comment.state ?? 'OPEN';
@@ -172,7 +173,7 @@ function formatCommentThread(comment: BBComment, indent = ''): string[] {
 
   if (comment.comments && comment.comments.length > 0) {
     for (const reply of comment.comments) {
-      lines.push(...formatCommentThread(reply, `${indent}  `));
+      lines.push(...formatCommentThread(reply, `${indent}  `, depth + 1));
     }
   }
 
@@ -313,6 +314,11 @@ export class BitbucketClient {
     };
   }
 
+  /** Returns a URL-safe `/projects/.../repos/...` prefix for REST paths. */
+  private rp(projectKey: string, repoSlug: string): string {
+    return `/projects/${encodeURIComponent(projectKey)}/repos/${encodeURIComponent(repoSlug)}`;
+  }
+
   private pullRequestUrl(projectKey: string, repoSlug: string, prId: number, pr?: BBPullRequest | null): string {
     const apiUrl = pr?.links?.self?.[0]?.href?.trim();
     if (apiUrl) {
@@ -359,7 +365,7 @@ export class BitbucketClient {
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T | null> {
     const url = `${this.baseUrl}/rest/api/1.0${path}`;
-    const opts: RequestInit = { method, headers: this.headers };
+    const opts: RequestInit = { method, headers: this.headers, signal: AbortSignal.timeout(30_000) };
     if (body !== undefined) opts.body = JSON.stringify(body);
     const res = await fetch(url, opts);
     if (!res.ok) {
@@ -375,6 +381,7 @@ export class BitbucketClient {
     const res = await fetch(url, {
       method: 'GET',
       headers: { Authorization: this.headers.Authorization },
+      signal: AbortSignal.timeout(30_000),
     });
     if (!res.ok) {
       const errText = await res.text();
@@ -386,7 +393,7 @@ export class BitbucketClient {
 
   private async requestBuildStatus<T>(method: string, path: string, body?: unknown): Promise<T | null> {
     const url = `${this.baseUrl}/rest/build-status/1.0${path}`;
-    const opts: RequestInit = { method, headers: this.headers };
+    const opts: RequestInit = { method, headers: this.headers, signal: AbortSignal.timeout(30_000) };
     if (body !== undefined) opts.body = JSON.stringify(body);
     const res = await fetch(url, opts);
     if (res.status === 404) return null; // no build status yet
@@ -442,22 +449,17 @@ export class BitbucketClient {
     return this.remoteMatchesInstance(remoteUrl);
   }
 
-  // Used internally by context tools — finds the open PR for a given source branch
+  // Used internally by context tools — finds the open PR for a given source branch.
+  // Uses the `at` filter to avoid paginating all open PRs.
   async findOpenPrForBranch(projectKey: string, repoSlug: string, branch: string): Promise<BBPullRequest | null> {
-    const targetBranch = branchDisplayId(branch);
-    let start = 0;
-
-    while (true) {
-      const data = await this.request<BBPagedResult<BBPullRequest>>(
-        'GET',
-        `/projects/${projectKey}/repos/${repoSlug}/pull-requests?state=OPEN&limit=50&start=${start}`
-      );
-
-      const match = data?.values.find((pr) => branchDisplayId(pr.fromRef.displayId) === targetBranch) ?? null;
-      if (match) return match;
-      if (!data || data.isLastPage || data.nextPageStart === undefined) return null;
-      start = data.nextPageStart;
-    }
+    const atRef = encodeURIComponent(toBranchRef(branch));
+    const encodedProject = encodeURIComponent(projectKey);
+    const encodedRepo = encodeURIComponent(repoSlug);
+    const data = await this.request<BBPagedResult<BBPullRequest>>(
+      'GET',
+      `/projects/${encodedProject}/repos/${encodedRepo}/pull-requests?state=OPEN&direction=OUTGOING&at=${atRef}&limit=1`
+    );
+    return data?.values[0] ?? null;
   }
 
   // Fallback: search branches matching filterText and check each for an open PR.
@@ -465,7 +467,7 @@ export class BitbucketClient {
   private async findOpenPrByBranchFilter(projectKey: string, repoSlug: string, filterText: string): Promise<BBPullRequest | null> {
     const branches = await this.request<BBPagedResult<BBBranch>>(
       'GET',
-      `/projects/${projectKey}/repos/${repoSlug}/branches?limit=25&filterText=${encodeURIComponent(filterText)}`
+      `${this.rp(projectKey, repoSlug)}/branches?limit=25&filterText=${encodeURIComponent(filterText)}`
     );
     if (!branches?.values?.length) return null;
     for (const b of branches.values) {
@@ -479,7 +481,7 @@ export class BitbucketClient {
     const { limit = 50, start = 0 } = args;
     const qs = `?limit=${limit}&start=${start}`;
     const path = args.projectKey
-      ? `/projects/${args.projectKey}/repos${qs}`
+      ? `/projects/${encodeURIComponent(args.projectKey)}/repos${qs}`
       : `/repos${qs}`;
     const data = await this.request<BBPagedResult<BBRepo>>('GET', path);
     if (!data || data.values.length === 0) return text('No repositories found.');
@@ -504,7 +506,7 @@ export class BitbucketClient {
       qs.set('direction', 'OUTGOING');
     }
     if (searchText) qs.set('filterText', searchText);
-    const path = `/projects/${projectKey}/repos/${repoSlug}/pull-requests?${qs}`;
+    const path = `/projects/${encodeURIComponent(projectKey)}/repos/${encodeURIComponent(repoSlug)}/pull-requests?${qs}`;
     const data = await this.request<BBPagedResult<BBPullRequest>>('GET', path);
     if (!data || data.values.length === 0) return text(`No ${state} pull requests found.`);
     const lines = data.values.map(
@@ -536,7 +538,7 @@ export class BitbucketClient {
     const { projectKey, repoSlug } = this.resolveProjectAndRepo(args.projectKey, args.repoSlug);
     const data = await this.request<BBPullRequest>(
       'GET',
-      `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}`
+      `/projects/${encodeURIComponent(projectKey)}/repos/${encodeURIComponent(repoSlug)}/pull-requests/${args.prId}`
     );
     if (!data) return text('Pull request not found.');
     const reviewers = data.reviewers
@@ -596,7 +598,7 @@ export class BitbucketClient {
     const [pr, me] = await Promise.all([
       this.request<BBPullRequest>(
         'GET',
-        `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${prId}`
+        `${this.rp(projectKey, repoSlug)}/pull-requests/${prId}`
       ),
       this.getCurrentUser().catch(() => null),
     ]);
@@ -655,7 +657,7 @@ export class BitbucketClient {
       const commitsStart = args.commitsStart ?? 0;
       const data = await this.request<BBPagedResult<BBCommit>>(
         'GET',
-        `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${prId}/commits?limit=${commitsLimit}&start=${commitsStart}`
+        `${this.rp(projectKey, repoSlug)}/pull-requests/${prId}/commits?limit=${commitsLimit}&start=${commitsStart}`
       );
       if (!data || data.values.length === 0) {
         sections.push('Commits:\n(no commits found)');
@@ -681,7 +683,7 @@ export class BitbucketClient {
         const qs = new URLSearchParams({ limit: String(commentsLimit), start: String(commentsStart), state: commentsState });
         const data = await this.request<BBPagedResult<BBComment>>(
           'GET',
-          `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${prId}/blocker-comments?${qs}`
+          `${this.rp(projectKey, repoSlug)}/pull-requests/${prId}/blocker-comments?${qs}`
         );
         if (!data || data.values.length === 0) {
           sections.push(`Comments:\n(no ${commentsState} BLOCKER comments)`);
@@ -692,7 +694,7 @@ export class BitbucketClient {
       } else {
         const activityData = await this.request<BBPagedResult<BBActivity>>(
           'GET',
-          `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${prId}/activities?limit=${commentsLimit}&start=${commentsStart}`
+          `${this.rp(projectKey, repoSlug)}/pull-requests/${prId}/activities?limit=${commentsLimit}&start=${commentsStart}`
         );
         const comments = uniqueCommentsFromActivities(activityData?.values ?? []).filter((comment) => {
           const matchesState = commentMatchesState(comment, commentsState);
@@ -711,7 +713,7 @@ export class BitbucketClient {
     if (includeDiff) {
       const data = await this.request<BBDiff>(
         'GET',
-        `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${prId}/diff`
+        `${this.rp(projectKey, repoSlug)}/pull-requests/${prId}/diff`
       );
       sections.push(`Diff:\n${data ? formatDiff(data, args.diffMaxChars ?? 8000) : '(no diff found)'}`);
     }
@@ -723,7 +725,7 @@ export class BitbucketClient {
     const { projectKey, repoSlug } = this.resolveProjectAndRepo(args.projectKey, args.repoSlug);
     const data = await this.request<BBDiff>(
       'GET',
-      `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/diff`
+      `${this.rp(projectKey, repoSlug)}/pull-requests/${args.prId}/diff`
     );
     if (!data) return text('No diff found.');
     return text(formatDiff(data));
@@ -735,7 +737,7 @@ export class BitbucketClient {
     const start = args.start ?? 0;
     const data = await this.request<BBPagedResult<BBCommit>>(
       'GET',
-      `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/commits?limit=${limit}&start=${start}`
+      `${this.rp(projectKey, repoSlug)}/pull-requests/${args.prId}/commits?limit=${limit}&start=${start}`
     );
     if (!data || data.values.length === 0) return text('No commits found.');
     const lines = data.values.map(
@@ -768,17 +770,20 @@ export class BitbucketClient {
       );
     }
 
-    const { title, description, toBranch = 'master', reviewers = [] } = args;
+    const { title, description, reviewers = [] } = args;
+    const toRef = args.toBranch
+      ? toBranchRef(args.toBranch)
+      : await this.getDefaultBranchRef(projectKey, repoSlug);
     const body = {
       title,
       description: description ?? '',
       fromRef: { id: toBranchRef(sourceBranch), repository: { slug: repoSlug, project: { key: projectKey } } },
-      toRef:   { id: toBranchRef(toBranch),   repository: { slug: repoSlug, project: { key: projectKey } } },
+      toRef:   { id: toRef,                     repository: { slug: repoSlug, project: { key: projectKey } } },
       reviewers: reviewers.map((name) => ({ user: { name } })),
     };
     const data = await this.request<BBPullRequest>(
       'POST',
-      `/projects/${projectKey}/repos/${repoSlug}/pull-requests`,
+      `${this.rp(projectKey, repoSlug)}/pull-requests`,
       body
     );
     if (!data) return text('Pull request created.');
@@ -807,7 +812,7 @@ export class BitbucketClient {
 
     const existing = await this.request<BBPullRequest>(
       'GET',
-      `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}`
+      `${this.rp(projectKey, repoSlug)}/pull-requests/${args.prId}`
     );
     if (!existing) throw new Error(`PR #${args.prId} not found.`);
 
@@ -833,7 +838,7 @@ export class BitbucketClient {
     try {
       updated = await this.request<BBPullRequest>(
         'PUT',
-        `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}`,
+        `${this.rp(projectKey, repoSlug)}/pull-requests/${args.prId}`,
         buildBody(existing)
       );
     } catch (error) {
@@ -842,13 +847,13 @@ export class BitbucketClient {
 
       const latest = await this.request<BBPullRequest>(
         'GET',
-        `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}`
+        `${this.rp(projectKey, repoSlug)}/pull-requests/${args.prId}`
       );
       if (!latest) throw error;
 
       updated = await this.request<BBPullRequest>(
         'PUT',
-        `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}`,
+        `${this.rp(projectKey, repoSlug)}/pull-requests/${args.prId}`,
         buildBody(latest)
       );
     }
@@ -948,7 +953,7 @@ export class BitbucketClient {
     const { projectKey, repoSlug } = this.resolveProjectAndRepo(args.projectKey, args.repoSlug);
     const data = await this.request<BBParticipant>(
       'POST',
-      `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/approve`
+      `${this.rp(projectKey, repoSlug)}/pull-requests/${args.prId}/approve`
     );
     const url = this.pullRequestUrl(projectKey, repoSlug, args.prId);
     if (!data) return text(`Approved PR #${args.prId}.\n${url}`);
@@ -959,7 +964,7 @@ export class BitbucketClient {
     const { projectKey, repoSlug } = this.resolveProjectAndRepo(args.projectKey, args.repoSlug);
     await this.request(
       'DELETE',
-      `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/approve`
+      `${this.rp(projectKey, repoSlug)}/pull-requests/${args.prId}/approve`
     );
     return text(`Approval removed from PR #${args.prId}.\n${this.pullRequestUrl(projectKey, repoSlug, args.prId)}`);
   }
@@ -968,14 +973,14 @@ export class BitbucketClient {
     const { projectKey, repoSlug } = this.resolveProjectAndRepo(args.projectKey, args.repoSlug);
     const pr = await this.request<BBPullRequest>(
       'GET',
-      `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}`
+      `${this.rp(projectKey, repoSlug)}/pull-requests/${args.prId}`
     );
     if (!pr) throw new Error(`PR #${args.prId} not found.`);
     const body: Record<string, unknown> = { version: pr.version };
     if (args.message) body.message = args.message;
     const data = await this.request<BBPullRequest>(
       'POST',
-      `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/decline`,
+      `${this.rp(projectKey, repoSlug)}/pull-requests/${args.prId}/decline`,
       body
     );
     if (!data) return text(`Declined PR #${args.prId}.\n${this.pullRequestUrl(projectKey, repoSlug, args.prId)}`);
@@ -992,7 +997,7 @@ export class BitbucketClient {
     const { projectKey, repoSlug } = this.resolveProjectAndRepo(args.projectKey, args.repoSlug);
     const pr = await this.request<BBPullRequest>(
       'GET',
-      `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}`
+      `${this.rp(projectKey, repoSlug)}/pull-requests/${args.prId}`
     );
     if (!pr) throw new Error(`PR #${args.prId} not found.`);
     const body: Record<string, unknown> = { version: pr.version };
@@ -1000,7 +1005,7 @@ export class BitbucketClient {
     if (args.message) body.message = args.message;
     const data = await this.request<BBPullRequest>(
       'POST',
-      `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/merge`,
+      `${this.rp(projectKey, repoSlug)}/pull-requests/${args.prId}/merge`,
       body
     );
     if (!data) return text(`Merged PR #${args.prId}.\n${this.pullRequestUrl(projectKey, repoSlug, args.prId)}`);
@@ -1008,7 +1013,7 @@ export class BitbucketClient {
   }
 
   private async getDefaultBranchRef(projectKey: string, repoSlug: string): Promise<string> {
-    const data = await this.request<{ displayId: string }>('GET', `/projects/${projectKey}/repos/${repoSlug}/default-branch`);
+    const data = await this.request<{ displayId: string }>('GET', `${this.rp(projectKey, repoSlug)}/default-branch`);
     if (data?.displayId) return `refs/heads/${data.displayId}`;
     // Fallback: detect from local git
     const head = safeExec('git rev-parse --abbrev-ref origin/HEAD');
@@ -1026,7 +1031,7 @@ export class BitbucketClient {
     const startPoint = args.startPoint ?? await this.getDefaultBranchRef(projectKey, repoSlug);
     const data = await this.request<BBBranch>(
       'POST',
-      `/projects/${projectKey}/repos/${repoSlug}/branches`,
+      `${this.rp(projectKey, repoSlug)}/branches`,
       { name: args.branchName, startPoint }
     );
     if (!data) return text(`Branch "${args.branchName}" created.`);
@@ -1045,7 +1050,7 @@ export class BitbucketClient {
     if (args.filter) qs.set('filterText', args.filter);
     const data = await this.request<BBPagedResult<BBBranch>>(
       'GET',
-      `/projects/${projectKey}/repos/${repoSlug}/branches?${qs}`
+      `${this.rp(projectKey, repoSlug)}/branches?${qs}`
     );
     if (!data || data.values.length === 0) return text('No branches found.');
     const lines = data.values.map((b) => `${b.displayId}${b.isDefault ? ' (default)' : ''} — ${b.latestCommit.slice(0, 8)}`);
@@ -1062,7 +1067,7 @@ export class BitbucketClient {
     const qs = args.ref ? `?at=${encodeURIComponent(args.ref)}` : '';
     const encodedPath = args.path.split('/').map(encodeURIComponent).join('/');
     const content = await this.requestText(
-      `/projects/${projectKey}/repos/${repoSlug}/raw/${encodedPath}${qs}`
+      `${this.rp(projectKey, repoSlug)}/raw/${encodedPath}${qs}`
     );
     const MAX_CHARS = 10000;
     if (content.length > MAX_CHARS) {
@@ -1100,7 +1105,7 @@ export class BitbucketClient {
       if (state) qs.set('state', state);
       const data = await this.request<BBTaskCount>(
         'GET',
-        `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/blocker-comments?${qs}`
+        `${this.rp(projectKey, repoSlug)}/pull-requests/${args.prId}/blocker-comments?${qs}`
       );
 
       let open = data?.open ?? 0;
@@ -1126,7 +1131,7 @@ export class BitbucketClient {
       if (state) qs.set('state', state);
       const data = await this.request<BBPagedResult<BBComment>>(
         'GET',
-        `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/blocker-comments?${qs}`
+        `${this.rp(projectKey, repoSlug)}/pull-requests/${args.prId}/blocker-comments?${qs}`
       );
       if (!data || data.values.length === 0) {
         return text(`No ${state ?? 'OPEN/RESOLVED'} BLOCKER comments on PR #${args.prId}.`);
@@ -1144,7 +1149,7 @@ export class BitbucketClient {
       if (state) qs.set('state', state);
       const data = await this.request<BBPagedResult<BBComment>>(
         'GET',
-        `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/comments?${qs}`
+        `${this.rp(projectKey, repoSlug)}/pull-requests/${args.prId}/comments?${qs}`
       );
       const filtered = (data?.values ?? []).filter((comment) => {
         const matchesState = state ? commentMatchesState(comment, state) : true;
@@ -1160,7 +1165,7 @@ export class BitbucketClient {
 
     const activityData = await this.request<BBPagedResult<BBActivity>>(
       'GET',
-      `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/activities?limit=${limit}&start=${start}`
+      `${this.rp(projectKey, repoSlug)}/pull-requests/${args.prId}/activities?limit=${limit}&start=${start}`
     );
     const comments = uniqueCommentsFromActivities(activityData?.values ?? []).filter((comment) => {
       const matchesState = state ? commentMatchesState(comment, state) : true;
@@ -1226,7 +1231,7 @@ export class BitbucketClient {
 
       const pr = await this.request<BBPullRequest>(
         'GET',
-        `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}`
+        `${this.rp(projectKey, repoSlug)}/pull-requests/${args.prId}`
       );
 
       inlineAnchor = {
@@ -1260,7 +1265,7 @@ export class BitbucketClient {
     try {
       created = await this.request<BBComment>(
         'POST',
-        `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/comments`,
+        `${this.rp(projectKey, repoSlug)}/pull-requests/${args.prId}/comments`,
         body
       );
     } catch (error) {
@@ -1273,7 +1278,7 @@ export class BitbucketClient {
       body.anchor = anchorWithoutHashes;
       created = await this.request<BBComment>(
         'POST',
-        `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/comments`,
+        `${this.rp(projectKey, repoSlug)}/pull-requests/${args.prId}/comments`,
         body
       );
     }
@@ -1303,7 +1308,7 @@ export class BitbucketClient {
 
     const current = await this.request<BBComment>(
       'GET',
-      `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/comments/${args.commentId}`
+      `${this.rp(projectKey, repoSlug)}/pull-requests/${args.prId}/comments/${args.commentId}`
     );
     if (!current) throw new Error(`Comment #${args.commentId} not found.`);
     const currentSeverity = current.severity ?? 'NORMAL';
@@ -1326,8 +1331,8 @@ export class BitbucketClient {
     }
 
     const commentPath = (targetSeverity === 'BLOCKER' || current.severity === 'BLOCKER')
-      ? `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/blocker-comments/${args.commentId}`
-      : `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/comments/${args.commentId}`;
+      ? `${this.rp(projectKey, repoSlug)}/pull-requests/${args.prId}/blocker-comments/${args.commentId}`
+      : `${this.rp(projectKey, repoSlug)}/pull-requests/${args.prId}/comments/${args.commentId}`;
 
     const buildBody = (version: number): Record<string, unknown> => {
       const body: Record<string, unknown> = { version };
@@ -1378,14 +1383,14 @@ export class BitbucketClient {
     const { projectKey, repoSlug } = this.resolveProjectAndRepo(args.projectKey, args.repoSlug);
     const current = await this.request<BBComment>(
       'GET',
-      `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/comments/${args.commentId}`
+      `${this.rp(projectKey, repoSlug)}/pull-requests/${args.prId}/comments/${args.commentId}`
     );
     if (!current) throw new Error(`Comment #${args.commentId} not found.`);
     await this.assertOwnComment(current);
 
     const commentPath = current.severity === 'BLOCKER'
-      ? `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/blocker-comments/${args.commentId}`
-      : `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/comments/${args.commentId}`;
+      ? `${this.rp(projectKey, repoSlug)}/pull-requests/${args.prId}/blocker-comments/${args.commentId}`
+      : `${this.rp(projectKey, repoSlug)}/pull-requests/${args.prId}/comments/${args.commentId}`;
     const path = `${commentPath}?version=${current.version}`;
     await this.request('DELETE', path);
     return text(`Comment #${args.commentId} deleted from PR #${args.prId}.`);
@@ -1395,7 +1400,7 @@ export class BitbucketClient {
     const { projectKey, repoSlug } = this.resolveProjectAndRepo(args.projectKey, args.repoSlug);
     const data = await this.request<BBPagedResult<BBTask>>(
       'GET',
-      `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/tasks`
+      `${this.rp(projectKey, repoSlug)}/pull-requests/${args.prId}/tasks`
     );
     if (!data || data.values.length === 0) return text(`No tasks on PR #${args.prId}.`);
     const lines = data.values.map((t) => {
@@ -1439,6 +1444,10 @@ export class BitbucketClient {
     if (args.action === 'delete') {
       const task = await this.request<BBTask>('GET', `/tasks/${args.taskId}`);
       if (!task) throw new Error(`Task #${args.taskId} not found.`);
+      // Verify the task belongs to the given PR (when anchor is a direct PR anchor)
+      if (args.prId !== undefined && task.anchor?.type === 'PULL_REQUEST' && task.anchor.id !== args.prId) {
+        throw new Error(`Task #${args.taskId} does not belong to PR #${args.prId}.`);
+      }
       await this.request('DELETE', `/tasks/${args.taskId}?version=${task.version}`);
       return text(`Task #${args.taskId} deleted.`);
     }
@@ -1446,6 +1455,9 @@ export class BitbucketClient {
     // resolve or reopen
     const task = await this.request<BBTask>('GET', `/tasks/${args.taskId}`);
     if (!task) throw new Error(`Task #${args.taskId} not found.`);
+    if (args.prId !== undefined && task.anchor?.type === 'PULL_REQUEST' && task.anchor.id !== args.prId) {
+      throw new Error(`Task #${args.taskId} does not belong to PR #${args.prId}.`);
+    }
     const newState = args.action === 'resolve' ? 'RESOLVED' : 'OPEN';
     const updated = await this.request<BBTask>('PUT', `/tasks/${args.taskId}?version=${task.version}`, {
       id: task.id,

@@ -1,7 +1,14 @@
 #!/usr/bin/env node
 import 'dotenv/config';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
+import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+
+const _pkg = JSON.parse(
+  readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../package.json'), 'utf-8')
+) as { version: string };
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
   CallToolRequestSchema,
@@ -16,7 +23,7 @@ import { getContext, getDiff, createBranch, checkRemoteBranch, checkoutRemoteBra
 import { getDevContext } from './context.js';
 
 function currentGitRemote(): string {
-  try { return execSync('git remote get-url origin', { encoding: 'utf-8' }).trim(); } catch { return ''; }
+  try { return execFileSync('git', ['remote', 'get-url', 'origin'], { encoding: 'utf-8' }).trim(); } catch { return ''; }
 }
 
 function remoteMatchesBitbucketInstance(remote: string, bitbucketUrl: string): boolean {
@@ -40,7 +47,7 @@ if (config.bitbucket && !bitbucket) {
 }
 
 const server = new Server(
-  { name: 'atlassian-mcp', version: '1.0.0' },
+  { name: 'atlassian-mcp', version: _pkg.version },
   { capabilities: { tools: {} } }
 );
 
@@ -507,17 +514,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             if (result.action === 'cancel' || result.action === 'decline') {
               return { content: [{ type: 'text', text: 'Cancelled.' }] };
             }
-            if (result.action === 'accept' && result.content?.action === 'checkout') {
-              const checkout = checkoutRemoteBranch(branchName, repoPath);
-              return { content: [{ type: 'text', text: `${message}\n\n${checkout.content[0].text}` }] };
+            if (result.action === 'accept') {
+              const chosen = result.content?.action;
+              if (chosen === 'checkout') {
+                const checkout = checkoutRemoteBranch(branchName, repoPath);
+                return { content: [{ type: 'text', text: `${message}\n\n${checkout.content[0].text}` }] };
+              }
+              if (chosen === 'cancel') {
+                return { content: [{ type: 'text', text: 'Cancelled.' }] };
+              }
+              // new_name — instruct the model to re-run with a custom name
+              return {
+                content: [{
+                  type: 'text',
+                  text: `${message}\n\nRe-run start_work with a custom branchName to proceed.`,
+                }],
+              };
             }
-            // new_name — instruct the model to re-run with a custom name
-            return {
-              content: [{
-                type: 'text',
-                text: `${message}\n\nRe-run start_work with a custom branchName to proceed.`,
-              }],
-            };
+            // Fallback: unknown action
+            return { content: [{ type: 'text', text: 'Cancelled.' }] };
           } catch {
             // Client doesn't support elicitation — fall back to informational text
             return {
@@ -651,12 +666,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // Resolve PR — by prId or current branch
         let resolvedPrId = a.prId;
         if (resolvedPrId === undefined) {
-          const { execSync } = await import('child_process');
-          const branch = (() => { try { return execSync('git rev-parse --abbrev-ref HEAD', { cwd: repoPath, encoding: 'utf-8' }).trim(); } catch { return ''; } })();
+          const branch = (() => { try { return execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoPath, encoding: 'utf-8' }).trim(); } catch { return ''; } })();
           if (!branch || branch === 'HEAD') {
             throw new Error('Could not determine current branch. Provide prId or run from a checked-out branch.');
           }
-          const remote = (() => { try { return execSync('git remote get-url origin', { cwd: repoPath, encoding: 'utf-8' }).trim(); } catch { return ''; } })();
+          const remote = (() => { try { return execFileSync('git', ['remote', 'get-url', 'origin'], { cwd: repoPath, encoding: 'utf-8' }).trim(); } catch { return ''; } })();
           const parsed = parseBitbucketRemote(remote);
           if (!parsed) throw new Error('Could not parse Bitbucket remote URL. Provide projectKey/repoSlug explicitly.');
           const projectKey = a.projectKey ?? parsed.projectKey;
@@ -714,10 +728,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
-process.on('SIGINT', async () => {
+async function shutdown() {
   await server.close();
   process.exit(0);
-});
+}
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
