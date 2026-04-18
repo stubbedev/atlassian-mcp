@@ -17,11 +17,12 @@ function safeExec(cmd: string, cwd: string): string {
 
 /**
  * Unified developer context: git state + linked Jira issues + open PR for current branch.
+ * Either jira or bitbucket may be null when only one product is configured.
  */
 export async function getDevContext(
   args: { repoPath?: string },
-  jira: JiraClient,
-  bitbucket: BitbucketClient
+  jira: JiraClient | null,
+  bitbucket: BitbucketClient | null
 ): Promise<ToolResult> {
   const repoPath = args.repoPath ?? process.cwd();
   const sections: string[] = [];
@@ -44,10 +45,10 @@ export async function getDevContext(
   ].join('\n'));
 
   // Jira — fetch overview for any tickets referenced in the branch name
-  const jiraKeys = [...new Set(branch.match(JIRA_KEY_RE) ?? [])];
+  const jiraKeys = jira ? [...new Set(branch.match(JIRA_KEY_RE) ?? [])] : [];
   for (const key of jiraKeys) {
     try {
-      const result = await jira.issueOverview({
+      const result = await jira!.issueOverview({
         issueKey: key,
         includeComments: true,
         commentsMaxResults: 5,
@@ -61,10 +62,10 @@ export async function getDevContext(
   }
 
   // Bitbucket — find the open PR for this branch (only if remote points to this instance)
-  const parsed = bitbucket.isRemoteForThisInstance(remote) ? parseBitbucketRemote(remote) : null;
+  const parsed = bitbucket?.isRemoteForThisInstance(remote) ? parseBitbucketRemote(remote) : null;
   if (parsed) {
     try {
-      const pr = await bitbucket.findOpenPrForBranch(parsed.projectKey, parsed.repoSlug, branch);
+      const pr = await bitbucket!.findOpenPrForBranch(parsed.projectKey, parsed.repoSlug, branch);
       if (pr) {
         const approved = pr.reviewers.filter((r) => r.approved).length;
         const total = pr.reviewers.length;

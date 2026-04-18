@@ -121,8 +121,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
       },
     },
-    // ── Combined context (jira + bitbucket) ───────────────────────────────
-    ...(jira && bitbucket ? [{
+    // ── Combined context (jira + bitbucket, or either alone) ─────────────
+    ...(jira || bitbucket ? [{
       name: 'get_dev_context',
       description: 'Master entry point. Use when asked "what am I working on?", "what\'s the status?", "show me the context", or before any review or coding task. Returns: git branch + upstream state, Jira ticket overview (status, transitions, sprint, comments), open PR with reviewer approvals, and actionable next-step hints (create PR, merge, address blockers).',
       inputSchema: {
@@ -131,10 +131,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           repoPath: { type: 'string', description: 'Local path to the git repo (defaults to cwd)' },
         },
       },
-    },
+    }] : []),
+    // ── Jira ──────────────────────────────────────────────────────────────
+    ...(jira ? [
     {
       name: 'start_work',
-      description: 'Start working on a Jira ticket: fetches the ticket, creates a local git branch with an auto-generated name (e.g. foo-123-add-payment-gateway), and optionally transitions the ticket. Use when told "make a branch for FOO-123", "start working on this ticket", "check out a branch for this issue", or "begin work on FOO-123".',
+      description: 'Start working on a Jira ticket: fetches the ticket, creates a local git branch with an auto-generated name (e.g. feature/FOO-123-add-payment-gateway), and optionally transitions the ticket. Use when told "make a branch for FOO-123", "start working on this ticket", "check out a branch for this issue", or "begin work on FOO-123".',
       inputSchema: {
         type: 'object',
         properties: {
@@ -147,26 +149,26 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
         required: ['issueKey'],
       },
-    }] : []),
-    // ── Jira ──────────────────────────────────────────────────────────────
-    ...(jira ? [{
+    },
+    {
       name: 'jira_search',
-      description: 'Discover Jira resources. Use when asked "find tickets for...", "what\'s in the backlog", "show me my issues", "list projects", or "which board is for project X". Set resource:\n• "issues" (default) — search by text, JQL, project, status, assignee, issue type, or mine=true for your queue\n• "projects" — list all projects and their keys\n• "issue_types" — valid types and statuses for a project\n• "boards" — list boards (pass project to filter by project key); use this to find the boardId before fetching sprints\n• "sprints" — sprints for a board (pass boardId); if you don\'t know the boardId, first use resource=boards\n• "users" — find users by name/email (pass query)',
+      description: 'Discover Jira resources. Use when asked "find tickets for...", "what\'s in the backlog", "show me my issues", "list projects", or "which board is for project X". Set resource:\n• "issues" (default) — search by text, JQL, project, status, assignee, issue type, or mine=true for your queue\n• "projects" — list all projects and their keys\n• "issue_types" — valid types and statuses for a project\n• "boards" — list boards (pass project to filter by project key); use this to find the boardId before fetching sprints or board_overview\n• "sprints" — sprints for a board (pass boardId); if you don\'t know the boardId, first use resource=boards\n• "board_overview" — active/future sprints with their issues for a board (pass boardId); use when asked "what\'s in the sprint", "show me the board", or "what\'s everyone working on"\n• "users" — find users by name/email (pass query)',
       inputSchema: {
         type: 'object',
         properties: {
-          resource:   { type: 'string', enum: ['issues', 'projects', 'issue_types', 'boards', 'sprints', 'users'], description: 'What to search (default: issues)' },
-          mine:       { type: 'boolean', description: 'Return issues assigned to you (resource=issues only)' },
-          query:      { type: 'string', description: 'Text search or user name query' },
-          jql:        { type: 'string', description: 'Raw JQL (resource=issues only, overrides other filters)' },
-          project:    { type: 'string', description: 'Project key filter or scope for issue_types/boards' },
-          status:     { type: 'string', description: 'Status filter (issues only)' },
-          assignee:   { type: 'string', description: 'Assignee username filter (issues only)' },
-          issueType:  { type: 'string', description: 'Issue type filter (issues only)' },
-          boardId:    { type: 'number', description: 'Board ID (required for resource=sprints)' },
-          sprintState:{ type: 'string', description: 'Sprint state filter: active, future, closed (sprints only)' },
-          maxResults: { type: 'number', description: 'Max results (default 20)', default: 20 },
-          startAt:    { type: 'number', description: 'Pagination offset (default 0)', default: 0 },
+          resource:        { type: 'string', enum: ['issues', 'projects', 'issue_types', 'boards', 'sprints', 'board_overview', 'users'], description: 'What to search (default: issues)' },
+          mine:            { type: 'boolean', description: 'Return issues assigned to you (resource=issues only)' },
+          query:           { type: 'string', description: 'Text search or user name query' },
+          jql:             { type: 'string', description: 'Raw JQL (resource=issues only, overrides other filters)' },
+          project:         { type: 'string', description: 'Project key filter or scope for issue_types/boards' },
+          status:          { type: 'string', description: 'Status filter (issues only, or board_overview to filter issues by status)' },
+          assignee:        { type: 'string', description: 'Assignee username filter (issues only, or board_overview to filter issues by assignee)' },
+          issueType:       { type: 'string', description: 'Issue type filter (issues only)' },
+          boardId:         { type: 'number', description: 'Board ID (required for resource=sprints or board_overview)' },
+          sprintState:     { type: 'string', description: 'Sprint state filter: active, future, closed (sprints and board_overview)' },
+          includeIssues:   { type: 'boolean', description: 'Include issues per sprint in board_overview (default true)', default: true },
+          maxResults:      { type: 'number', description: 'Max results (default 20)', default: 20 },
+          startAt:         { type: 'number', description: 'Pagination offset (default 0)', default: 0 },
         },
       },
     },
@@ -246,6 +248,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             required: ['timeSpent'],
           },
         },
+      },
+    },
+    {
+      name: 'jira_comment',
+      description: `Add, update, or delete a comment on a Jira issue. Use when asked to "edit my comment on FOO-123", "delete comment 12345", or "update that comment". action defaults to "add". Can only edit/delete your own comments. ${JIRA_WIKI_MARKUP_HINT}`,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          action:    { type: 'string', enum: ['add', 'update', 'delete'], description: 'Operation (default: add)' },
+          issueKey:  { type: 'string', description: 'Jira issue key, e.g. FOO-123' },
+          commentId: { type: 'string', description: 'Comment ID (required for update/delete)' },
+          body:      { type: 'string', description: `Comment text. ${JIRA_WIKI_MARKUP_HINT} Required for add/update.` },
+        },
+        required: ['issueKey'],
       },
     }] : []),
     ...(bitbucket ? [{
@@ -400,7 +416,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     // ── Combined workflow ─────────────────────────────────────────────────
     ...(jira && bitbucket ? [{
       name: 'complete_work',
-      description: 'Close the loop on a finished branch: merges the open PR, transitions the Jira ticket to Done (or a named transition), and optionally deletes the local branch. Use when asked to "ship this", "close out FOO-123", "merge and close the ticket", or "done with this branch". Mirrors start_work.',
+      description: 'Close the loop on a finished branch: merges the open PR and transitions the Jira ticket to Done (or a named transition). Use when asked to "ship this", "close out FOO-123", "merge and close the ticket", or "done with this branch". Mirrors start_work.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -440,7 +456,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
       // Combined context + workflow
       case 'get_dev_context':
-        if (!jira || !bitbucket) throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
+        if (!jira && !bitbucket) throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
         return await getDevContext(args as { repoPath?: string }, jira, bitbucket);
       case 'start_work': {
         if (!jira) throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
@@ -537,7 +553,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             lines.push(`Jira:    could not transition — ${(err as Error).message}`);
           }
         }
-        lines.push(``, `Next: push commits then use bitbucket_mutate to open a PR.`);
+        if (bitbucket) lines.push(``, `Next: push commits then use bitbucket_mutate to open a PR.`);
         return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
       // Jira
@@ -553,8 +569,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (resource === 'projects')     return await jira.getProjects({ maxResults: a.maxResults });
         if (resource === 'issue_types')  return await jira.getIssueTypes({ projectKey: a.projectKey ?? a.project });
         if (resource === 'boards')       return await jira.getBoards({ projectKey: a.projectKey ?? a.project, maxResults: a.maxResults, startAt: a.startAt });
-        if (resource === 'sprints')      return await jira.getSprints({ boardId: a.boardId!, state: a.sprintState, maxResults: a.maxResults, startAt: a.startAt });
-        if (resource === 'users')        return await jira.searchUsers({ query: a.query ?? '', maxResults: a.maxResults });
+        if (resource === 'sprints')       return await jira.getSprints({ boardId: a.boardId!, state: a.sprintState, maxResults: a.maxResults, startAt: a.startAt });
+        if (resource === 'board_overview') return await jira.boardOverview({ boardId: a.boardId!, sprintState: a.sprintState, sprintMaxResults: a.maxResults, sprintStartAt: a.startAt, includeIssues: (a as { includeIssues?: boolean }).includeIssues, assignee: a.assignee, status: a.status });
+        if (resource === 'users')         return await jira.searchUsers({ query: a.query ?? '', maxResults: a.maxResults });
         // issues (default)
         if (a.mine) return await jira.myIssues({ maxResults: a.maxResults, startAt: a.startAt });
         return await jira.searchIssues(a as Parameters<typeof jira.searchIssues>[0]);
@@ -565,6 +582,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'jira_mutate':
         if (!jira) throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
         return await jira.mutateIssue(normalizeJiraMutateArgs(args) as Parameters<typeof jira.mutateIssue>[0]);
+      case 'jira_comment': {
+        if (!jira) throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
+        const a = normalizeJiraProjectArgs(args) as { action?: string; issueKey: string; commentId?: string; body?: string };
+        const action = a.action ?? 'add';
+        if (action === 'update') return await jira.editComment({ issueKey: a.issueKey, commentId: a.commentId!, body: a.body! });
+        if (action === 'delete') return await jira.deleteComment({ issueKey: a.issueKey, commentId: a.commentId! });
+        return await jira.addComment({ issueKey: a.issueKey, body: a.body! });
+      }
       // Bitbucket
       case 'bitbucket_search': {
         if (!bitbucket) throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);

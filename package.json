@@ -14,20 +14,25 @@
     "atlassian-mcp": "dist/index.js"
   },
   "scripts": {
-    "prepare": "tsc",
     "build": "tsc",
     "start": "node dist/index.js",
-    "dev": "tsc --watch",
+    "dev": "tsx src/index.ts",
+    "release:patch": "npm version patch && git push origin && git push origin --tags && gh release create $(git describe --tags) --generate-notes",
+    "release:minor": "npm version minor && git push origin && git push origin --tags && gh release create $(git describe --tags) --generate-notes",
+    "release:major": "npm version major && git push origin && git push origin --tags && gh release create $(git describe --tags) --generate-notes",
     "smoke": "npm run build && npm run smoke:tools",
-    "smoke:tools": "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}' | node dist/index.js"
+    "smoke:tools": "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}' | node dist/index.js",
+    "smoke:validate": "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}' | node dist/index.js | node -e \"let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const r=JSON.parse(d.trim());if(r.error)throw new Error('server error: '+r.error.message);const t=r.result?.tools;if(!Array.isArray(t)||!t.length)throw new Error('no tools in response');const bad=t.filter(x=>!x.name||!x.inputSchema);if(bad.length)throw new Error('malformed tools: '+bad.map(x=>x.name??'(unnamed)').join(', '));console.log('smoke OK — '+t.length+' tool(s): '+t.map(x=>x.name).join(', '))}catch(e){console.error('smoke FAIL:',e.message);process.exit(1)}})\"",
+    "prerelease": "npm run build && npm run smoke:validate && ncu"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "dotenv": "^16.0.0"
+    "dotenv": "^17.4.2"
   },
   "devDependencies": {
-    "typescript": "^5.0.0",
-    "@types/node": "^22.0.0"
+    "@types/node": "^25.6.0",
+    "npm-check-updates": "^21.0.2",
+    "typescript": "^6.0.3"
   },
   "engines": {
     "node": ">=18.0.0"
