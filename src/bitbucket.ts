@@ -1450,48 +1450,6 @@ export class BitbucketClient {
     return text(`Task #${updated.id} is now ${updated.state}: "${updated.text}"`);
   }
 
-  async getBuildLog(args: { url: string; maxLines?: number }): Promise<ToolResult> {
-    const { url, maxLines = 150 } = args;
-    const baseUrl = url.replace(/\/+$/, '');
-
-    // Confirm the URL is Jenkins before doing anything else
-    let probe: Response;
-    try {
-      probe = await fetch(baseUrl, { method: 'HEAD' });
-    } catch (e) {
-      return text(`Network error reaching ${baseUrl}: ${e}`);
-    }
-
-    const jenkinsVersion = probe.headers.get('X-Jenkins');
-    const fetchUrl = jenkinsVersion ? `${baseUrl}/consoleText` : baseUrl;
-    const label = jenkinsVersion ? `Jenkins ${jenkinsVersion}` : 'CI';
-
-    let res: Response;
-    try {
-      res = await fetch(fetchUrl);
-    } catch (e) {
-      return text(`Network error fetching build log from ${fetchUrl}: ${e}`);
-    }
-
-    if (res.status === 401 || res.status === 403) {
-      return text(
-        `${label} returned HTTP ${res.status} for ${fetchUrl}.\n` +
-        `The build log requires authentication. View it directly in your browser.`
-      );
-    }
-
-    if (!res.ok) {
-      return text(`Failed to fetch build log (HTTP ${res.status}) from ${fetchUrl}.`);
-    }
-
-    const raw = await res.text();
-    const lines = raw.split('\n');
-    const truncated = lines.length > maxLines;
-    const shown = truncated ? lines.slice(-maxLines) : lines;
-    const prefix = truncated ? `(showing last ${maxLines} of ${lines.length} lines)\n\n` : '';
-    return text(`Build log from ${label} — ${fetchUrl}:\n${prefix}${shown.join('\n')}`);
-  }
-
   async getBuildStatuses(args: { commitSha: string }): Promise<ToolResult> {
     const data = await this.requestBuildStatus<{ values: BBBuildStatus[] }>(
       'GET',

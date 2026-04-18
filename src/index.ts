@@ -413,18 +413,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['prId'],
       },
     },
-    {
-      name: 'bitbucket_get_build_log',
-      description: 'Fetch CI build console output. Jenkins is detected via the X-Jenkins response header. Use after seeing a failed build URL in bitbucket_get_pr output — pass the URL exactly as shown. Returns the last N lines of the log (default 150).',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          url:      { type: 'string', description: 'Build URL from CI status, e.g. https://jenkins.example.com/job/my-job/123/' },
-          maxLines: { type: 'number', description: 'Max lines to return from the end of the log (default 150)', default: 150 },
-        },
-        required: ['url'],
-      },
-    }] : []),
+] : []),
     // ── Combined workflow ─────────────────────────────────────────────────
     ...(jira && bitbucket ? [{
       name: 'complete_work',
@@ -649,9 +638,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (action === 'list') return await bitbucket.getPrTasks(a as Parameters<typeof bitbucket.getPrTasks>[0]);
         return await bitbucket.mutatePrTask({ ...a, action: action as 'create' | 'resolve' | 'reopen' | 'delete' });
       }
-      case 'bitbucket_get_build_log':
-        if (!bitbucket) throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
-        return await bitbucket.getBuildLog(args as { url: string; maxLines?: number });
       case 'complete_work': {
         if (!jira || !bitbucket) throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
         const a = args as {
