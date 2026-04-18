@@ -459,6 +459,21 @@ export class BitbucketClient {
     }
   }
 
+  // Fallback: search branches matching filterText and check each for an open PR.
+  // Used when exact branch name lookup yields no result (e.g. LLM provides a partial branch name).
+  private async findOpenPrByBranchFilter(projectKey: string, repoSlug: string, filterText: string): Promise<BBPullRequest | null> {
+    const branches = await this.request<BBPagedResult<BBBranch>>(
+      'GET',
+      `/projects/${projectKey}/repos/${repoSlug}/branches?limit=25&filterText=${encodeURIComponent(filterText)}`
+    );
+    if (!branches?.values?.length) return null;
+    for (const b of branches.values) {
+      const pr = await this.findOpenPrForBranch(projectKey, repoSlug, b.displayId);
+      if (pr) return pr;
+    }
+    return null;
+  }
+
   async listRepos(args: { projectKey?: string; limit?: number; start?: number }): Promise<ToolResult> {
     const { limit = 50, start = 0 } = args;
     const qs = `?limit=${limit}&start=${start}`;
@@ -565,7 +580,11 @@ export class BitbucketClient {
       if (!branch || branch === 'HEAD') {
         throw new Error('Provide prId or fromBranch, or run from a checked-out branch.');
       }
-      const found = await this.findOpenPrForBranch(projectKey, repoSlug, branch);
+      let found = await this.findOpenPrForBranch(projectKey, repoSlug, branch);
+      if (!found) {
+        // Fallback: search branches matching the input text, then check those for open PRs
+        found = await this.findOpenPrByBranchFilter(projectKey, repoSlug, branchDisplayId(branch));
+      }
       if (!found) throw new Error(`No open PR found for branch "${branchDisplayId(branch)}".`);
       prId = found.id;
     }
@@ -618,7 +637,8 @@ export class BitbucketClient {
       if (statuses?.values?.length) {
         const statusLines = statuses.values.map((s) => {
           const icon = s.state === 'SUCCESSFUL' ? '✓' : s.state === 'FAILED' ? '✗' : '…';
-          return `${icon} [${s.state}] ${s.name ?? s.key}${s.description ? ` — ${s.description}` : ''}`;
+          const urlPart = s.url ? `\n   URL: ${s.url}` : '';
+          return `${icon} [${s.state}] ${s.name ?? s.key}${s.description ? ` — ${s.description}` : ''}${urlPart}`;
         });
         sections.push(`Build status (${pr.fromRef.latestCommit.slice(0, 8)}):\n${statusLines.join('\n')}`);
       } else {
@@ -1428,6 +1448,48 @@ export class BitbucketClient {
     });
     if (!updated) return text(`Task #${args.taskId} ${newState}.`);
     return text(`Task #${updated.id} is now ${updated.state}: "${updated.text}"`);
+  }
+
+  async getBuildLog(args: { url: string; maxLines?: number }): Promise<ToolResult> {
+    const { url, maxLines = 150 } = args;
+    const baseUrl = url.replace(/\/+$/, '');
+
+    // Confirm the URL is Jenkins before doing anything else
+    let probe: Response;
+    try {
+      probe = await fetch(baseUrl, { method: 'HEAD' });
+    } catch (e) {
+      return text(`Network error reaching ${baseUrl}: ${e}`);
+    }
+
+    const jenkinsVersion = probe.headers.get('X-Jenkins');
+    const fetchUrl = jenkinsVersion ? `${baseUrl}/consoleText` : baseUrl;
+    const label = jenkinsVersion ? `Jenkins ${jenkinsVersion}` : 'CI';
+
+    let res: Response;
+    try {
+      res = await fetch(fetchUrl);
+    } catch (e) {
+      return text(`Network error fetching build log from ${fetchUrl}: ${e}`);
+    }
+
+    if (res.status === 401 || res.status === 403) {
+      return text(
+        `${label} returned HTTP ${res.status} for ${fetchUrl}.\n` +
+        `The build log requires authentication. View it directly in your browser.`
+      );
+    }
+
+    if (!res.ok) {
+      return text(`Failed to fetch build log (HTTP ${res.status}) from ${fetchUrl}.`);
+    }
+
+    const raw = await res.text();
+    const lines = raw.split('\n');
+    const truncated = lines.length > maxLines;
+    const shown = truncated ? lines.slice(-maxLines) : lines;
+    const prefix = truncated ? `(showing last ${maxLines} of ${lines.length} lines)\n\n` : '';
+    return text(`Build log from ${label} — ${fetchUrl}:\n${prefix}${shown.join('\n')}`);
   }
 
   async getBuildStatuses(args: { commitSha: string }): Promise<ToolResult> {
