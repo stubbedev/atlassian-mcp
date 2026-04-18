@@ -8,84 +8,58 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 
 ## Tools
 
-### Context
+### Workflow
 
 | Tool | Description |
 |---|---|
-| `get_dev_context` | One-shot coding context: local git state + linked Jira tickets + open PR for current branch |
-
-### Jira
-
-| Tool | Description |
-|---|---|
-| `jira_search_issues` | Find tickets by plain language, JQL, project, status, assignee, or type |
-| `jira_my_issues` | List issues assigned to you, ordered by last updated |
-| `jira_get_projects` | List all accessible projects |
-| `jira_get_issue_types` | List issue types and their available statuses for a project |
-| `jira_get_sprints` | List sprints for a board (with sprint IDs for assignment) |
-| `jira_get_issue` | Get issue details by key |
-| `jira_issue_overview` | Get one-call issue overview (details, transitions, sprint context, optional comments) |
-| `jira_board_overview` | Get one-call board overview (board info, sprints, optional sprint issues) |
-| `jira_create_issue` | Create a new issue |
-| `jira_update_issue` | Update summary, description, assignee, or priority |
-| `jira_add_issues_to_sprint` | Add one or more issues to a sprint by sprint ID |
-| `jira_mutate_issue` | Bundle create/update/sprint/transition/comment actions into one call |
-| `jira_search_users` | Search for users by name or email |
-| `jira_get_comments` | List comments on an issue |
-| `jira_add_comment` | Add a comment to an issue |
-| `jira_transition_issue` | Move issue status via transition name or transition ID |
-
-### Bitbucket
-
-| Tool | Description |
-|---|---|
-| `bitbucket_list_repos` | List repositories (optionally by project) |
-| `bitbucket_list_pull_requests` | List repository pull requests (filter by state, source branch, or text) |
-| `bitbucket_my_prs` | List PRs in your inbox (authored by you or awaiting review) |
-| `bitbucket_get_pull_request` | Get pull request details |
-| `bitbucket_get_pr_overview` | Get a one-call PR overview: metadata, commits, comments, task-style BLOCKER comments, and optional diff |
-| `bitbucket_get_pr_diff` | Get the code diff for a pull request |
-| `bitbucket_create_pull_request` | Create a new pull request (checks for an existing open PR from the source branch first) |
-| `bitbucket_update_pull_request` | Update pull request title, description, destination branch, or reviewers |
-| `bitbucket_mutate_pull_request` | Create or update a pull request in one call (target by PR ID or source branch) |
-| `bitbucket_approve_pr` | Approve a pull request |
-| `bitbucket_unapprove_pr` | Remove your approval from a pull request |
-| `bitbucket_merge_pr` | Merge a pull request |
-| `bitbucket_decline_pr` | Decline a pull request |
-| `bitbucket_get_pr_comments` | Get PR comment threads in bulk, including task-style BLOCKER comments and blocker counts |
-| `bitbucket_add_pr_comment` | Add a PR comment; when remarking on an existing comment, pass `commentId` so it is posted as a thread reply |
-| `bitbucket_update_pr_comment` | Update comment text/severity (own comments only), resolve or reopen normal threads via `threadResolved`, and resolve/reopen BLOCKER tasks via `state` |
-| `bitbucket_delete_pr_comment` | Delete a PR comment by comment ID |
-| `bitbucket_get_pr_commits` | List commits included in a pull request |
-| `bitbucket_get_branches` | List branches in a repository |
-| `bitbucket_get_file` | Get raw file content at a given ref |
+| `get_dev_context` | Master entry point: git state + linked Jira ticket + open PR with reviewer/blocker status and next-step hints |
+| `start_work` | Start a Jira ticket: fetches it, creates a local branch (`feature/FOO-123-slug`), and optionally transitions the ticket |
+| `complete_work` | Close out finished work: merges the open PR and transitions the Jira ticket to Done |
 
 ### Git
 
 | Tool | Description |
 |---|---|
-| `git_get_context` | Branch, remote, recent commits, working tree status, and any Jira keys detected in the branch name |
-| `git_get_commits` | Commit history for a branch with author and message |
-| `git_get_diff` | Diff of uncommitted changes or between two refs |
+| `git_get_context` | Branch, upstream state, remote URL, recent commits, working tree status, diff stat, and Jira keys in branch name |
+| `git_get_diff` | Diff of uncommitted changes or between two refs; supports paging via `charOffset` |
 
-All list tools support `limit` and `start`/`startAt` for pagination.
+### Jira
+
+| Tool | Description |
+|---|---|
+| `jira_search` | Discover resources: `issues`, `projects`, `issue_types`, `boards`, `sprints`, `board_overview`, or `users` via `resource` param |
+| `jira_get` | Full details for one issue: summary, description, status, sprint, transitions, and comments |
+| `jira_mutate` | Create, update, transition, comment, link, add to sprint, or log work — all in one call |
+| `jira_comment` | Add, update, or delete a comment on an issue (`action`: `add` / `update` / `delete`) |
+
+### Bitbucket
+
+| Tool | Description |
+|---|---|
+| `bitbucket_search` | Discover resources: `pull_requests` (default), `repos`, or `branches` via `resource` param; `mine=true` for your inbox |
+| `bitbucket_get_pr` | Full PR details: metadata, commits, comments, blockers, build status, and optional diff |
+| `bitbucket_mutate` | Create/update a PR, or perform lifecycle actions: `approve`, `unapprove`, `merge`, `decline` |
+| `bitbucket_comment` | Add, update, or delete a PR comment; supports inline anchors, multiline, suggestions, and BLOCKER severity |
+| `bitbucket_get_file` | Raw file content from Bitbucket at a branch, tag, or commit |
+| `bitbucket_pr_tasks` | Manage PR tasks (checklist items): `list`, `create`, `resolve`, `reopen`, `delete` |
 
 ### Natural language examples
 
-- "show my PRs waiting for review" → `bitbucket_my_prs`
-- "list open PRs for this repo from branch feature/ABC-123" → `bitbucket_list_pull_requests`
-- "open a PR from my current branch to master" → `bitbucket_create_pull_request`
-- "update PR 42 title and reviewers" → `bitbucket_update_pull_request`
-- "create or update PR from this branch in one call" → `bitbucket_mutate_pull_request`
-- "show review comments on PR 42" → `bitbucket_get_pr_comments`
-- "reply to comment 123 on PR 42" → `bitbucket_add_pr_comment` with `commentId=123`
-- "give me one full overview of PR 42" → `bitbucket_get_pr_overview`
-- "how many open blockers are on PR 42" → `bitbucket_get_pr_comments` with `severity=BLOCKER` and `countOnly=true`
-- "resolve this review thread on PR 42" → `bitbucket_update_pr_comment` with `threadResolved=true`
-- "resolve this blocker task on PR 42" → `bitbucket_update_pr_comment` with `severity=BLOCKER` and `state=RESOLVED`
-- "move FOO-123 to In Progress" → `jira_transition_issue` with `transitionName="In Progress"`
-- "find bugs assigned to me in PAY project" → `jira_search_issues`
-- "give me my coding context for this branch" → `get_dev_context`
+- "what am I working on?" → `get_dev_context`
+- "make a branch for FOO-123" → `start_work`
+- "ship this / merge and close the ticket" → `complete_work`
+- "show my PRs waiting for review" → `bitbucket_search` with `mine=true`
+- "list open PRs for this repo from feature/ABC-123" → `bitbucket_search` with `fromBranch`
+- "give me a full overview of PR 42" → `bitbucket_get_pr`
+- "open a PR from my current branch to master" → `bitbucket_mutate` with `create`
+- "approve / merge / decline PR 42" → `bitbucket_mutate` with `action`
+- "reply to comment 123 on PR 42" → `bitbucket_comment` with `commentId=123`
+- "resolve this blocker on PR 42" → `bitbucket_comment` with `action=update`, `severity=BLOCKER`, `state=RESOLVED`
+- "list PR checklist tasks" → `bitbucket_pr_tasks` with `action=list`
+- "find bugs assigned to me in PAY project" → `jira_search` with `mine=true`, `issueType=Bug`
+- "what's in the current sprint?" → `jira_search` with `resource=board_overview`
+- "move FOO-123 to In Progress" → `jira_mutate` with `transitionName="In Progress"`
+- "log 2h on FOO-123" → `jira_mutate` with `worklog`
 
 ---
 
