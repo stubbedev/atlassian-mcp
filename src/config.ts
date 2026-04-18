@@ -2,9 +2,14 @@ import { readFileSync, existsSync } from 'fs';
 import { homedir } from 'os';
 import { join, resolve } from 'path';
 
+export interface ServiceConfig {
+  url: string;
+  token: string;
+}
+
 export interface Config {
-  jira: { url: string; token: string };
-  bitbucket: { url: string; token: string };
+  jira?: ServiceConfig;
+  bitbucket?: ServiceConfig;
 }
 
 interface ConfigFile {
@@ -45,21 +50,25 @@ export function loadConfig(): Config {
   const bitbucketUrl = file?.bitbucket?.url ?? process.env.BITBUCKET_URL ?? '';
   const bitbucketToken = file?.bitbucket?.token ?? process.env.BITBUCKET_ACCESS_TOKEN ?? '';
 
-  const missing: string[] = [];
-  if (!jiraUrl) missing.push('jira.url (or JIRA_URL)');
-  if (!jiraToken) missing.push('jira.token (or JIRA_ACCESS_TOKEN)');
-  if (!bitbucketUrl) missing.push('bitbucket.url (or BITBUCKET_URL)');
-  if (!bitbucketToken) missing.push('bitbucket.token (or BITBUCKET_ACCESS_TOKEN)');
+  const config: Config = {};
 
-  if (missing.length > 0) {
-    throw new Error(
-      `Missing required configuration: ${missing.join(', ')}.\n` +
-      'Provide a config file (~/.atlassian-mcp.json or --config <path>) or set environment variables.'
-    );
+  if (jiraUrl && jiraToken) {
+    config.jira = { url: jiraUrl, token: jiraToken };
+  } else {
+    const missing: string[] = [];
+    if (!jiraUrl) missing.push('jira.url (or JIRA_URL)');
+    if (!jiraToken) missing.push('jira.token (or JIRA_ACCESS_TOKEN)');
+    console.error(`[atlassian-mcp] Jira disabled: missing ${missing.join(', ')}`);
   }
 
-  return {
-    jira: { url: jiraUrl, token: jiraToken },
-    bitbucket: { url: bitbucketUrl, token: bitbucketToken },
-  };
+  if (bitbucketUrl && bitbucketToken) {
+    config.bitbucket = { url: bitbucketUrl, token: bitbucketToken };
+  } else {
+    const missing: string[] = [];
+    if (!bitbucketUrl) missing.push('bitbucket.url (or BITBUCKET_URL)');
+    if (!bitbucketToken) missing.push('bitbucket.token (or BITBUCKET_ACCESS_TOKEN)');
+    console.error(`[atlassian-mcp] Bitbucket disabled: missing ${missing.join(', ')}`);
+  }
+
+  return config;
 }

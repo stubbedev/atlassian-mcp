@@ -13,6 +13,10 @@ interface JiraIssue {
     assignee?: { displayName: string };
     labels?: string[];
     components?: Array<{ name: string }>;
+    parent?: { key: string; fields: { summary: string; issuetype: { name: string } } };
+    fixVersions?: Array<{ id: string; name: string }>;
+    issuelinks?: JiraIssueLink[];
+    subtasks?: Array<{ key: string; fields: { summary: string; status: { name: string } } }>;
   };
 }
 
@@ -96,6 +100,22 @@ interface JiraBoard {
   id: number;
   name: string;
   type: string;
+  location?: { projectKey?: string; projectName?: string };
+}
+
+interface JiraIssueLink {
+  id: string;
+  type: { id: string; name: string; inward: string; outward: string };
+  inwardIssue?: { key: string; fields: { summary: string; status: { name: string } } };
+  outwardIssue?: { key: string; fields: { summary: string; status: { name: string } } };
+}
+
+interface JiraWorklog {
+  id: string;
+  author: { displayName: string };
+  started: string;
+  timeSpent: string;
+  comment?: string;
 }
 
 interface JiraAgileIssue {
@@ -305,6 +325,9 @@ export class JiraClient {
     description?: string;
     assignee?: string;
     priority?: string;
+    labels?: string[];
+    fixVersion?: string;
+    parent?: string;
   }): Promise<JiraCreatedIssue | null> {
     const projectKey = await this.resolveProjectKey(args.projectKey);
     const fields: Record<string, unknown> = {
@@ -312,9 +335,12 @@ export class JiraClient {
       issuetype: { name: args.issueType },
       summary: args.summary,
     };
-    if (args.description) fields.description = args.description;
-    if (args.assignee)    fields.assignee = { name: args.assignee };
-    if (args.priority)    fields.priority = { name: args.priority };
+    if (args.description)            fields.description = args.description;
+    if (args.assignee)               fields.assignee = { name: args.assignee };
+    if (args.priority)               fields.priority = { name: args.priority };
+    if (args.labels?.length)         fields.labels = args.labels;
+    if (args.fixVersion)             fields.fixVersions = [{ name: args.fixVersion }];
+    if (args.parent)                 fields.parent = { key: args.parent };
     return this.request<JiraCreatedIssue>('POST', '/issue', { fields });
   }
 
@@ -324,12 +350,16 @@ export class JiraClient {
     description?: string;
     assignee?: string;
     priority?: string;
+    labels?: string[];
+    fixVersion?: string;
   }): Promise<boolean> {
     const fields: Record<string, unknown> = {};
     if (args.summary !== undefined)     fields.summary = args.summary;
     if (args.description !== undefined) fields.description = args.description;
     if (args.assignee !== undefined)    fields.assignee = { name: args.assignee };
     if (args.priority !== undefined)    fields.priority = { name: args.priority };
+    if (args.labels !== undefined)      fields.labels = args.labels;
+    if (args.fixVersion !== undefined)  fields.fixVersions = args.fixVersion ? [{ name: args.fixVersion }] : [];
     if (Object.keys(fields).length === 0) return false;
     await this.request('PUT', `/issue/${args.issueKey}`, { fields });
     return true;
@@ -485,6 +515,16 @@ export class JiraClient {
     return text(`${lines.length} user(s) found:\n${lines.join('\n')}`);
   }
 
+  async getIssueFields(issueKey: string): Promise<{ summary: string; status: string; type: string }> {
+    const data = await this.request<JiraIssue>('GET', `/issue/${issueKey}?fields=summary,status,issuetype`);
+    if (!data) throw new Error(`Issue ${issueKey} not found`);
+    return {
+      summary: data.fields.summary,
+      status: data.fields.status.name,
+      type: data.fields.issuetype.name,
+    };
+  }
+
   async getIssue(args: { issueKey: string }): Promise<ToolResult> {
     const fields = 'summary,description,status,assignee,priority,issuetype,labels,components';
     const data = await this.request<JiraIssue>('GET', `/issue/${args.issueKey}?fields=${fields}`);
@@ -520,7 +560,7 @@ export class JiraClient {
     const commentsMaxResults = args.commentsMaxResults ?? 10;
     const commentsStartAt = args.commentsStartAt ?? 0;
 
-    const fields = 'summary,description,status,assignee,priority,issuetype,labels,components';
+    const fields = 'summary,description,status,assignee,priority,issuetype,labels,components,parent,fixVersions,issuelinks,subtasks';
     const issue = await this.request<JiraIssue>('GET', `/issue/${args.issueKey}?fields=${fields}`);
     if (!issue) return text('Issue not found.');
 
@@ -534,6 +574,16 @@ export class JiraClient {
       `Assignee:   ${f.assignee?.displayName ?? 'Unassigned'}`,
       `Labels:     ${f.labels?.join(', ') || 'None'}`,
       `Components: ${f.components?.map((c) => c.name).join(', ') || 'None'}`,
+      ...(f.parent ? [`Parent:     [${f.parent.key}] ${f.parent.fields.summary} (${f.parent.fields.issuetype.name})`] : []),
+      ...(f.fixVersions?.length ? [`Fix Vers:   ${f.fixVersions.map((v) => v.name).join(', ')}`] : []),
+      ...(f.subtasks?.length ? [`Subtasks:   ${f.subtasks.map((s) => `[${s.key}] ${s.fields.summary} (${s.fields.status.name})`).join(', ')}`] : []),
+      ...(f.issuelinks?.length ? [
+        `Links:      ${f.issuelinks.map((l) => {
+          if (l.outwardIssue) return `${l.type.outward} → [${l.outwardIssue.key}] ${l.outwardIssue.fields.summary}`;
+          if (l.inwardIssue) return `${l.type.inward} ← [${l.inwardIssue.key}] ${l.inwardIssue.fields.summary}`;
+          return l.type.name;
+        }).join('; ')}`,
+      ] : []),
     ];
 
     if (includeSprint) {
@@ -761,17 +811,25 @@ export class JiraClient {
       description?: string;
       assignee?: string;
       priority?: string;
+      labels?: string[];
+      fixVersion?: string;
+      parent?: string;
     };
     update?: {
       summary?: string;
       description?: string;
       assignee?: string;
       priority?: string;
+      labels?: string[];
+      fixVersion?: string;
     };
     sprintId?: number;
+    removeFromSprint?: boolean;
     transitionId?: string;
     transitionName?: string;
     comment?: string;
+    link?: { linkType: string; targetIssueKey: string; direction?: 'outward' | 'inward' };
+    worklog?: { timeSpent: string; comment?: string; started?: string };
   }): Promise<ToolResult> {
     let issueKey = args.issueKey?.trim();
     const actions: string[] = [];
@@ -797,6 +855,11 @@ export class JiraClient {
       actions.push(`added to sprint ${args.sprintId}`);
     }
 
+    if (args.removeFromSprint) {
+      await this.requestAgile('POST', '/backlog/issue', { issues: [issueKey] });
+      actions.push('moved to backlog');
+    }
+
     if (args.transitionId || args.transitionName) {
       const transitionId = await this.resolveTransitionId(issueKey, args.transitionId, args.transitionName);
       await this.transitionIssueInternal(issueKey, transitionId);
@@ -806,6 +869,24 @@ export class JiraClient {
     if (args.comment !== undefined) {
       await this.request('POST', `/issue/${issueKey}/comment`, { body: validateCommentBody(args.comment) });
       actions.push('added comment');
+    }
+
+    if (args.link) {
+      const dir = args.link.direction ?? 'outward';
+      await this.request('POST', '/issueLink', {
+        type: { name: args.link.linkType },
+        outwardIssue: { key: dir === 'outward' ? issueKey : args.link.targetIssueKey },
+        inwardIssue:  { key: dir === 'outward' ? args.link.targetIssueKey : issueKey },
+      });
+      actions.push(`linked ${args.link.linkType} → ${args.link.targetIssueKey}`);
+    }
+
+    if (args.worklog) {
+      const wBody: Record<string, unknown> = { timeSpent: args.worklog.timeSpent };
+      if (args.worklog.comment) wBody.comment = args.worklog.comment;
+      if (args.worklog.started) wBody.started = args.worklog.started;
+      await this.request('POST', `/issue/${issueKey}/worklog`, wBody);
+      actions.push(`logged ${args.worklog.timeSpent}`);
     }
 
     if (actions.length === 0) {
@@ -863,6 +944,22 @@ export class JiraClient {
 
     await this.request('DELETE', path);
     return text(`Comment ${commentId} deleted from ${args.issueKey}.`);
+  }
+
+  async getBoards(args: { projectKey?: string; maxResults?: number; startAt?: number }): Promise<ToolResult> {
+    const params = new URLSearchParams({
+      maxResults: String(args.maxResults ?? 25),
+      startAt: String(args.startAt ?? 0),
+    });
+    if (args.projectKey) params.set('projectKeyOrId', args.projectKey);
+    const data = await this.requestAgile<JiraPage<JiraBoard>>('GET', `/board?${params}`);
+    if (!data || data.values.length === 0) return text('No boards found.');
+    const lines = data.values.map((b, i) => {
+      const projectHint = b.location?.projectKey ? ` [${b.location.projectKey}]` : '';
+      return `${(args.startAt ?? 0) + i + 1}. [${b.id}] ${b.name} (${b.type})${projectHint} | ${this.boardUrl(b.id)}`;
+    });
+    const page = data.isLast ? '' : ` (use startAt=${(args.startAt ?? 0) + data.values.length} for next page)`;
+    return text(`${data.values.length} board(s)${page}:\n${lines.join('\n')}`);
   }
 
   async transitionIssue(args: { issueKey: string; transitionId?: string; transitionName?: string }): Promise<ToolResult> {

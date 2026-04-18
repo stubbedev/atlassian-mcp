@@ -46,7 +46,7 @@ interface BBPullRequest {
   title: string;
   description?: string;
   state: string;
-  author: { user: { displayName: string; name: string } };
+  author: { user: { displayName: string; name: string; slug?: string } };
   fromRef: { displayId: string; latestCommit?: string; repository: { slug: string; project: { key: string } } };
   toRef: { displayId: string; latestCommit?: string; repository: { slug: string; project: { key: string } } };
   reviewers: Array<{ user: { displayName: string; name?: string }; approved: boolean }>;
@@ -108,6 +108,24 @@ interface BBCurrentUser {
   name?: string;
   slug?: string;
   displayName?: string;
+}
+
+interface BBBuildStatus {
+  state: 'SUCCESSFUL' | 'FAILED' | 'INPROGRESS';
+  key: string;
+  name?: string;
+  url?: string;
+  description?: string;
+  dateAdded?: number;
+}
+
+interface BBTask {
+  id: number;
+  text: string;
+  state: 'OPEN' | 'RESOLVED';
+  author?: { displayName?: string; name?: string };
+  createdDate?: number;
+  anchor?: { id: number; type?: string };
 }
 
 interface BBCommit {
@@ -302,6 +320,16 @@ export class BitbucketClient {
     return `${this.baseUrl}/projects/${encodeURIComponent(projectKey)}/repos/${encodeURIComponent(repoSlug)}/pull-requests/${prId}`;
   }
 
+  private configuredHostname(): string {
+    try { return new URL(this.baseUrl).hostname.toLowerCase(); } catch { return ''; }
+  }
+
+  private remoteMatchesInstance(remote: string): boolean {
+    const host = this.configuredHostname();
+    if (!host) return true; // can't validate, allow
+    return remote.toLowerCase().includes(host);
+  }
+
   private resolveProjectAndRepo(
     projectKey?: string,
     repoSlug?: string
@@ -309,6 +337,12 @@ export class BitbucketClient {
     if (projectKey && repoSlug) return { projectKey, repoSlug };
     const remote = safeExec('git remote get-url origin');
     if (remote) {
+      if (!this.remoteMatchesInstance(remote)) {
+        throw new Error(
+          `This repo's remote does not point to your configured Bitbucket instance (${this.baseUrl}). ` +
+          `Bitbucket tools only work with repos hosted on that instance.`
+        );
+      }
       const parsed = parseBitbucketRemote(remote);
       if (parsed) {
         return {
@@ -318,7 +352,7 @@ export class BitbucketClient {
       }
     }
     throw new Error(
-      'Could not determine projectKey/repoSlug — provide them explicitly or run from a directory inside a git repo with a Bitbucket remote'
+      'Could not determine projectKey/repoSlug — provide them explicitly or run from a directory with a Bitbucket remote'
     );
   }
 
@@ -347,6 +381,20 @@ export class BitbucketClient {
       throw new Error(formatBitbucketError(res.status, 'GET', path, details));
     }
     return res.text();
+  }
+
+  private async requestBuildStatus<T>(method: string, path: string, body?: unknown): Promise<T | null> {
+    const url = `${this.baseUrl}/rest/build-status/1.0${path}`;
+    const opts: RequestInit = { method, headers: this.headers };
+    if (body !== undefined) opts.body = JSON.stringify(body);
+    const res = await fetch(url, opts);
+    if (res.status === 404) return null; // no build status yet
+    if (!res.ok) {
+      const errText = await res.text();
+      const details = parseBitbucketErrorDetails(errText);
+      throw new Error(formatBitbucketError(res.status, method, path, details));
+    }
+    return res.status === 204 ? null : (res.json() as Promise<T>);
   }
 
   private normalizeIdentity(value?: string): string {
@@ -386,6 +434,11 @@ export class BitbucketClient {
     throw new Error(
       `You can only edit your own Bitbucket comments. Comment #${comment.id} is authored by ${comment.author?.displayName ?? comment.author?.name ?? 'another user'}.`
     );
+  }
+
+  /** Returns true if the given remote URL belongs to this Bitbucket instance. */
+  isRemoteForThisInstance(remoteUrl: string): boolean {
+    return this.remoteMatchesInstance(remoteUrl);
   }
 
   // Used internally by context tools — finds the open PR for a given source branch
@@ -486,10 +539,12 @@ export class BitbucketClient {
   async getPrOverview(args: {
     projectKey?: string;
     repoSlug?: string;
-    prId: number;
+    prId?: number;
+    fromBranch?: string;
     includeCommits?: boolean;
     includeComments?: boolean;
     includeDiff?: boolean;
+    includeBuildStatus?: boolean;
     commentsState?: 'OPEN' | 'RESOLVED' | 'PENDING';
     commentsSeverity?: 'ALL' | 'NORMAL' | 'BLOCKER';
     commentsLimit?: number;
@@ -502,16 +557,46 @@ export class BitbucketClient {
     const includeCommits = args.includeCommits ?? true;
     const includeComments = args.includeComments ?? true;
     const includeDiff = args.includeDiff ?? false;
+    const includeBuildStatus = args.includeBuildStatus ?? true;
 
-    const pr = await this.request<BBPullRequest>(
-      'GET',
-      `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}`
-    );
+    let prId = args.prId;
+    if (prId === undefined) {
+      const branch = args.fromBranch ?? safeExec('git rev-parse --abbrev-ref HEAD');
+      if (!branch || branch === 'HEAD') {
+        throw new Error('Provide prId or fromBranch, or run from a checked-out branch.');
+      }
+      const found = await this.findOpenPrForBranch(projectKey, repoSlug, branch);
+      if (!found) throw new Error(`No open PR found for branch "${branchDisplayId(branch)}".`);
+      prId = found.id;
+    }
+
+    const [pr, me] = await Promise.all([
+      this.request<BBPullRequest>(
+        'GET',
+        `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${prId}`
+      ),
+      this.getCurrentUser().catch(() => null),
+    ]);
     if (!pr) return text('Pull request not found.');
 
     const sections: string[] = [];
     const reviewers = pr.reviewers.map((r) => `${r.user.displayName}${r.approved ? ' ✓' : ''}`).join(', ');
     const url = pr.links?.self?.[0]?.href;
+
+    // Prefer slug (canonical unique identifier), fall back to username (name field).
+    // Display name is deliberately excluded — it is not unique.
+    const meSlug = this.normalizeIdentity(me?.slug);
+    const meName = this.normalizeIdentity(me?.name);
+    const authorSlug = this.normalizeIdentity(pr.author.user.slug);
+    const authorName = this.normalizeIdentity(pr.author.user.name);
+    const isAuthor = me
+      ? (meSlug && authorSlug ? meSlug === authorSlug : false) ||
+        (meName && authorName ? meName === authorName : false)
+      : false;
+    const viewingAs = me
+      ? `Viewing as: ${me.displayName} (${isAuthor ? 'you are the author' : 'you are a reviewer'})`
+      : '';
+
     const header = [
       `PR #${pr.id}: ${pr.title}`,
       `State:     ${pr.state}`,
@@ -519,18 +604,34 @@ export class BitbucketClient {
       `Branch:    ${pr.fromRef.displayId} → ${pr.toRef.displayId}`,
       `Reviewers: ${reviewers || 'None'}`,
       url ? `URL:       ${url}` : '',
+      viewingAs,
       '',
       'Description:',
       pr.description ?? '(no description)',
     ].filter((line) => line !== '');
     sections.push(header.join('\n'));
 
+    if (includeBuildStatus && pr.fromRef.latestCommit) {
+      const statuses = await this.requestBuildStatus<{ values: BBBuildStatus[] }>(
+        'GET', `/commits/${pr.fromRef.latestCommit}`
+      ).catch(() => null);
+      if (statuses?.values?.length) {
+        const statusLines = statuses.values.map((s) => {
+          const icon = s.state === 'SUCCESSFUL' ? '✓' : s.state === 'FAILED' ? '✗' : '…';
+          return `${icon} [${s.state}] ${s.name ?? s.key}${s.description ? ` — ${s.description}` : ''}`;
+        });
+        sections.push(`Build status (${pr.fromRef.latestCommit.slice(0, 8)}):\n${statusLines.join('\n')}`);
+      } else {
+        sections.push(`Build status: none reported for ${pr.fromRef.latestCommit.slice(0, 8)}`);
+      }
+    }
+
     if (includeCommits) {
       const commitsLimit = args.commitsLimit ?? 25;
       const commitsStart = args.commitsStart ?? 0;
       const data = await this.request<BBPagedResult<BBCommit>>(
         'GET',
-        `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/commits?limit=${commitsLimit}&start=${commitsStart}`
+        `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${prId}/commits?limit=${commitsLimit}&start=${commitsStart}`
       );
       if (!data || data.values.length === 0) {
         sections.push('Commits:\n(no commits found)');
@@ -556,7 +657,7 @@ export class BitbucketClient {
         const qs = new URLSearchParams({ limit: String(commentsLimit), start: String(commentsStart), state: commentsState });
         const data = await this.request<BBPagedResult<BBComment>>(
           'GET',
-          `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/blocker-comments?${qs}`
+          `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${prId}/blocker-comments?${qs}`
         );
         if (!data || data.values.length === 0) {
           sections.push(`Comments:\n(no ${commentsState} BLOCKER comments)`);
@@ -567,7 +668,7 @@ export class BitbucketClient {
       } else {
         const activityData = await this.request<BBPagedResult<BBActivity>>(
           'GET',
-          `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/activities?limit=${commentsLimit}&start=${commentsStart}`
+          `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${prId}/activities?limit=${commentsLimit}&start=${commentsStart}`
         );
         const comments = uniqueCommentsFromActivities(activityData?.values ?? []).filter((comment) => {
           const matchesState = commentMatchesState(comment, commentsState);
@@ -586,7 +687,7 @@ export class BitbucketClient {
     if (includeDiff) {
       const data = await this.request<BBDiff>(
         'GET',
-        `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/diff`
+        `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${prId}/diff`
       );
       sections.push(`Diff:\n${data ? formatDiff(data, args.diffMaxChars ?? 8000) : '(no diff found)'}`);
     }
@@ -880,6 +981,32 @@ export class BitbucketClient {
     );
     if (!data) return text(`Merged PR #${args.prId}.\n${this.pullRequestUrl(projectKey, repoSlug, args.prId)}`);
     return text(`Merged PR #${data.id}: "${data.title}" (${data.fromRef.displayId} → ${data.toRef.displayId}).\n${this.pullRequestUrl(projectKey, repoSlug, data.id, data)}`);
+  }
+
+  private async getDefaultBranchRef(projectKey: string, repoSlug: string): Promise<string> {
+    const data = await this.request<{ displayId: string }>('GET', `/projects/${projectKey}/repos/${repoSlug}/default-branch`);
+    if (data?.displayId) return `refs/heads/${data.displayId}`;
+    // Fallback: detect from local git
+    const head = safeExec('git rev-parse --abbrev-ref origin/HEAD');
+    if (head.startsWith('origin/')) return `refs/heads/${head.slice('origin/'.length)}`;
+    return 'refs/heads/master';
+  }
+
+  async createBranch(args: {
+    projectKey?: string;
+    repoSlug?: string;
+    branchName: string;
+    startPoint?: string;
+  }): Promise<ToolResult> {
+    const { projectKey, repoSlug } = this.resolveProjectAndRepo(args.projectKey, args.repoSlug);
+    const startPoint = args.startPoint ?? await this.getDefaultBranchRef(projectKey, repoSlug);
+    const data = await this.request<BBBranch>(
+      'POST',
+      `/projects/${projectKey}/repos/${repoSlug}/branches`,
+      { name: args.branchName, startPoint }
+    );
+    if (!data) return text(`Branch "${args.branchName}" created.`);
+    return text(`Created branch "${data.displayId}" at ${data.latestCommit.slice(0, 8)} in ${projectKey}/${repoSlug}.`);
   }
 
   async getBranches(args: {
@@ -1236,5 +1363,84 @@ export class BitbucketClient {
     const path = `${commentPath}?version=${current.version}`;
     await this.request('DELETE', path);
     return text(`Comment #${args.commentId} deleted from PR #${args.prId}.`);
+  }
+
+  async getPrTasks(args: { projectKey?: string; repoSlug?: string; prId: number }): Promise<ToolResult> {
+    const { projectKey, repoSlug } = this.resolveProjectAndRepo(args.projectKey, args.repoSlug);
+    const data = await this.request<BBPagedResult<BBTask>>(
+      'GET',
+      `/projects/${projectKey}/repos/${repoSlug}/pull-requests/${args.prId}/tasks`
+    );
+    if (!data || data.values.length === 0) return text(`No tasks on PR #${args.prId}.`);
+    const lines = data.values.map((t) => {
+      const author = t.author?.displayName ?? t.author?.name ?? 'Unknown';
+      const date = t.createdDate ? ` (${formatDate(t.createdDate)})` : '';
+      const anchor = t.anchor?.id ? ` [on comment #${t.anchor.id}]` : '';
+      return `#${t.id} [${t.state}] ${author}${date}${anchor}: ${t.text}`;
+    });
+    const open = data.values.filter((t) => t.state === 'OPEN').length;
+    return text(`${data.values.length} task(s) on PR #${args.prId} (${open} open)${pageHint(data)}:\n${lines.join('\n')}`);
+  }
+
+  async mutatePrTask(args: {
+    action: 'create' | 'resolve' | 'reopen' | 'delete';
+    projectKey?: string;
+    repoSlug?: string;
+    prId?: number;
+    taskId?: number;
+    text?: string;
+    commentId?: number;
+  }): Promise<ToolResult> {
+    const { projectKey, repoSlug } = this.resolveProjectAndRepo(args.projectKey, args.repoSlug);
+
+    if (args.action === 'create') {
+      if (!args.text) throw new Error('text is required to create a task.');
+      const body: Record<string, unknown> = { text: args.text };
+      if (args.commentId !== undefined) {
+        body.anchor = { id: args.commentId, type: 'COMMENT' };
+      } else if (args.prId !== undefined) {
+        body.anchor = { id: args.prId, type: 'PULL_REQUEST' };
+      } else {
+        throw new Error('Provide prId or commentId to anchor the task.');
+      }
+      const created = await this.request<BBTask>('POST', '/tasks', body);
+      if (!created) return text('Task created.');
+      return text(`Task #${created.id} created: "${created.text}"`);
+    }
+
+    if (!args.taskId) throw new Error('taskId is required for resolve/reopen/delete.');
+
+    if (args.action === 'delete') {
+      const task = await this.request<BBTask>('GET', `/tasks/${args.taskId}`);
+      if (!task) throw new Error(`Task #${args.taskId} not found.`);
+      await this.request('DELETE', `/tasks/${args.taskId}?version=${task.id}`);
+      return text(`Task #${args.taskId} deleted.`);
+    }
+
+    // resolve or reopen
+    const task = await this.request<BBTask>('GET', `/tasks/${args.taskId}`);
+    if (!task) throw new Error(`Task #${args.taskId} not found.`);
+    const newState = args.action === 'resolve' ? 'RESOLVED' : 'OPEN';
+    const updated = await this.request<BBTask>('PUT', `/tasks/${args.taskId}`, {
+      id: task.id,
+      state: newState,
+      text: task.text,
+    });
+    if (!updated) return text(`Task #${args.taskId} ${newState}.`);
+    return text(`Task #${updated.id} is now ${updated.state}: "${updated.text}"`);
+  }
+
+  async getBuildStatuses(args: { commitSha: string }): Promise<ToolResult> {
+    const data = await this.requestBuildStatus<{ values: BBBuildStatus[] }>(
+      'GET',
+      `/commits/${args.commitSha}`
+    );
+    if (!data?.values?.length) return text(`No build statuses reported for ${args.commitSha}.`);
+    const lines = data.values.map((s) => {
+      const icon = s.state === 'SUCCESSFUL' ? '✓' : s.state === 'FAILED' ? '✗' : '…';
+      const date = s.dateAdded ? ` (${new Date(s.dateAdded).toISOString().slice(0, 10)})` : '';
+      return `${icon} [${s.state}] ${s.name ?? s.key}${date}${s.description ? `\n  ${s.description}` : ''}${s.url ? `\n  ${s.url}` : ''}`;
+    });
+    return text(`${data.values.length} build status(es) for ${args.commitSha.slice(0, 8)}:\n${lines.join('\n')}`);
   }
 }

@@ -20,7 +20,7 @@ function safeGit(cmd: string, cwd: string, fallback = ''): string {
   }
 }
 
-export function getContext(args: { repoPath?: string; commitLimit?: number }): ToolResult {
+export function getContext(args: { repoPath?: string; commitLimit?: number; includeDiff?: boolean }): ToolResult {
   const repoPath = args.repoPath ?? process.cwd();
   const limit = args.commitLimit ?? 10;
   try {
@@ -29,26 +29,57 @@ export function getContext(args: { repoPath?: string; commitLimit?: number }): T
     const commits = safeGit(`log --oneline -${limit}`, repoPath, '(no commits)');
     const status = safeGit('status --short', repoPath, '');
 
+    // Upstream tracking
+    const upstream = safeGit('rev-parse --abbrev-ref @{u}', repoPath, '');
+    let upstreamLine = '';
+    if (upstream) {
+      const ab = safeGit(`rev-list --left-right --count ${upstream}...HEAD`, repoPath, '');
+      if (ab.includes('\t')) {
+        const [behind, ahead] = ab.split('\t').map(Number);
+        const parts: string[] = [];
+        if (ahead) parts.push(`${ahead} ahead`);
+        if (behind) parts.push(`${behind} behind`);
+        upstreamLine = `${upstream}${parts.length ? ` (${parts.join(', ')})` : ' (up to date)'}`;
+      }
+    }
+
+    // Diff stat summary
+    const diffStatLines = safeGit('diff HEAD --stat', repoPath, '').split('\n').filter(Boolean);
+    const diffStat = diffStatLines[diffStatLines.length - 1]?.trim() ?? '';
+
     const jiraKeys = [...new Set(branch.match(JIRA_KEY_RE) ?? [])];
 
     const lines = [
       `Repository: ${repoPath}`,
       `Branch:     ${branch}`,
+      ...(upstreamLine ? [`Upstream:   ${upstreamLine}`] : []),
       `Remote:     ${remote}`,
-    ];
-
-    if (jiraKeys.length > 0) {
-      lines.push(`Jira issue(s) detected in branch: ${jiraKeys.join(', ')}`);
-    }
-
-    lines.push(
+      ...(jiraKeys.length ? [`Jira:       ${jiraKeys.join(', ')}`] : []),
       '',
       `Recent commits (last ${limit}):`,
       commits || '(none)',
       '',
-      'Working tree status:',
-      status || '(clean)',
-    );
+      'Working tree:',
+    ];
+
+    if (status) {
+      lines.push(status);
+      if (diffStat) lines.push('', `Diff stat:  ${diffStat}`);
+    } else {
+      lines.push('(clean)');
+    }
+
+    if (args.includeDiff && status) {
+      const diff = safeGit('diff HEAD', repoPath, '');
+      if (diff) {
+        const MAX = 6000;
+        lines.push(
+          '',
+          '── Uncommitted diff ──',
+          diff.length > MAX ? diff.slice(0, MAX) + `\n\n... (truncated, ${diff.length - MAX} more chars)` : diff,
+        );
+      }
+    }
 
     return text(lines.join('\n'));
   } catch (err) {
@@ -103,5 +134,77 @@ export function getDiff(args: {
     return text(diff);
   } catch (err) {
     return text(`Error reading diff: ${(err as Error).message}`);
+  }
+}
+
+export function checkRemoteBranch(branchName: string, repoPath: string): {
+  exists: boolean; author?: string; date?: string; message?: string; sha?: string;
+} {
+  const lsRemote = safeGit(`ls-remote --heads origin refs/heads/${branchName}`, repoPath);
+  if (!lsRemote) return { exists: false };
+  const sha = lsRemote.split(/\s+/)[0]?.trim();
+  // Fetch so we can read the log
+  safeGit(`fetch origin ${branchName}`, repoPath);
+  const log = safeGit(`log origin/${branchName} -1 --format=%an%x09%ae%x09%ad%x09%s`, repoPath);
+  if (!log) return { exists: true, sha: sha?.slice(0, 8) };
+  const [author, email, date, ...msgParts] = log.split('\t');
+  return {
+    exists: true,
+    sha: sha?.slice(0, 8),
+    author: email ? `${author} <${email}>` : author,
+    date,
+    message: msgParts.join('\t'),
+  };
+}
+
+function getDefaultBranch(repoPath: string): string {
+  const head = safeGit('rev-parse --abbrev-ref origin/HEAD', repoPath);
+  if (head && head.startsWith('origin/')) return head.slice('origin/'.length);
+  // origin/HEAD not set — probe common defaults
+  if (safeGit('rev-parse --verify origin/main', repoPath)) return 'main';
+  return 'master';
+}
+
+export function checkoutRemoteBranch(branchName: string, repoPath: string): ToolResult {
+  try {
+    const existing = safeGit(`branch --list ${branchName}`, repoPath);
+    if (existing.trim()) {
+      git(`checkout ${branchName}`, repoPath);
+      return text(`Switched to existing local branch "${branchName}".`);
+    }
+    git(`checkout --track origin/${branchName}`, repoPath);
+    return text(`Checked out "${branchName}" tracking origin/${branchName}.`);
+  } catch (err) {
+    return text(`Error checking out branch: ${(err as Error).message}`);
+  }
+}
+
+export function createBranch(args: {
+  branchName: string;
+  baseBranch?: string;
+  repoPath?: string;
+  push?: boolean;
+}): ToolResult {
+  const repoPath = args.repoPath ?? process.cwd();
+  const { branchName, push = false } = args;
+  const baseBranch = args.baseBranch ?? getDefaultBranch(repoPath);
+  try {
+    if (!/^[a-zA-Z0-9/_.\-]+$/.test(branchName)) {
+      return text(`Invalid branch name "${branchName}". Use only letters, numbers, /, _, ., -`);
+    }
+    const existing = safeGit(`branch --list ${branchName}`, repoPath);
+    if (existing.trim()) {
+      return text(`Branch "${branchName}" already exists locally. Switch with: git checkout ${branchName}`);
+    }
+    safeGit(`fetch origin ${baseBranch}`, repoPath);
+    git(`checkout -b ${branchName} origin/${baseBranch}`, repoPath);
+    const lines = [`Created and switched to branch "${branchName}" from origin/${baseBranch}.`];
+    if (push) {
+      git(`push -u origin ${branchName}`, repoPath);
+      lines.push(`Pushed to origin/${branchName} and set upstream.`);
+    }
+    return text(lines.join('\n'));
+  } catch (err) {
+    return text(`Error creating branch: ${(err as Error).message}`);
   }
 }
