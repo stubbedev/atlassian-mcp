@@ -295,6 +295,20 @@ function validateCommentText(textValue: string): string {
   return trimmed;
 }
 
+function validateSuggestionPlacement(textValue: string): void {
+  if (!textValue.includes('```suggestion')) return;
+
+  const match = textValue.match(/```suggestion[^\n]*\n[\s\S]*?\n```/);
+  if (!match || match.index === undefined) {
+    throw new Error('Invalid suggestion block format. Use the suggestion field to post code suggestions.');
+  }
+
+  const trailingText = textValue.slice(match.index + match[0].length).trim();
+  if (trailingText.length > 0) {
+    throw new Error('When using ```suggestion```, do not add text after the closing code fence. Put any explanation before the suggestion block or use the suggestion field.');
+  }
+}
+
 export class BitbucketClient {
   private baseUrl: string;
   private headers: Record<string, string>;
@@ -1132,7 +1146,7 @@ export class BitbucketClient {
     repoSlug?: string;
     prId: number;
     commentId?: number;
-    text: string;
+    text?: string;
     filePath?: string;
     srcPath?: string;
     line?: number;
@@ -1161,10 +1175,21 @@ export class BitbucketClient {
       throw new Error('Replies must target an existing comment thread only. Omit filePath/line and other anchor fields when replying.');
     }
 
-    let commentText = args.text;
+    if (args.text === undefined && args.suggestion === undefined) {
+      throw new Error('Either text or suggestion is required when adding a comment.');
+    }
+
+    let commentText = args.text ?? '';
     if (args.suggestion !== undefined) {
-      const suggestionBlock = `\`\`\`suggestion\n${args.suggestion}\n\`\`\``;
-      commentText = args.text ? `${args.text}\n\n${suggestionBlock}` : suggestionBlock;
+      const suggestion = args.suggestion.trim();
+      if (!suggestion) {
+        throw new Error('suggestion must not be empty.');
+      }
+      const suggestionBlock = `\`\`\`suggestion\n${suggestion}\n\`\`\``;
+      const prefix = (args.text ?? '').trim();
+      commentText = prefix ? `${prefix}\n\n${suggestionBlock}` : suggestionBlock;
+    } else {
+      validateSuggestionPlacement(commentText);
     }
 
     const body: Record<string, unknown> = { text: validateCommentText(commentText) };

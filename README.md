@@ -39,7 +39,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 | `bitbucket_search` | Discover resources: `pull_requests` (default), `repos`, or `branches` via `resource` param; `mine=true` for your inbox |
 | `bitbucket_get_pr` | Full PR details: metadata, commits, comments, blockers, build status, and optional diff |
 | `bitbucket_mutate` | Create/update a PR, or perform lifecycle actions: `approve`, `unapprove`, `merge`, `decline` |
-| `bitbucket_comment` | Add, update, or delete a PR comment; supports inline anchors, multiline, suggestions, and BLOCKER severity |
+| `bitbucket_comment` | Add, update, or delete a PR comment; for code changes use `suggestion` so Bitbucket shows Apply suggestion (no trailing text after a suggestion block) |
 | `bitbucket_get_file` | Raw file content from Bitbucket at a branch, tag, or commit |
 | `bitbucket_pr_tasks` | Manage PR tasks (checklist items): `list`, `create`, `resolve`, `reopen`, `delete` |
 

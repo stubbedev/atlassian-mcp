@@ -358,7 +358,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'bitbucket_comment',
-      description: `Add, update, or delete a PR comment. action defaults to "add". For review feedback, prefer inline comments with a code suggestion. Replies MUST use commentId. Keep comments concise, no emojis. Only call proactively (without being asked) when you are a reviewer on the PR (i.e. "Viewing as" says "you are a reviewer") — never post unsolicited comments on PRs you authored.`,
+      description: `Add, update, or delete a PR comment. action defaults to "add". For code changes, ALWAYS use inline comments with suggestion when exact replacement code is available. Keep any explanatory text before the suggestion block only (never after), or Bitbucket may hide Apply suggestion. Replies MUST use commentId. Keep comments concise, no emojis. Only call proactively (without being asked) when you are a reviewer on the PR (i.e. "Viewing as" says "you are a reviewer") — never post unsolicited comments on PRs you authored.`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -369,7 +369,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           repo:                   { type: 'string', description: 'Alias for repoSlug' },
           prId:                   { type: 'number', description: 'Pull request number' },
           commentId:              { type: 'number', description: 'Comment ID to reply to, update, or delete' },
-          text:                   { type: 'string', description: 'Comment text. No filler, no emojis. Required for add/update.' },
+          text:                   { type: 'string', description: 'Comment text for add/update. No filler, no emojis. If suggestion is used, keep this optional and brief; it is placed before the suggestion block.' },
           filePath:               { type: 'string', description: 'File path for inline comment (must pair with line)' },
           srcPath:                { type: 'string', description: 'Source path if file was renamed (optional, defaults to filePath)' },
           line:                   { type: 'number', description: 'Line number to anchor inline comment (must pair with filePath)' },
@@ -377,7 +377,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           fileType:               { type: 'string', enum: ['TO', 'FROM'], description: 'Diff side: TO (new, default) or FROM (old)' },
           multilineStartLine:     { type: 'number', description: 'First line of multiline anchor (pair with line as last line)' },
           multilineStartLineType: { type: 'string', enum: ['ADDED', 'REMOVED', 'CONTEXT'], description: 'Line type for multilineStartLine' },
-          suggestion:             { type: 'string', description: 'Replacement code to suggest (strongly preferred for code changes). Requires filePath + line.' },
+          suggestion:             { type: 'string', description: 'Replacement code to suggest. Use whenever proposing a concrete code change. Posted as the final ```suggestion``` block so Apply suggestion appears. Requires filePath + line.' },
           state:                  { type: 'string', enum: ['OPEN', 'RESOLVED'], description: 'Task state for BLOCKER comments (update only)' },
           threadResolved:         { type: 'boolean', description: 'Resolve/reopen normal comment thread (update only)' },
           severity:               { type: 'string', enum: ['NORMAL', 'BLOCKER'], description: 'Comment severity. BLOCKER = checklist task.' },
