@@ -49,7 +49,6 @@ export function loadConfig(): Config {
   const jiraToken = file?.jira?.token ?? process.env.JIRA_ACCESS_TOKEN ?? '';
   const bitbucketUrl = file?.bitbucket?.url ?? process.env.BITBUCKET_URL ?? '';
   const bitbucketToken = file?.bitbucket?.token ?? process.env.BITBUCKET_ACCESS_TOKEN ?? '';
-
   const config: Config = {};
 
   if (jiraUrl && jiraToken) {

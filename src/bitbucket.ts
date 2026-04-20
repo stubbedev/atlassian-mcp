@@ -104,11 +104,6 @@ interface BBParticipant {
   status: string;
 }
 
-interface BBCurrentUser {
-  name?: string;
-  slug?: string;
-  displayName?: string;
-}
 
 interface BBBuildStatus {
   state: 'SUCCESSFUL' | 'FAILED' | 'INPROGRESS';
@@ -303,7 +298,7 @@ function validateCommentText(textValue: string): string {
 export class BitbucketClient {
   private baseUrl: string;
   private headers: Record<string, string>;
-  private currentUserCache?: BBCurrentUser;
+  private currentUsernameCache?: string;
 
   constructor(baseUrl: string, token: string) {
     this.baseUrl = baseUrl.replace(/\/$/, '');
@@ -312,6 +307,17 @@ export class BitbucketClient {
       'Content-Type': 'application/json',
       Accept: 'application/json',
     };
+  }
+
+  /** Returns the slug/username of the authenticated user via the X-AUSERNAME response header. */
+  private async getCurrentUsername(): Promise<string> {
+    if (this.currentUsernameCache) return this.currentUsernameCache;
+    const url = `${this.baseUrl}/rest/api/1.0/application-properties`;
+    const res = await fetch(url, { method: 'GET', headers: this.headers });
+    const username = res.headers.get('X-AUSERNAME');
+    if (!username) throw new Error('Could not determine current Bitbucket user. Check token permissions.');
+    this.currentUsernameCache = username;
+    return username;
   }
 
   /** Returns a URL-safe `/projects/.../repos/...` prefix for REST paths. */
@@ -405,44 +411,6 @@ export class BitbucketClient {
     return res.status === 204 ? null : (res.json() as Promise<T>);
   }
 
-  private normalizeIdentity(value?: string): string {
-    return (value ?? '').trim().toLowerCase();
-  }
-
-  private async getCurrentUser(): Promise<BBCurrentUser> {
-    if (this.currentUserCache) return this.currentUserCache;
-    const me = await this.request<BBCurrentUser>('GET', '/users/~self');
-    if (!me) {
-      throw new Error('Could not determine current Bitbucket user identity.');
-    }
-    this.currentUserCache = me;
-    return me;
-  }
-
-  private async assertOwnComment(comment: BBComment): Promise<void> {
-    const me = await this.getCurrentUser();
-    const commentAuthorName = this.normalizeIdentity(comment.author?.name);
-    const commentAuthorDisplayName = this.normalizeIdentity(comment.author?.displayName);
-    const meName = this.normalizeIdentity(me.name);
-    const meSlug = this.normalizeIdentity(me.slug);
-    const meDisplayName = this.normalizeIdentity(me.displayName);
-
-    const hasStrongCommentIdentity = commentAuthorName.length > 0;
-    const hasStrongUserIdentity = meName.length > 0 || meSlug.length > 0;
-    const matchesByName = commentAuthorName.length > 0 && (commentAuthorName === meName || commentAuthorName === meSlug);
-    const matchesByDisplayNameFallback = !hasStrongCommentIdentity
-      && !hasStrongUserIdentity
-      && commentAuthorDisplayName.length > 0
-      && commentAuthorDisplayName === meDisplayName;
-
-    if (matchesByName || matchesByDisplayNameFallback) {
-      return;
-    }
-
-    throw new Error(
-      `You can only edit your own Bitbucket comments. Comment #${comment.id} is authored by ${comment.author?.displayName ?? comment.author?.name ?? 'another user'}.`
-    );
-  }
 
   /** Returns true if the given remote URL belongs to this Bitbucket instance. */
   isRemoteForThisInstance(remoteUrl: string): boolean {
@@ -517,9 +485,7 @@ export class BitbucketClient {
 
   async myPrs(args: { limit?: number; start?: number; role?: 'author' | 'reviewer' | 'participant' }): Promise<ToolResult> {
     const { limit = 25, start = 0, role } = args;
-    const me = await this.getCurrentUser();
-    const userSlug = me.slug ?? me.name;
-    if (!userSlug) throw new Error('Could not determine your Bitbucket user slug. Check token permissions.');
+    const userSlug = await this.getCurrentUsername();
     const qs = new URLSearchParams({ limit: String(limit), start: String(start), state: 'OPEN' });
     if (role) qs.set('role', role.toUpperCase());
     const data = await this.request<BBPagedResult<BBPullRequest>>(
@@ -595,32 +561,15 @@ export class BitbucketClient {
       prId = found.id;
     }
 
-    const [pr, me] = await Promise.all([
-      this.request<BBPullRequest>(
-        'GET',
-        `${this.rp(projectKey, repoSlug)}/pull-requests/${prId}`
-      ),
-      this.getCurrentUser().catch(() => null),
-    ]);
+    const pr = await this.request<BBPullRequest>(
+      'GET',
+      `${this.rp(projectKey, repoSlug)}/pull-requests/${prId}`
+    );
     if (!pr) return text('Pull request not found.');
 
     const sections: string[] = [];
     const reviewers = pr.reviewers.map((r) => `${r.user.displayName}${r.approved ? ' ✓' : ''}`).join(', ');
     const url = pr.links?.self?.[0]?.href;
-
-    // Prefer slug (canonical unique identifier), fall back to username (name field).
-    // Display name is deliberately excluded — it is not unique.
-    const meSlug = this.normalizeIdentity(me?.slug);
-    const meName = this.normalizeIdentity(me?.name);
-    const authorSlug = this.normalizeIdentity(pr.author.user.slug);
-    const authorName = this.normalizeIdentity(pr.author.user.name);
-    const isAuthor = me
-      ? (meSlug && authorSlug ? meSlug === authorSlug : false) ||
-        (meName && authorName ? meName === authorName : false)
-      : false;
-    const viewingAs = me
-      ? `Viewing as: ${me.displayName} (${isAuthor ? 'you are the author' : 'you are a reviewer'})`
-      : '';
 
     const header = [
       `PR #${pr.id}: ${pr.title}`,
@@ -629,7 +578,6 @@ export class BitbucketClient {
       `Branch:    ${pr.fromRef.displayId} → ${pr.toRef.displayId}`,
       `Reviewers: ${reviewers || 'None'}`,
       url ? `URL:       ${url}` : '',
-      viewingAs,
       '',
       'Description:',
       pr.description ?? '(no description)',
@@ -1312,15 +1260,6 @@ export class BitbucketClient {
     );
     if (!current) throw new Error(`Comment #${args.commentId} not found.`);
     const currentSeverity = current.severity ?? 'NORMAL';
-    const severityIsChanging = args.severity !== undefined && args.severity !== currentSeverity;
-    const isResolutionOnlyUpdate = (args.state !== undefined || args.threadResolved !== undefined)
-      && args.text === undefined
-      && !severityIsChanging;
-
-    if (!isResolutionOnlyUpdate) {
-      await this.assertOwnComment(current);
-    }
-
     const targetSeverity = args.severity ?? currentSeverity;
 
     if (args.state && targetSeverity !== 'BLOCKER') {
@@ -1386,7 +1325,6 @@ export class BitbucketClient {
       `${this.rp(projectKey, repoSlug)}/pull-requests/${args.prId}/comments/${args.commentId}`
     );
     if (!current) throw new Error(`Comment #${args.commentId} not found.`);
-    await this.assertOwnComment(current);
 
     const commentPath = current.severity === 'BLOCKER'
       ? `${this.rp(projectKey, repoSlug)}/pull-requests/${args.prId}/blocker-comments/${args.commentId}`
