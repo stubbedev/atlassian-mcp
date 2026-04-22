@@ -228,6 +228,7 @@ export class JiraClient {
   private headers: Record<string, string>;
   private currentUserCache?: JiraCurrentUser;
   private projectsCache?: JiraProject[];
+  private issueLinkingEnabled?: boolean;
 
   constructor(baseUrl: string, token: string) {
     this.baseUrl = baseUrl.replace(/\/$/, '');
@@ -287,6 +288,13 @@ export class JiraClient {
     }
     this.currentUserCache = me;
     return me;
+  }
+
+  private async getIssueLinkingEnabled(): Promise<boolean> {
+    if (this.issueLinkingEnabled !== undefined) return this.issueLinkingEnabled;
+    const config = await this.request<{ issueLinkingEnabled: boolean }>('GET', '/configuration');
+    this.issueLinkingEnabled = config?.issueLinkingEnabled ?? false;
+    return this.issueLinkingEnabled;
   }
 
   private async assertOwnComment(comment: JiraComment): Promise<void> {
@@ -878,14 +886,19 @@ export class JiraClient {
       actions.push('added comment');
     }
 
+    const warnings: string[] = [];
     if (args.link) {
-      const dir = args.link.direction ?? 'outward';
-      await this.request('POST', '/issueLink', {
-        type: { name: args.link.linkType },
-        outwardIssue: { key: dir === 'outward' ? issueKey : args.link.targetIssueKey },
-        inwardIssue:  { key: dir === 'outward' ? args.link.targetIssueKey : issueKey },
-      });
-      actions.push(`linked ${args.link.linkType} → ${args.link.targetIssueKey}`);
+      if (!(await this.getIssueLinkingEnabled())) {
+        warnings.push(`issue linking is disabled in this Jira instance — add the link manually`);
+      } else {
+        const dir = args.link.direction ?? 'outward';
+        await this.request('POST', '/issueLink', {
+          type: { name: args.link.linkType },
+          outwardIssue: { key: dir === 'outward' ? issueKey : args.link.targetIssueKey },
+          inwardIssue:  { key: dir === 'outward' ? args.link.targetIssueKey : issueKey },
+        });
+        actions.push(`linked ${args.link.linkType} → ${args.link.targetIssueKey}`);
+      }
     }
 
     if (args.worklog) {
@@ -900,7 +913,9 @@ export class JiraClient {
       return text('Nothing to mutate.');
     }
 
-    return text(`Mutated ${issueKey}: ${actions.join(', ')}.\n${this.issueUrl(issueKey)}`);
+    const parts = [`Mutated ${issueKey}: ${actions.join(', ')}.`, this.issueUrl(issueKey)];
+    if (warnings.length) parts.push(`Warnings: ${warnings.join('; ')}`);
+    return text(parts.join('\n'));
   }
 
   async getComments(args: { issueKey: string; maxResults?: number; startAt?: number }): Promise<ToolResult> {
