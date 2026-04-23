@@ -273,17 +273,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     }] : []),
     ...(bitbucket ? [{
       name: 'bitbucket_search',
-      description: 'Discover Bitbucket resources. Use when asked "what PRs are open?", "show me the repos", "find the PR for this branch", or "list branches". Set resource:\n• "pull_requests" (default) — list PRs by state/branch/text; mine=true for your inbox\n• "repos" — list repositories in a project\n• "branches" — list or filter branches in a repo',
+      description: 'Discover Bitbucket resources. Use when asked "what PRs are open?", "show me the repos", "find the PR for this branch", or "list branches". Set resource:\n• "pull_requests" (default) — list PRs by state/branch/text; mine=true for your inbox\n• "repos" — list repositories in a project\n• "branches" — list or filter branches in a repo\n• "users" — find users by name/email (pass query); add projectKey+repoSlug to restrict to users with repo access. ALWAYS use this to look up valid usernames before adding reviewers to a PR.',
       inputSchema: {
         type: 'object',
         properties: {
-          resource:   { type: 'string', enum: ['pull_requests', 'repos', 'branches'], description: 'What to search (default: pull_requests)' },
+          resource:   { type: 'string', enum: ['pull_requests', 'repos', 'branches', 'users'], description: 'What to search (default: pull_requests)' },
           mine:       { type: 'boolean', description: 'Return your own PRs by role (resource=pull_requests only)' },
           role:       { type: 'string', enum: ['author', 'reviewer', 'participant'], description: 'Your role filter when mine=true' },
           projectKey: { type: 'string', description: 'Bitbucket project code, e.g. "ENG"' },
           project:    { type: 'string', description: 'Alias for projectKey' },
           repoSlug:   { type: 'string', description: 'Repository slug' },
           repo:       { type: 'string', description: 'Alias for repoSlug' },
+          query:      { type: 'string', description: 'Name or email filter (resource=users only)' },
           state:      { type: 'string', enum: ['OPEN', 'MERGED', 'DECLINED'], description: 'PR state filter (default OPEN)' },
           fromBranch: { type: 'string', description: 'Filter PRs from this source branch' },
           text:       { type: 'string', description: 'Filter PRs by title/description text' },
@@ -295,7 +296,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'bitbucket_get_pr',
-      description: 'Full details for one PR: metadata, commits, open comments, blockers, and optional diff. Use when asked to "review this PR", "show me the review comments", "what\'s blocking the merge", or after get_dev_context surfaces a prId. For full file context during review, follow up with bitbucket_get_file. The response includes a "Viewing as" line — if it says "you are the author", do NOT add review comments or a summary unless explicitly asked; just answer questions about the PR. If it says "you are a reviewer", default to posting inline comments for suggested changes and a final summary comment.',
+      description: 'Full details for one PR: metadata, commits, open comments, blockers, and optional diff. Use when asked to "review this PR", "show me the review comments", "what\'s blocking the merge", or after get_dev_context surfaces a prId. IMPORTANT: The PR branch is often not the locally checked-out branch. Do NOT read files with local tools (Read, git_get_diff, etc.) for PR context — use bitbucket_get_file with the PR\'s source branch instead. The response includes a "Viewing as" line — if it says "you are the author", do NOT add review comments or a summary unless explicitly asked; just answer questions about the PR. If it says "you are a reviewer", default to posting inline comments for suggested changes and a final summary comment.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -340,7 +341,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
               description: { type: 'string', description: 'PR description (optional)' },
               fromBranch:  { type: 'string', description: 'Source branch (defaults to current branch)' },
               toBranch:    { type: 'string', description: 'Target branch (default: master)' },
-              reviewers:   { type: 'array', items: { type: 'string' }, description: 'Reviewer usernames (optional)' },
+              reviewers:   { type: 'array', items: { type: 'string' }, description: 'Reviewer usernames. Use bitbucket_search resource=users to look up valid usernames before setting this.' },
             },
             required: ['title'],
           },
@@ -350,7 +351,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
               title:       { type: 'string', description: 'Updated PR title (optional)' },
               description: { type: 'string', description: 'Updated description, or empty string to clear (optional)' },
               toBranch:    { type: 'string', description: 'Updated target branch (optional)' },
-              reviewers:   { type: 'array', items: { type: 'string' }, description: 'Updated reviewer usernames. Empty array clears reviewers.' },
+              reviewers:   { type: 'array', items: { type: 'string' }, description: 'Updated reviewer usernames. Empty array clears reviewers. Use bitbucket_search resource=users to look up valid usernames before setting this.' },
             },
           },
         },
@@ -387,7 +388,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'bitbucket_get_file',
-      description: 'Raw file content from Bitbucket at a branch, tag, or commit. Use during PR reviews to get full-file context without relying on local checkout.',
+      description: 'Raw file content from Bitbucket at a branch, tag, or commit. CRITICAL: if the PR branch being reviewed is NOT the currently checked-out local branch, ALL additional file context for that review MUST come from this tool — never from local Read, git_get_diff, or any tool that reads local disk. Pass the PR source branch as ref.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -612,12 +613,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const a = normalizeBitbucketArgs(args) as {
           resource?: string; mine?: boolean; role?: string;
           projectKey?: string; repoSlug?: string; state?: string;
-          fromBranch?: string; text?: string; filter?: string;
+          fromBranch?: string; text?: string; filter?: string; query?: string;
           limit?: number; start?: number;
         };
         const resource = a.resource ?? 'pull_requests';
         if (resource === 'repos')    return await bitbucket.listRepos(a as Parameters<typeof bitbucket.listRepos>[0]);
         if (resource === 'branches') return await bitbucket.getBranches(a as Parameters<typeof bitbucket.getBranches>[0]);
+        if (resource === 'users')    return await bitbucket.searchUsers({ projectKey: a.projectKey, repoSlug: a.repoSlug, query: a.query, limit: a.limit, start: a.start });
         // pull_requests (default)
         if (a.mine) return await bitbucket.myPrs({ limit: a.limit, start: a.start, role: a.role as 'author' | 'reviewer' | 'participant' | undefined });
         return await bitbucket.listPullRequests(a as Parameters<typeof bitbucket.listPullRequests>[0]);

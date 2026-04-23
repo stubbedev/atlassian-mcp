@@ -136,6 +136,14 @@ interface BitbucketErrorPayload {
   errors?: Array<{ message?: string; context?: string }>;
 }
 
+interface BBUser {
+  name: string;
+  displayName: string;
+  emailAddress?: string;
+  active?: boolean;
+  slug?: string;
+}
+
 function text(t: string): ToolResult {
   return { content: [{ type: 'text', text: t }] };
 }
@@ -469,6 +477,41 @@ export class BitbucketClient {
     if (!data || data.values.length === 0) return text('No repositories found.');
     const lines = data.values.map((r, i) => `${start + i + 1}. ${r.project.key}/${r.slug} — ${r.name}`);
     return text(`${data.values.length} repo(s)${pageHint(data)}:\n${lines.join('\n')}`);
+  }
+
+  async searchUsers(args: {
+    projectKey?: string;
+    repoSlug?: string;
+    query?: string;
+    limit?: number;
+    start?: number;
+  }): Promise<ToolResult> {
+    const params = new URLSearchParams();
+    if (args.query) params.set('filter', args.query);
+    params.set('limit', String(args.limit ?? 25));
+    if (args.start) params.set('start', String(args.start));
+
+    type PermEntry = { user: BBUser; permission?: string };
+    let path: string;
+    if (args.projectKey && args.repoSlug) {
+      path = `${this.rp(args.projectKey, args.repoSlug)}/permissions/users?${params}`;
+    } else if (args.projectKey) {
+      path = `/projects/${encodeURIComponent(args.projectKey)}/permissions/users?${params}`;
+    } else {
+      path = `/users?${params}`;
+    }
+
+    const data = await this.request<BBPagedResult<BBUser | PermEntry>>('GET', path);
+    if (!data || data.values.length === 0) return text('No users found.');
+
+    const lines = data.values.map((entry, i) => {
+      const user: BBUser = (entry as PermEntry).user ?? (entry as BBUser);
+      const parts = [`${i + 1}. ${user.displayName} (${user.name})`];
+      if (user.emailAddress) parts.push(`— ${user.emailAddress}`);
+      if (user.active === false) parts.push('[inactive]');
+      return parts.join(' ');
+    });
+    return text(`${data.values.length} user(s)${pageHint(data)}:\n${lines.join('\n')}`);
   }
 
   async listPullRequests(args: {
@@ -1385,7 +1428,7 @@ export class BitbucketClient {
     text?: string;
     commentId?: number;
   }): Promise<ToolResult> {
-    const { projectKey, repoSlug } = this.resolveProjectAndRepo(args.projectKey, args.repoSlug);
+    this.resolveProjectAndRepo(args.projectKey, args.repoSlug);
 
     if (args.action === 'create') {
       if (!args.text) throw new Error('text is required to create a task.');
