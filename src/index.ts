@@ -143,18 +143,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     ...(jira ? [
     {
       name: 'start_work',
-      description: 'Start working on a Jira ticket: fetches the ticket, creates a local git branch with an auto-generated name (e.g. feature/FOO-123-add-payment-gateway), and optionally transitions the ticket. Use when told "make a branch for FOO-123", "start working on this ticket", "check out a branch for this issue", or "begin work on FOO-123".',
+      description: 'Start working on a Jira ticket end-to-end: resolves the ticket (by key or free-text search with a picker when multiple match), creates a local branch with an auto-generated name, fetches the project README from Bitbucket so you have commit/PR conventions in context, and prints a ready-to-use next-steps summary. Use when told "make a branch for FOO-123", "start working on this ticket", "I want to work on the login bug", or "begin work on the payment gateway story". If issueKey is omitted, provide query for free-text search.',
       inputSchema: {
         type: 'object',
         properties: {
-          issueKey:       { type: 'string', description: 'Jira issue key, e.g. FOO-123' },
+          issueKey:       { type: 'string', description: 'Jira issue key, e.g. FOO-123 (provide this OR query)' },
+          query:          { type: 'string', description: 'Free-text search when issueKey is unknown — shows a picker if multiple tickets match' },
           repoPath:       { type: 'string', description: 'Local repo path (defaults to cwd)' },
           baseBranch:     { type: 'string', description: 'Branch to base off (default: master)' },
           branchName:     { type: 'string', description: 'Override the generated branch name' },
           transitionName: { type: 'string', description: 'Jira transition to apply, e.g. "In Progress" (optional)' },
           push:           { type: 'boolean', description: 'Push branch to remote after creation (default false)', default: false },
         },
-        required: ['issueKey'],
       },
     },
     {
@@ -341,7 +341,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
               description: { type: 'string', description: 'PR description (optional)' },
               fromBranch:  { type: 'string', description: 'Source branch (defaults to current branch)' },
               toBranch:    { type: 'string', description: 'Target branch (default: master)' },
-              reviewers:   { type: 'array', items: { type: 'string' }, description: 'Reviewer usernames. Use bitbucket_search resource=users to look up valid usernames before setting this.' },
+              reviewers:    { type: 'array', items: { type: 'string' }, description: 'Reviewer usernames. Use bitbucket_search resource=users to look up valid usernames before setting this.' },
+              pickReviewers: { type: 'boolean', description: 'Show an interactive reviewer picker before creating the PR (lists users with repo access)' },
             },
             required: ['title'],
           },
@@ -470,11 +471,77 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'start_work': {
         if (!jira) throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
         const a = args as {
-          issueKey: string; repoPath?: string; baseBranch?: string;
+          issueKey?: string; query?: string; repoPath?: string; baseBranch?: string;
           branchName?: string; transitionName?: string; push?: boolean;
         };
-        const fields = await jira.getIssueFields(a.issueKey);
-        const branchName = a.branchName ?? slugifyBranchName(a.issueKey, fields.summary, fields.type);
+
+        if (!a.issueKey && !a.query) {
+          throw new Error('Provide issueKey (e.g. FOO-123) or query (free-text search).');
+        }
+
+        // Resolve issueKey from free-text query if not provided directly
+        let issueKey = a.issueKey;
+        if (!issueKey && a.query) {
+          const candidates = await jira.findIssues(a.query, 10);
+          if (candidates.length === 0) {
+            return { content: [{ type: 'text', text: `No Jira tickets found for: "${a.query}"` }] };
+          }
+          if (candidates.length === 1) {
+            issueKey = candidates[0].key;
+          } else {
+            // Multiple matches — present a picker
+            const pickerMessage = [
+              `Found ${candidates.length} tickets matching "${a.query}". Which one do you want to work on?`,
+              ...candidates.map((c, i) => `${i + 1}. [${c.key}] ${c.summary} (${c.status})`),
+            ].join('\n');
+
+            try {
+              const pickerResult = await server.elicitInput({
+                message: pickerMessage,
+                requestedSchema: {
+                  type: 'object',
+                  properties: {
+                    ticket: {
+                      type: 'string',
+                      title: 'Select a ticket',
+                      oneOf: [
+                        ...candidates.map((c) => ({ const: c.key, title: `[${c.key}] ${c.summary}` })),
+                        { const: '__cancel__', title: 'Cancel' },
+                      ],
+                    },
+                  },
+                  required: ['ticket'],
+                },
+              });
+
+              if (
+                pickerResult.action === 'cancel' ||
+                pickerResult.action === 'decline' ||
+                pickerResult.content?.ticket === '__cancel__'
+              ) {
+                return { content: [{ type: 'text', text: 'Cancelled.' }] };
+              }
+              issueKey = pickerResult.content?.ticket as string | undefined;
+              if (!issueKey || issueKey === '__cancel__') {
+                return { content: [{ type: 'text', text: 'Cancelled.' }] };
+              }
+            } catch {
+              // Client doesn't support elicitation — list options and ask caller to retry with issueKey
+              const list = candidates.map((c) => `  • ${c.key} — ${c.summary} (${c.status})`).join('\n');
+              return {
+                content: [{
+                  type: 'text',
+                  text: `Found ${candidates.length} tickets matching "${a.query}":\n${list}\n\nRe-run start_work with the desired issueKey.`,
+                }],
+              };
+            }
+          }
+        }
+
+        if (!issueKey) throw new Error('Could not resolve issue key.');
+
+        const fields = await jira.getIssueFields(issueKey);
+        const branchName = a.branchName ?? slugifyBranchName(issueKey, fields.summary, fields.type);
         const repoPath = a.repoPath ?? process.cwd();
 
         // Check if branch already exists on remote before creating
@@ -488,7 +555,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
           const message = [
             `Branch "${branchName}" already exists on remote.`,
-            `Ticket: ${a.issueKey} — ${fields.summary}`,
+            `Ticket: ${issueKey} — ${fields.summary}`,
             contextLines,
           ].filter(Boolean).join('\n');
 
@@ -524,7 +591,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               if (chosen === 'cancel') {
                 return { content: [{ type: 'text', text: 'Cancelled.' }] };
               }
-              // new_name — instruct the model to re-run with a custom name
               return {
                 content: [{
                   type: 'text',
@@ -532,10 +598,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 }],
               };
             }
-            // Fallback: unknown action
             return { content: [{ type: 'text', text: 'Cancelled.' }] };
           } catch {
-            // Client doesn't support elicitation — fall back to informational text
             return {
               content: [{
                 type: 'text',
@@ -558,19 +622,46 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           push: a.push ?? false,
         });
         const lines = [
-          `Ticket:  ${a.issueKey} — ${fields.summary}`,
+          `Ticket:  ${issueKey} — ${fields.summary}`,
           `Status:  ${fields.status}`,
           branchResult.content[0].text,
         ];
         if (a.transitionName) {
           try {
-            await jira.mutateIssue({ issueKey: a.issueKey, transitionName: a.transitionName });
+            await jira.mutateIssue({ issueKey, transitionName: a.transitionName });
             lines.push(`Jira:    transitioned → ${a.transitionName}`);
           } catch (err) {
             lines.push(`Jira:    could not transition — ${(err as Error).message}`);
           }
         }
-        if (bitbucket) lines.push(``, `Next: push commits then use bitbucket_mutate to open a PR.`);
+
+        // Fetch README from Bitbucket for project conventions
+        if (bitbucket) {
+          try {
+            const remoteUrl = (() => {
+              try { return execFileSync('git', ['remote', 'get-url', 'origin'], { cwd: repoPath, encoding: 'utf-8' }).trim(); } catch { return ''; }
+            })();
+            const parsed = parseBitbucketRemote(remoteUrl);
+            if (parsed) {
+              const readme = await bitbucket.fetchFileText(parsed.projectKey, parsed.repoSlug, 'README.md');
+              if (readme) {
+                const maxLen = 4000;
+                const truncated = readme.length > maxLen ? readme.slice(0, maxLen) + '\n... (truncated)' : readme;
+                lines.push('');
+                lines.push('Project conventions (from README.md):');
+                lines.push('────────────────────────────────────');
+                lines.push(truncated);
+                lines.push('────────────────────────────────────');
+                lines.push('Follow the conventions above when writing commit messages and the PR description.');
+              }
+            }
+          } catch { /* README fetch is best-effort */ }
+          lines.push('');
+          lines.push('Next steps:');
+          lines.push('  1. Make your changes and commit following the project conventions.');
+          lines.push('  2. Use bitbucket_mutate (create) to open a PR — the Jira summary and ticket key make a good title/description starting point.');
+          lines.push('  3. Add reviewers: bitbucket_search resource=users to find colleagues, or pass pickReviewers=true in create to get an interactive picker.');
+        }
         return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
       // Jira
@@ -635,6 +726,45 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (action === 'unapprove') return await bitbucket.unapprovePr(a as Parameters<typeof bitbucket.unapprovePr>[0]);
         if (action === 'decline')   return await bitbucket.declinePr({ ...a, message: a.declineMessage } as Parameters<typeof bitbucket.declinePr>[0]);
         if (action === 'merge')     return await bitbucket.mergePr({ ...a, message: a.mergeMessage, mergeStrategy: a.mergeStrategy as string | undefined } as Parameters<typeof bitbucket.mergePr>[0]);
+
+        // Handle interactive reviewer picker for PR creation
+        const createArgs = a.create as { title: string; description?: string; fromBranch?: string; toBranch?: string; reviewers?: string[]; pickReviewers?: boolean } | undefined;
+        if (createArgs?.pickReviewers && !a.prId) {
+          const projectKey = a.projectKey as string | undefined;
+          const repoSlug = a.repoSlug as string | undefined;
+          const users = await bitbucket.searchUsersRaw({ projectKey, repoSlug, limit: 30 });
+
+          if (users.length > 0) {
+            // Build boolean checkbox schema — one field per user
+            // key must be safe for JSON schema property names
+            const toSchemaKey = (uname: string) => uname.replace(/[^a-zA-Z0-9]/g, '_');
+            const userMap = new Map<string, string>(); // schemaKey -> username
+            const properties: Record<string, { type: 'boolean'; title: string }> = {};
+            for (const u of users) {
+              const key = toSchemaKey(u.name);
+              userMap.set(key, u.name);
+              properties[key] = { type: 'boolean', title: `${u.displayName} (${u.name})` };
+            }
+
+            try {
+              const pickerResult = await server.elicitInput({
+                message: 'Select reviewers to add to this PR:',
+                requestedSchema: { type: 'object', properties },
+              });
+
+              if (pickerResult.action === 'accept' && pickerResult.content) {
+                const selected: string[] = [];
+                for (const [key, username] of userMap) {
+                  if (pickerResult.content[key] === true) selected.push(username);
+                }
+                createArgs.reviewers = selected;
+              }
+            } catch {
+              // elicitation not supported — proceed without reviewer picker
+            }
+          }
+        }
+
         return await bitbucket.mutatePullRequest(a as Parameters<typeof bitbucket.mutatePullRequest>[0]);
       }
       case 'bitbucket_comment': {

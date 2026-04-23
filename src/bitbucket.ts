@@ -514,6 +514,30 @@ export class BitbucketClient {
     return text(`${data.values.length} user(s)${pageHint(data)}:\n${lines.join('\n')}`);
   }
 
+  async searchUsersRaw(args: {
+    projectKey?: string;
+    repoSlug?: string;
+    query?: string;
+    limit?: number;
+  }): Promise<BBUser[]> {
+    const params = new URLSearchParams();
+    if (args.query) params.set('filter', args.query);
+    params.set('limit', String(args.limit ?? 50));
+
+    type PermEntry = { user: BBUser; permission?: string };
+    let path: string;
+    if (args.projectKey && args.repoSlug) {
+      path = `${this.rp(args.projectKey, args.repoSlug)}/permissions/users?${params}`;
+    } else if (args.projectKey) {
+      path = `/projects/${encodeURIComponent(args.projectKey)}/permissions/users?${params}`;
+    } else {
+      path = `/users?${params}`;
+    }
+
+    const data = await this.request<BBPagedResult<BBUser | PermEntry>>('GET', path);
+    return (data?.values ?? []).map((entry) => (entry as PermEntry).user ?? (entry as BBUser));
+  }
+
   async listPullRequests(args: {
     projectKey?: string;
     repoSlug?: string;
@@ -1079,6 +1103,16 @@ export class BitbucketClient {
       return text(content.slice(0, MAX_CHARS) + `\n\n... (truncated, ${content.length - MAX_CHARS} more chars)`);
     }
     return text(content);
+  }
+
+  async fetchFileText(projectKey: string, repoSlug: string, filePath: string): Promise<string | null> {
+    try {
+      const encoded = filePath.split('/').map(encodeURIComponent).join('/');
+      const content = await this.requestText(`${this.rp(projectKey, repoSlug)}/raw/${encoded}`);
+      return content;
+    } catch {
+      return null;
+    }
   }
 
   async getPrComments(args: {

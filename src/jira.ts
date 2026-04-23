@@ -110,14 +110,6 @@ interface JiraIssueLink {
   outwardIssue?: { key: string; fields: { summary: string; status: { name: string } } };
 }
 
-interface JiraWorklog {
-  id: string;
-  author: { displayName: string };
-  started: string;
-  timeSpent: string;
-  comment?: string;
-}
-
 interface JiraAgileIssue {
   key: string;
   fields?: {
@@ -461,6 +453,23 @@ export class JiraClient {
     });
     const page = pagination(data.total, startAt, data.issues.length);
     return text(`Found ${data.total} issues${page}:\n${lines.join('\n')}`);
+  }
+
+  async findIssues(query: string, maxResults = 10): Promise<Array<{ key: string; summary: string; status: string; type: string }>> {
+    const jql = buildJQL({ query });
+    const params = new URLSearchParams({
+      jql,
+      maxResults: String(maxResults),
+      startAt: '0',
+      fields: 'summary,status,issuetype',
+    });
+    const data = await this.request<JiraSearchResult>('GET', `/search?${params}`);
+    return (data?.issues ?? []).map((i) => ({
+      key: i.key,
+      summary: i.fields.summary,
+      status: i.fields.status.name,
+      type: i.fields.issuetype.name,
+    }));
   }
 
   async myIssues(args: { maxResults?: number; startAt?: number }): Promise<ToolResult> {
