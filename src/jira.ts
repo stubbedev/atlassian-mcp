@@ -1,6 +1,11 @@
 import { execSync } from 'child_process';
+import { writeFile } from 'fs/promises';
+import { resolve as resolvePath } from 'path';
 
-type ToolResult = { content: Array<{ type: 'text'; text: string }> };
+type TextContent = { type: 'text'; text: string };
+type ImageContent = { type: 'image'; data: string; mimeType: string };
+type ToolResult = { content: Array<TextContent> };
+type RichToolResult = { content: Array<TextContent | ImageContent> };
 
 interface JiraIssue {
   key: string;
@@ -17,7 +22,18 @@ interface JiraIssue {
     fixVersions?: Array<{ id: string; name: string }>;
     issuelinks?: JiraIssueLink[];
     subtasks?: Array<{ key: string; fields: { summary: string; status: { name: string } } }>;
+    attachment?: JiraAttachment[];
   };
+}
+
+interface JiraAttachment {
+  id: string;
+  filename: string;
+  mimeType?: string;
+  size: number;
+  created?: string;
+  author?: { displayName?: string; name?: string };
+  content: string;
 }
 
 interface JiraSearchResult {
@@ -203,6 +219,28 @@ function formatJiraError(status: number, method: string, path: string, details: 
   if (status === 409) return `${prefix}. Conflict. Refresh and retry. ${details}`.trim();
   return details ? `${prefix}. ${details}` : prefix;
 }
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function isTextMime(mimeType: string): boolean {
+  const mt = mimeType.toLowerCase();
+  if (mt.startsWith('text/')) return true;
+  return [
+    'application/json',
+    'application/xml',
+    'application/javascript',
+    'application/x-yaml',
+    'application/yaml',
+    'application/x-sh',
+    'application/sql',
+  ].some((m) => mt === m || mt.startsWith(`${m};`));
+}
+
+const MAX_INLINE_BYTES = 5 * 1024 * 1024;
 
 function validateCommentBody(body: string): string {
   const trimmed = body.trim();
@@ -584,7 +622,7 @@ export class JiraClient {
     const commentsMaxResults = args.commentsMaxResults ?? 10;
     const commentsStartAt = args.commentsStartAt ?? 0;
 
-    const fields = 'summary,description,status,assignee,priority,issuetype,labels,components,parent,fixVersions,issuelinks,subtasks';
+    const fields = 'summary,description,status,assignee,priority,issuetype,labels,components,parent,fixVersions,issuelinks,subtasks,attachment';
     const issue = await this.request<JiraIssue>('GET', `/issue/${encodeURIComponent(args.issueKey)}?fields=${fields}`);
     if (!issue) return text('Issue not found.');
 
@@ -637,6 +675,15 @@ export class JiraClient {
     }
 
     lines.push('', 'Description:', f.description ?? '(no description)');
+
+    if (f.attachment?.length) {
+      lines.push('', `Attachments: ${f.attachment.length}`);
+      for (const att of f.attachment) {
+        const mt = att.mimeType ?? 'application/octet-stream';
+        lines.push(`  #${att.id} ${att.filename} (${mt}, ${formatBytes(att.size)})`);
+      }
+      lines.push('Use jira_get_attachment with attachmentId to view contents.');
+    }
 
     if (includeComments) {
       const comments = await this.request<JiraCommentResult>(
@@ -991,6 +1038,54 @@ export class JiraClient {
     });
     const page = data.isLast ? '' : ` (use startAt=${(args.startAt ?? 0) + data.values.length} for next page)`;
     return text(`${data.values.length} board(s)${page}:\n${lines.join('\n')}`);
+  }
+
+  async getAttachment(args: { attachmentId: string; saveTo?: string }): Promise<RichToolResult> {
+    const id = String(args.attachmentId ?? '').trim();
+    if (!id) throw new Error('attachmentId is required.');
+
+    const meta = await this.request<JiraAttachment>('GET', `/attachment/${encodeURIComponent(id)}`);
+    if (!meta) throw new Error(`Attachment ${id} not found.`);
+
+    const res = await fetch(meta.content, {
+      method: 'GET',
+      headers: { Authorization: this.headers.Authorization },
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(formatJiraError(res.status, 'GET', meta.content, parseJiraErrorDetails(errText)));
+    }
+    const buffer = Buffer.from(await res.arrayBuffer());
+    const mt = (meta.mimeType ?? 'application/octet-stream').toLowerCase();
+    const sizeLabel = formatBytes(buffer.length);
+    const header = `${meta.filename} — ${meta.mimeType ?? 'application/octet-stream'}, ${sizeLabel}`;
+
+    if (args.saveTo) {
+      const path = resolvePath(args.saveTo);
+      await writeFile(path, buffer);
+      return { content: [{ type: 'text', text: `Saved attachment #${id} (${header}) to ${path}` }] };
+    }
+
+    if (mt.startsWith('image/') && buffer.length <= MAX_INLINE_BYTES) {
+      return {
+        content: [
+          { type: 'text', text: `Attachment #${id}: ${header}` },
+          { type: 'image', data: buffer.toString('base64'), mimeType: meta.mimeType ?? 'image/png' },
+        ],
+      };
+    }
+
+    if (isTextMime(mt) && buffer.length <= MAX_INLINE_BYTES) {
+      return { content: [{ type: 'text', text: `Attachment #${id}: ${header}\n\n${buffer.toString('utf-8')}` }] };
+    }
+
+    return {
+      content: [{
+        type: 'text',
+        text: `${header}\nAttachment #${id} is${buffer.length > MAX_INLINE_BYTES ? ' larger than 5 MB or' : ''} not inline-renderable. Pass saveTo=/absolute/path to write it to disk.`,
+      }],
+    };
   }
 
   async transitionIssue(args: { issueKey: string; transitionId?: string; transitionName?: string }): Promise<ToolResult> {

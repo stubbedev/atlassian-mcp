@@ -181,7 +181,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'jira_get',
-      description: 'Full details for one Jira issue: summary, description, status, assignee, sprint, available transitions, and recent comments. Use when asked to "show me FOO-123", "what does this ticket say", "get the details for this issue", or after discovering a key from get_dev_context or jira_search.',
+      description: 'Full details for one Jira issue: summary, description, status, assignee, sprint, available transitions, recent comments, and a list of attachments (filename, size, mime type, attachment ID). Use when asked to "show me FOO-123", "what does this ticket say", "get the details for this issue", or after discovering a key from get_dev_context or jira_search. To view an attachment\'s contents (e.g. an image), call jira_get_attachment with the attachment ID surfaced here.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -258,6 +258,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'jira_get_attachment',
+      description: 'Fetch a Jira attachment by ID and return its contents inline. Images come back as image content blocks (so you can see them); text/JSON/XML come back as text. For binary types (PDF, zip, office docs) or files larger than 5 MB, pass saveTo=/absolute/path to write the file to disk and then read it locally. Use jira_get first to discover attachment IDs.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          attachmentId: { type: 'string', description: 'Numeric attachment ID from jira_get output' },
+          saveTo:       { type: 'string', description: 'Optional absolute path to save the file to disk instead of returning inline' },
+        },
+        required: ['attachmentId'],
+      },
+    },
+    {
       name: 'jira_comment',
       description: `Add, update, or delete a comment on a Jira issue. Use when asked to "edit my comment on FOO-123", "delete comment 12345", or "update that comment". action defaults to "add". Can only edit/delete your own comments. ${JIRA_WIKI_MARKUP_HINT}`,
       inputSchema: {
@@ -296,7 +308,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'bitbucket_get_pr',
-      description: 'Full details for one PR: metadata, commits, open comments, blockers, and optional diff. Use when asked to "review this PR", "show me the review comments", "what\'s blocking the merge", or after get_dev_context surfaces a prId. IMPORTANT: The PR branch is often not the locally checked-out branch. Do NOT read files with local tools (Read, git_get_diff, etc.) for PR context — use bitbucket_get_file with the PR\'s source branch instead. The response includes a "Viewing as" line — if it says "you are the author", do NOT add review comments or a summary unless explicitly asked; just answer questions about the PR. If it says "you are a reviewer", default to posting inline comments for suggested changes and a final summary comment.',
+      description: 'Full details for one PR: metadata, commits, open comments, blockers, optional diff, and any attachments referenced from the description or comments (with attachment ID + filename). Use when asked to "review this PR", "show me the review comments", "what\'s blocking the merge", or after get_dev_context surfaces a prId. IMPORTANT: The PR branch is often not the locally checked-out branch. Do NOT read files with local tools (Read, git_get_diff, etc.) for PR context — use bitbucket_get_file with the PR\'s source branch instead. To view an attachment\'s contents, call bitbucket_get_attachment with the surfaced attachment ID. The response includes a "Viewing as" line — if it says "you are the author", do NOT add review comments or a summary unless explicitly asked; just answer questions about the PR. If it says "you are a reviewer", default to posting inline comments for suggested changes and a final summary comment.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -401,6 +413,22 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           ref:        { type: 'string', description: 'Branch, tag, or commit hash (defaults to default branch)' },
         },
         required: ['path'],
+      },
+    },
+    {
+      name: 'bitbucket_get_attachment',
+      description: 'Fetch a Bitbucket repo attachment by ID and return its contents inline. Bitbucket Server attachments are repo-scoped and referenced from PR descriptions/comments via attachment:<id> markdown. Use bitbucket_get_pr first to surface attachment IDs. Images come back as image content blocks; text/JSON/XML as text; binary or >5 MB requires saveTo=/absolute/path.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          projectKey:   { type: 'string', description: 'Bitbucket project code (usually auto-detected)' },
+          project:      { type: 'string', description: 'Alias for projectKey' },
+          repoSlug:     { type: 'string', description: 'Repository slug (usually auto-detected)' },
+          repo:         { type: 'string', description: 'Alias for repoSlug' },
+          attachmentId: { type: 'string', description: 'Numeric attachment ID' },
+          saveTo:       { type: 'string', description: 'Optional absolute path to save the file to disk instead of returning inline' },
+        },
+        required: ['attachmentId'],
       },
     },
     {
@@ -690,6 +718,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'jira_mutate':
         if (!jira) throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
         return await jira.mutateIssue(normalizeJiraMutateArgs(args) as Parameters<typeof jira.mutateIssue>[0]);
+      case 'jira_get_attachment': {
+        if (!jira) throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
+        const a = args as { attachmentId: string; saveTo?: string };
+        return await jira.getAttachment(a);
+      }
       case 'jira_comment': {
         if (!jira) throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
         const a = normalizeJiraProjectArgs(args) as { action?: string; issueKey: string; commentId?: string; body?: string };
@@ -778,6 +811,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'bitbucket_get_file':
         if (!bitbucket) throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
         return await bitbucket.getFile(normalizeBitbucketArgs(args) as Parameters<typeof bitbucket.getFile>[0]);
+      case 'bitbucket_get_attachment': {
+        if (!bitbucket) throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
+        return await bitbucket.getAttachment(normalizeBitbucketArgs(args) as Parameters<typeof bitbucket.getAttachment>[0]);
+      }
       case 'bitbucket_pr_tasks': {
         if (!bitbucket) throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
         const a = normalizeBitbucketArgs(args) as { action?: string; prId: number; taskId?: number; text?: string; commentId?: number; [k: string]: unknown };

@@ -1,7 +1,58 @@
 import { execSync } from 'child_process';
+import { writeFile } from 'fs/promises';
+import { resolve as resolvePath } from 'path';
 
-type ToolResult = { content: Array<{ type: 'text'; text: string }> };
+type TextContent = { type: 'text'; text: string };
+type ImageContent = { type: 'image'; data: string; mimeType: string };
+type ToolResult = { content: Array<TextContent> };
+type RichToolResult = { content: Array<TextContent | ImageContent> };
 const EMOJI_RE = /\p{Extended_Pictographic}/u;
+const ATTACHMENT_REF_RE = /!?\[([^\]]*)\]\(attachment:(\d+)\)/g;
+const MAX_INLINE_BYTES = 5 * 1024 * 1024;
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function isTextMime(mimeType: string): boolean {
+  const mt = mimeType.toLowerCase();
+  if (mt.startsWith('text/')) return true;
+  return [
+    'application/json',
+    'application/xml',
+    'application/javascript',
+    'application/x-yaml',
+    'application/yaml',
+    'application/x-sh',
+    'application/sql',
+  ].some((m) => mt === m || mt.startsWith(`${m};`));
+}
+
+interface AttachmentRef {
+  id: string;
+  filename: string;
+  source: string;
+}
+
+function collectAttachmentRefs(input: string | undefined, source: string, out: Map<string, AttachmentRef>): void {
+  if (!input) return;
+  ATTACHMENT_REF_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = ATTACHMENT_REF_RE.exec(input)) !== null) {
+    const id = match[2];
+    if (!out.has(id)) {
+      out.set(id, { id, filename: match[1] || '(unnamed)', source });
+    }
+  }
+}
+
+function collectFromCommentTree(comment: BBComment, out: Map<string, AttachmentRef>): void {
+  if (comment.deleted) return;
+  collectAttachmentRefs(comment.text, `comment #${comment.id}`, out);
+  for (const reply of comment.comments ?? []) collectFromCommentTree(reply, out);
+}
 
 function safeExec(cmd: string): string {
   try {
@@ -649,6 +700,8 @@ export class BitbucketClient {
     if (!pr) return text('Pull request not found.');
 
     const sections: string[] = [];
+    const attachmentRefs = new Map<string, AttachmentRef>();
+    collectAttachmentRefs(pr.description, 'description', attachmentRefs);
     const reviewers = pr.reviewers.map((r) => `${r.user.displayName}${r.approved ? ' ✓' : ''}`).join(', ');
     const url = pr.links?.self?.[0]?.href;
 
@@ -717,6 +770,7 @@ export class BitbucketClient {
         if (!data || data.values.length === 0) {
           sections.push(`Comments:\n(no ${commentsState} BLOCKER comments)`);
         } else {
+          for (const comment of data.values) collectFromCommentTree(comment, attachmentRefs);
           const blocks = data.values.flatMap((comment) => formatCommentThread(comment));
           sections.push(`Comments (${data.values.length} BLOCKER thread(s))${pageHint(data)}:\n\n${blocks.join('\n\n')}`);
         }
@@ -729,6 +783,7 @@ export class BitbucketClient {
           const matchesState = commentMatchesState(comment, commentsState);
           return matchesState && commentMatchesSeverity(comment, commentsSeverity);
         });
+        for (const comment of comments) collectFromCommentTree(comment, attachmentRefs);
         if (comments.length === 0) {
           sections.push('Comments:\n(no matching comments)');
         } else {
@@ -737,6 +792,15 @@ export class BitbucketClient {
           sections.push(`Comments (${comments.length} thread(s))${paging}:\n\n${blocks.join('\n\n')}`);
         }
       }
+    }
+
+    if (attachmentRefs.size > 0) {
+      const lines = [`Attachments referenced: ${attachmentRefs.size}`];
+      for (const ref of attachmentRefs.values()) {
+        lines.push(`  #${ref.id} ${ref.filename} — in ${ref.source}`);
+      }
+      lines.push('Use bitbucket_get_attachment with attachmentId to view contents.');
+      sections.push(lines.join('\n'));
     }
 
     if (includeDiff) {
@@ -1103,6 +1167,61 @@ export class BitbucketClient {
       return text(content.slice(0, MAX_CHARS) + `\n\n... (truncated, ${content.length - MAX_CHARS} more chars)`);
     }
     return text(content);
+  }
+
+  async getAttachment(args: {
+    projectKey?: string;
+    repoSlug?: string;
+    attachmentId: string;
+    saveTo?: string;
+  }): Promise<RichToolResult> {
+    const { projectKey, repoSlug } = this.resolveProjectAndRepo(args.projectKey, args.repoSlug);
+    const id = String(args.attachmentId ?? '').trim();
+    if (!id) throw new Error('attachmentId is required.');
+
+    const url = `${this.baseUrl}/rest/api/1.0${this.rp(projectKey, repoSlug)}/attachments/${encodeURIComponent(id)}`;
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: this.headers.Authorization },
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(formatBitbucketError(res.status, 'GET', `${this.rp(projectKey, repoSlug)}/attachments/${id}`, parseBitbucketErrorDetails(errText)));
+    }
+    const buffer = Buffer.from(await res.arrayBuffer());
+    const contentDisposition = res.headers.get('content-disposition') ?? '';
+    const filenameMatch = contentDisposition.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
+    const filename = filenameMatch ? decodeURIComponent(filenameMatch[1]) : `attachment-${id}`;
+    const mimeType = (res.headers.get('content-type') ?? 'application/octet-stream').split(';')[0].trim();
+    const sizeLabel = formatBytes(buffer.length);
+    const header = `${filename} — ${mimeType}, ${sizeLabel}`;
+
+    if (args.saveTo) {
+      const path = resolvePath(args.saveTo);
+      await writeFile(path, buffer);
+      return { content: [{ type: 'text', text: `Saved attachment #${id} (${header}) to ${path}` }] };
+    }
+
+    if (mimeType.toLowerCase().startsWith('image/') && buffer.length <= MAX_INLINE_BYTES) {
+      return {
+        content: [
+          { type: 'text', text: `Attachment #${id}: ${header}` },
+          { type: 'image', data: buffer.toString('base64'), mimeType },
+        ],
+      };
+    }
+
+    if (isTextMime(mimeType) && buffer.length <= MAX_INLINE_BYTES) {
+      return { content: [{ type: 'text', text: `Attachment #${id}: ${header}\n\n${buffer.toString('utf-8')}` }] };
+    }
+
+    return {
+      content: [{
+        type: 'text',
+        text: `${header}\nAttachment #${id} is${buffer.length > MAX_INLINE_BYTES ? ' larger than 5 MB or' : ''} not inline-renderable. Pass saveTo=/absolute/path to write it to disk.`,
+      }],
+    };
   }
 
   async fetchFileText(projectKey: string, repoSlug: string, filePath: string): Promise<string | null> {
