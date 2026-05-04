@@ -28,7 +28,8 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 | Tool | Description |
 |---|---|
 | `jira_search` | Discover resources: `issues`, `projects`, `issue_types`, `boards`, `sprints`, `board_overview`, or `users` via `resource` param |
-| `jira_get` | Full details for one issue: summary, description, status, sprint, transitions, and comments |
+| `jira_get` | Full details for one issue: summary, description, status, sprint, transitions, comments, and attachment list |
+| `jira_get_attachment` | Fetch a Jira attachment by ID; images are auto-resized via sharp and returned inline so the model can see them, text/JSON inline, larger/binary files via `saveTo` |
 | `jira_mutate` | Create, update, transition, comment, link, add to sprint, or log work — all in one call |
 | `jira_comment` | Add, update, or delete a comment on an issue (`action`: `add` / `update` / `delete`) |
 
@@ -37,7 +38,8 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 | Tool | Description |
 |---|---|
 | `bitbucket_search` | Discover resources: `pull_requests` (default), `repos`, or `branches` via `resource` param; `mine=true` for your inbox |
-| `bitbucket_get_pr` | Full PR details: metadata, commits, comments, blockers, build status, and optional diff |
+| `bitbucket_get_pr` | Full PR details: metadata, commits, comments, blockers, build status, optional diff, and any attachments referenced from the description or comments |
+| `bitbucket_get_attachment` | Fetch a repo attachment by ID (images auto-resized inline via sharp; text inline; binary/large via `saveTo`) |
 | `bitbucket_mutate` | Create/update a PR, or perform lifecycle actions: `approve`, `unapprove`, `merge`, `decline` |
 | `bitbucket_comment` | Add, update, or delete a PR comment; for code changes use `suggestion` so Bitbucket shows Apply suggestion (no trailing text after a suggestion block) |
 | `bitbucket_get_file` | Raw file content from Bitbucket at a branch, tag, or commit |
@@ -238,6 +240,10 @@ npm install
 ```
 
 Then use `node /path/to/atlassian-mcp/dist/index.js` instead of the `npx` command in the configs above.
+
+### Native dependency: `sharp`
+
+Image attachments are downscaled and re-encoded with [`sharp`](https://sharp.pixelplumbing.com/) before being returned to the model so they fit in context. Sharp ships prebuilt binaries for glibc Linux (x64/arm64), macOS, and Windows — no extra setup needed on those. Alpine / musl users may need `npm install --cpu=x64 --os=linux --libc=musl sharp`.
 
 ---
 

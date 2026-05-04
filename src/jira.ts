@@ -1,11 +1,7 @@
 import { execSync } from 'child_process';
-import { writeFile } from 'fs/promises';
-import { resolve as resolvePath } from 'path';
+import { buildAttachmentResult, formatBytes, type RichToolResult } from './attachment.js';
 
-type TextContent = { type: 'text'; text: string };
-type ImageContent = { type: 'image'; data: string; mimeType: string };
-type ToolResult = { content: Array<TextContent> };
-type RichToolResult = { content: Array<TextContent | ImageContent> };
+type ToolResult = { content: Array<{ type: 'text'; text: string }> };
 
 interface JiraIssue {
   key: string;
@@ -219,28 +215,6 @@ function formatJiraError(status: number, method: string, path: string, details: 
   if (status === 409) return `${prefix}. Conflict. Refresh and retry. ${details}`.trim();
   return details ? `${prefix}. ${details}` : prefix;
 }
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function isTextMime(mimeType: string): boolean {
-  const mt = mimeType.toLowerCase();
-  if (mt.startsWith('text/')) return true;
-  return [
-    'application/json',
-    'application/xml',
-    'application/javascript',
-    'application/x-yaml',
-    'application/yaml',
-    'application/x-sh',
-    'application/sql',
-  ].some((m) => mt === m || mt.startsWith(`${m};`));
-}
-
-const MAX_INLINE_BYTES = 5 * 1024 * 1024;
 
 function validateCommentBody(body: string): string {
   const trimmed = body.trim();
@@ -1040,7 +1014,12 @@ export class JiraClient {
     return text(`${data.values.length} board(s)${page}:\n${lines.join('\n')}`);
   }
 
-  async getAttachment(args: { attachmentId: string; saveTo?: string }): Promise<RichToolResult> {
+  async getAttachment(args: {
+    attachmentId: string;
+    saveTo?: string;
+    maxDimension?: number;
+    quality?: number;
+  }): Promise<RichToolResult> {
     const id = String(args.attachmentId ?? '').trim();
     if (!id) throw new Error('attachmentId is required.');
 
@@ -1057,35 +1036,16 @@ export class JiraClient {
       throw new Error(formatJiraError(res.status, 'GET', meta.content, parseJiraErrorDetails(errText)));
     }
     const buffer = Buffer.from(await res.arrayBuffer());
-    const mt = (meta.mimeType ?? 'application/octet-stream').toLowerCase();
-    const sizeLabel = formatBytes(buffer.length);
-    const header = `${meta.filename} — ${meta.mimeType ?? 'application/octet-stream'}, ${sizeLabel}`;
 
-    if (args.saveTo) {
-      const path = resolvePath(args.saveTo);
-      await writeFile(path, buffer);
-      return { content: [{ type: 'text', text: `Saved attachment #${id} (${header}) to ${path}` }] };
-    }
-
-    if (mt.startsWith('image/') && buffer.length <= MAX_INLINE_BYTES) {
-      return {
-        content: [
-          { type: 'text', text: `Attachment #${id}: ${header}` },
-          { type: 'image', data: buffer.toString('base64'), mimeType: meta.mimeType ?? 'image/png' },
-        ],
-      };
-    }
-
-    if (isTextMime(mt) && buffer.length <= MAX_INLINE_BYTES) {
-      return { content: [{ type: 'text', text: `Attachment #${id}: ${header}\n\n${buffer.toString('utf-8')}` }] };
-    }
-
-    return {
-      content: [{
-        type: 'text',
-        text: `${header}\nAttachment #${id} is${buffer.length > MAX_INLINE_BYTES ? ' larger than 5 MB or' : ''} not inline-renderable. Pass saveTo=/absolute/path to write it to disk.`,
-      }],
-    };
+    return buildAttachmentResult({
+      id,
+      filename: meta.filename,
+      mimeType: meta.mimeType ?? 'application/octet-stream',
+      buffer,
+      saveTo: args.saveTo,
+      maxDimension: args.maxDimension,
+      quality: args.quality,
+    });
   }
 
   async transitionIssue(args: { issueKey: string; transitionId?: string; transitionName?: string }): Promise<ToolResult> {

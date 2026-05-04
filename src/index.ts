@@ -259,12 +259,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'jira_get_attachment',
-      description: 'Fetch a Jira attachment by ID and return its contents inline. Images come back as image content blocks (so you can see them); text/JSON/XML come back as text. For binary types (PDF, zip, office docs) or files larger than 5 MB, pass saveTo=/absolute/path to write the file to disk and then read it locally. Use jira_get first to discover attachment IDs.',
+      description: 'Fetch a Jira attachment by ID and return its contents inline. Images are auto-resized (long edge ≤1568 px by default) and re-encoded so they fit in context, then returned as image content blocks (so you can see them); text/JSON/XML come back as text. For binary types (PDF, zip, office docs) or files larger than 10 MB, pass saveTo=/absolute/path to write the original file to disk and then read it locally. For screenshots of code or other detail-heavy images, raise maxDimension. Use jira_get first to discover attachment IDs.',
       inputSchema: {
         type: 'object',
         properties: {
           attachmentId: { type: 'string', description: 'Numeric attachment ID from jira_get output' },
-          saveTo:       { type: 'string', description: 'Optional absolute path to save the file to disk instead of returning inline' },
+          saveTo:       { type: 'string', description: 'Optional absolute path to save the original (un-resized) file to disk instead of returning inline' },
+          maxDimension: { type: 'number', description: 'Max long-edge size in pixels for inline images (default 1568). Larger images are downscaled with sharp.' },
+          quality:      { type: 'number', description: 'JPEG quality for re-encoded inline images (1-100, default 85). Ignored for images with alpha (encoded as PNG).' },
         },
         required: ['attachmentId'],
       },
@@ -417,7 +419,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'bitbucket_get_attachment',
-      description: 'Fetch a Bitbucket repo attachment by ID and return its contents inline. Bitbucket Server attachments are repo-scoped and referenced from PR descriptions/comments via attachment:<id> markdown. Use bitbucket_get_pr first to surface attachment IDs. Images come back as image content blocks; text/JSON/XML as text; binary or >5 MB requires saveTo=/absolute/path.',
+      description: 'Fetch a Bitbucket repo attachment by ID and return its contents inline. Bitbucket Server attachments are repo-scoped and referenced from PR descriptions/comments via attachment:<id> markdown. Use bitbucket_get_pr first to surface attachment IDs. Images are auto-resized (long edge ≤1568 px by default) and re-encoded, then returned as image content blocks; text/JSON/XML as text; binary or >10 MB requires saveTo=/absolute/path.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -426,7 +428,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           repoSlug:     { type: 'string', description: 'Repository slug (usually auto-detected)' },
           repo:         { type: 'string', description: 'Alias for repoSlug' },
           attachmentId: { type: 'string', description: 'Numeric attachment ID' },
-          saveTo:       { type: 'string', description: 'Optional absolute path to save the file to disk instead of returning inline' },
+          saveTo:       { type: 'string', description: 'Optional absolute path to save the original (un-resized) file to disk instead of returning inline' },
+          maxDimension: { type: 'number', description: 'Max long-edge size in pixels for inline images (default 1568). Larger images are downscaled with sharp.' },
+          quality:      { type: 'number', description: 'JPEG quality for re-encoded inline images (1-100, default 85). Ignored for images with alpha (encoded as PNG).' },
         },
         required: ['attachmentId'],
       },
@@ -720,7 +724,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return await jira.mutateIssue(normalizeJiraMutateArgs(args) as Parameters<typeof jira.mutateIssue>[0]);
       case 'jira_get_attachment': {
         if (!jira) throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
-        const a = args as { attachmentId: string; saveTo?: string };
+        const a = args as { attachmentId: string; saveTo?: string; maxDimension?: number; quality?: number };
         return await jira.getAttachment(a);
       }
       case 'jira_comment': {

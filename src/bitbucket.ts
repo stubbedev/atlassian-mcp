@@ -1,34 +1,9 @@
 import { execSync } from 'child_process';
-import { writeFile } from 'fs/promises';
-import { resolve as resolvePath } from 'path';
+import { buildAttachmentResult, type RichToolResult } from './attachment.js';
 
-type TextContent = { type: 'text'; text: string };
-type ImageContent = { type: 'image'; data: string; mimeType: string };
-type ToolResult = { content: Array<TextContent> };
-type RichToolResult = { content: Array<TextContent | ImageContent> };
+type ToolResult = { content: Array<{ type: 'text'; text: string }> };
 const EMOJI_RE = /\p{Extended_Pictographic}/u;
 const ATTACHMENT_REF_RE = /!?\[([^\]]*)\]\(attachment:(\d+)\)/g;
-const MAX_INLINE_BYTES = 5 * 1024 * 1024;
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function isTextMime(mimeType: string): boolean {
-  const mt = mimeType.toLowerCase();
-  if (mt.startsWith('text/')) return true;
-  return [
-    'application/json',
-    'application/xml',
-    'application/javascript',
-    'application/x-yaml',
-    'application/yaml',
-    'application/x-sh',
-    'application/sql',
-  ].some((m) => mt === m || mt.startsWith(`${m};`));
-}
 
 interface AttachmentRef {
   id: string;
@@ -1174,6 +1149,8 @@ export class BitbucketClient {
     repoSlug?: string;
     attachmentId: string;
     saveTo?: string;
+    maxDimension?: number;
+    quality?: number;
   }): Promise<RichToolResult> {
     const { projectKey, repoSlug } = this.resolveProjectAndRepo(args.projectKey, args.repoSlug);
     const id = String(args.attachmentId ?? '').trim();
@@ -1194,34 +1171,16 @@ export class BitbucketClient {
     const filenameMatch = contentDisposition.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
     const filename = filenameMatch ? decodeURIComponent(filenameMatch[1]) : `attachment-${id}`;
     const mimeType = (res.headers.get('content-type') ?? 'application/octet-stream').split(';')[0].trim();
-    const sizeLabel = formatBytes(buffer.length);
-    const header = `${filename} — ${mimeType}, ${sizeLabel}`;
 
-    if (args.saveTo) {
-      const path = resolvePath(args.saveTo);
-      await writeFile(path, buffer);
-      return { content: [{ type: 'text', text: `Saved attachment #${id} (${header}) to ${path}` }] };
-    }
-
-    if (mimeType.toLowerCase().startsWith('image/') && buffer.length <= MAX_INLINE_BYTES) {
-      return {
-        content: [
-          { type: 'text', text: `Attachment #${id}: ${header}` },
-          { type: 'image', data: buffer.toString('base64'), mimeType },
-        ],
-      };
-    }
-
-    if (isTextMime(mimeType) && buffer.length <= MAX_INLINE_BYTES) {
-      return { content: [{ type: 'text', text: `Attachment #${id}: ${header}\n\n${buffer.toString('utf-8')}` }] };
-    }
-
-    return {
-      content: [{
-        type: 'text',
-        text: `${header}\nAttachment #${id} is${buffer.length > MAX_INLINE_BYTES ? ' larger than 5 MB or' : ''} not inline-renderable. Pass saveTo=/absolute/path to write it to disk.`,
-      }],
-    };
+    return buildAttachmentResult({
+      id,
+      filename,
+      mimeType,
+      buffer,
+      saveTo: args.saveTo,
+      maxDimension: args.maxDimension,
+      quality: args.quality,
+    });
   }
 
   async fetchFileText(projectKey: string, repoSlug: string, filePath: string): Promise<string | null> {
