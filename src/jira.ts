@@ -294,6 +294,10 @@ export class JiraClient {
     return me;
   }
 
+  async whoami(): Promise<{ name?: string; key?: string; displayName?: string }> {
+    return this.getCurrentUser();
+  }
+
   private async getIssueLinkingEnabled(): Promise<boolean> {
     if (this.issueLinkingEnabled !== undefined) return this.issueLinkingEnabled;
     const config = await this.request<{ issueLinkingEnabled: boolean }>('GET', '/configuration');

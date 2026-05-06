@@ -15,6 +15,30 @@ function safeExec(cmd: string, cwd: string): string {
   }
 }
 
+interface Committer {
+  name: string;
+  email: string;
+  commits: number;
+}
+
+/** Top recent committers from the last `lookback` commits, ranked by count. */
+export function getTopCommitters(repoPath: string, lookback = 50, top = 5): Committer[] {
+  const raw = safeExec(`git log -n ${lookback} --format=%aN%x09%aE`, repoPath);
+  if (!raw) return [];
+  const counts = new Map<string, Committer>();
+  for (const line of raw.split('\n')) {
+    const [name, email] = line.split('\t');
+    if (!name) continue;
+    const key = (email || name).toLowerCase();
+    const existing = counts.get(key);
+    if (existing) existing.commits++;
+    else counts.set(key, { name, email: email ?? '', commits: 1 });
+  }
+  return [...counts.values()]
+    .sort((a, b) => b.commits - a.commits)
+    .slice(0, top);
+}
+
 /**
  * Unified developer context: git state + linked Jira issues + open PR for current branch.
  * Either jira or bitbucket may be null when only one product is configured.
@@ -31,6 +55,8 @@ export async function getDevContext(
   const remote = safeExec('git remote get-url origin', repoPath) || '(no remote)';
   const recentCommits = safeExec('git log --oneline -5', repoPath) || '(none)';
   const status = safeExec('git status --short', repoPath) || '(clean)';
+  const committers = getTopCommitters(repoPath, 50, 5);
+  const parsed = bitbucket?.isRemoteForThisInstance(remote) ? parseBitbucketRemote(remote) : null;
 
   // Upstream ahead/behind
   const upstream = safeExec('git rev-parse --abbrev-ref @{u}', repoPath);
@@ -46,18 +72,40 @@ export async function getDevContext(
     }
   }
 
-  sections.push([
+  // Identity — best-effort, parallel
+  const [jiraMe, bbMe] = await Promise.all([
+    jira ? jira.whoami().catch(() => null) : Promise.resolve(null),
+    bitbucket ? bitbucket.whoami().catch(() => null) : Promise.resolve(null),
+  ]);
+  const youParts: string[] = [];
+  if (jiraMe) youParts.push(`Jira ${jiraMe.name ?? jiraMe.key ?? '(unknown)'}${jiraMe.displayName ? ` "${jiraMe.displayName}"` : ''}`);
+  if (bbMe)   youParts.push(`Bitbucket ${bbMe}`);
+
+  const headerLines: string[] = [
     `Repository: ${repoPath}`,
     `Branch:     ${branch}`,
     ...(upstreamLine ? [`Upstream:   ${upstreamLine}`] : []),
     `Remote:     ${remote}`,
-    '',
-    'Recent commits:',
-    recentCommits,
-    '',
-    'Working tree:',
-    status,
-  ].join('\n'));
+    ...(parsed ? [`Bitbucket:  ${parsed.projectKey}/${parsed.repoSlug}`] : []),
+    ...(youParts.length ? [`You:        ${youParts.join(' · ')}`] : []),
+  ];
+  if (committers.length) {
+    headerLines.push('');
+    headerLines.push('Top recent committers (last 50):');
+    for (const c of committers) {
+      const ident = c.email ? `${c.name} <${c.email}>` : c.name;
+      headerLines.push(`  ${c.commits.toString().padStart(3)} — ${ident}`);
+    }
+    headerLines.push('  (look up usernames via jira_search resource=users / bitbucket_search resource=users — do NOT shell out to git/gh/bb)');
+  }
+  headerLines.push('');
+  headerLines.push('Recent commits:');
+  headerLines.push(recentCommits);
+  headerLines.push('');
+  headerLines.push('Working tree:');
+  headerLines.push(status);
+
+  sections.push(headerLines.join('\n'));
 
   // Jira — fetch overview for any tickets referenced in the branch name (parallel)
   const jiraKeys = jira ? [...new Set(branch.match(JIRA_KEY_RE) ?? [])] : [];
@@ -80,7 +128,6 @@ export async function getDevContext(
   sections.push(...jiraResults);
 
   // Bitbucket — find the open PR for this branch (only if remote points to this instance)
-  const parsed = bitbucket?.isRemoteForThisInstance(remote) ? parseBitbucketRemote(remote) : null;
   if (parsed) {
     try {
       const pr = await bitbucket!.findOpenPrForBranch(parsed.projectKey, parsed.repoSlug, branch);

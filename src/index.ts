@@ -20,10 +20,14 @@ import { loadConfig } from './config.js';
 import { JiraClient } from './jira.js';
 import { BitbucketClient, parseBitbucketRemote } from './bitbucket.js';
 import { getContext, getDiff, createBranch, checkRemoteBranch, checkoutRemoteBranch } from './git.js';
-import { getDevContext } from './context.js';
+import { getDevContext, getTopCommitters } from './context.js';
 
 function currentGitRemote(): string {
   try { return execFileSync('git', ['remote', 'get-url', 'origin'], { encoding: 'utf-8' }).trim(); } catch { return ''; }
+}
+
+function currentGitBranch(): string {
+  try { return execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf-8' }).trim(); } catch { return ''; }
 }
 
 function remoteMatchesBitbucketInstance(remote: string, bitbucketUrl: string): boolean {
@@ -46,9 +50,61 @@ if (config.bitbucket && !bitbucket) {
   console.error(`[atlassian-mcp] Bitbucket configured but remote "${_remote || '(none)'}" does not match ${config.bitbucket.url} — Bitbucket tools disabled for this repo.`);
 }
 
+async function buildInstructions(): Promise<string> {
+  const branch = currentGitBranch();
+  const isGitRepo = branch !== '';
+  const jiraKeys = isGitRepo ? [...new Set(branch.match(/\b[A-Z][A-Z0-9]+-\d+\b/g) ?? [])] : [];
+  const parsed = bitbucket && _remote ? parseBitbucketRemote(_remote) : null;
+  const committers = isGitRepo ? getTopCommitters(process.cwd(), 50, 5) : [];
+
+  const [jiraMe, bbMe] = await Promise.all([
+    jira ? jira.whoami().catch(() => null) : Promise.resolve(null),
+    bitbucket ? bitbucket.whoami().catch(() => null) : Promise.resolve(null),
+  ]);
+
+  const lines: string[] = [];
+  lines.push('# atlassian-mcp');
+  lines.push('');
+  lines.push('Self-hosted Jira + Bitbucket Server tooling. Prefer these tools over shelling out to `git log`, `gh`, or any `bitbucket`/`bb` CLI for anything that touches tickets, PRs, reviewers, comments, or user lookups.');
+  lines.push('');
+  lines.push('## Configured services');
+  lines.push(`- Jira:      ${jira ? config.jira!.url : '(not configured)'}${jiraMe ? ` — you are ${jiraMe.name ?? jiraMe.key ?? '?'}${jiraMe.displayName ? ` "${jiraMe.displayName}"` : ''}` : ''}`);
+  lines.push(`- Bitbucket: ${bitbucket ? config.bitbucket!.url : (config.bitbucket ? `${config.bitbucket.url} — DISABLED for this cwd (remote does not match)` : '(not configured)')}${bbMe ? ` — you are ${bbMe}` : ''}`);
+  lines.push('');
+  if (isGitRepo) {
+    lines.push('## Current repo');
+    lines.push(`- Branch: ${branch} (may have changed since startup — re-run \`get_dev_context\` to refresh)`);
+    lines.push(`- Remote: ${_remote || '(none)'}`);
+    if (parsed) lines.push(`- Bitbucket repo: ${parsed.projectKey}/${parsed.repoSlug}`);
+    if (jiraKeys.length) lines.push(`- Jira keys in branch: ${jiraKeys.join(', ')}`);
+  } else {
+    lines.push('## Current repo');
+    lines.push('- Not a git repository.');
+  }
+  if (committers.length) {
+    lines.push('');
+    lines.push('## Recent committers in this repo (last 50 commits)');
+    for (const c of committers) {
+      const ident = c.email ? `${c.name} <${c.email}>` : c.name;
+      lines.push(`- ${c.commits}× ${ident}`);
+    }
+  }
+  lines.push('');
+  lines.push('## Use these tools — do NOT shell out');
+  lines.push('- "What am I working on / what\'s the status / show me the context" → call `get_dev_context` first. It returns branch state, linked Jira tickets, the open PR, and reviewer status in one shot.');
+  lines.push('- Looking up a person\'s username (for reviewers, assignees, mentions) → ALWAYS use `bitbucket_search resource=users` or `jira_search resource=users`. NEVER use `git log`/`git shortlog`/`gh api`/`bb`/any bitbucket CLI to discover who someone is — those return commit-author strings, not Bitbucket/Jira usernames, and the wrong identifier breaks reviewer assignment.');
+  lines.push('- Reading a Jira ticket → `jira_get` (single) or `jira_search` (many). Mutating → `jira_mutate`.');
+  lines.push('- Reading a PR → `bitbucket_get_pr`. Creating/updating/merging → `bitbucket_mutate`. Commenting → `bitbucket_comment`.');
+  lines.push('- Starting work on a ticket (branch + status transition + README) → `start_work`. Closing it (merge + transition) → `complete_work`.');
+
+  return lines.join('\n');
+}
+
+const _instructions = await buildInstructions();
+
 const server = new Server(
   { name: 'atlassian-mcp', version: _pkg.version },
-  { capabilities: { tools: {} } }
+  { capabilities: { tools: {} }, instructions: _instructions }
 );
 
 server.onerror = (error) => console.error('[MCP Error]', error);

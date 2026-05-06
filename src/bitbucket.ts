@@ -368,6 +368,10 @@ export class BitbucketClient {
     return username;
   }
 
+  async whoami(): Promise<string> {
+    return this.getCurrentUsername();
+  }
+
   /** Returns a URL-safe `/projects/.../repos/...` prefix for REST paths. */
   private rp(projectKey: string, repoSlug: string): string {
     return `/projects/${encodeURIComponent(projectKey)}/repos/${encodeURIComponent(repoSlug)}`;
