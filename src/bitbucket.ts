@@ -213,6 +213,7 @@ function commentMatchesState(comment: BBComment, state: 'OPEN' | 'RESOLVED' | 'P
   if (state !== 'PENDING' && (comment.severity ?? 'NORMAL') !== 'BLOCKER' && comment.threadResolved !== undefined) {
     const threadState = comment.threadResolved ? 'RESOLVED' : 'OPEN';
     if (threadState === state) return true;
+    return (comment.comments ?? []).some((child) => commentMatchesState(child, state));
   }
   const currentState = comment.state ?? 'OPEN';
   if (currentState === state) return true;
@@ -255,7 +256,7 @@ function uniqueCommentsFromActivities(activities: BBActivity[]): BBComment[] {
   }
   return Array.from(byId.values())
     .filter((comment) => !comment.deleted)
-    .sort((a, b) => (a.createdDate ?? 0) - (b.createdDate ?? 0));
+    .sort((a, b) => (b.createdDate ?? 0) - (a.createdDate ?? 0));
 }
 
 function pageHint(data: BBPagedResult<unknown>): string {
@@ -643,7 +644,7 @@ export class BitbucketClient {
     includeComments?: boolean;
     includeDiff?: boolean;
     includeBuildStatus?: boolean;
-    commentsState?: 'OPEN' | 'RESOLVED' | 'PENDING';
+    commentsState?: 'OPEN' | 'RESOLVED' | 'PENDING' | 'ALL';
     commentsSeverity?: 'ALL' | 'NORMAL' | 'BLOCKER';
     commentsLimit?: number;
     commentsStart?: number;
@@ -733,15 +734,16 @@ export class BitbucketClient {
     if (includeComments) {
       const commentsLimit = args.commentsLimit ?? 50;
       const commentsStart = args.commentsStart ?? 0;
-      const commentsState = args.commentsState ?? 'OPEN';
+      const commentsState = args.commentsState ?? 'ALL';
       const commentsSeverity = args.commentsSeverity ?? 'ALL';
 
       if (commentsSeverity === 'BLOCKER' && commentsState === 'PENDING') {
-        throw new Error('commentsState=PENDING is not valid when commentsSeverity=BLOCKER. Use OPEN or RESOLVED.');
+        throw new Error('commentsState=PENDING is not valid when commentsSeverity=BLOCKER. Use OPEN, RESOLVED, or ALL.');
       }
 
       if (commentsSeverity === 'BLOCKER') {
-        const qs = new URLSearchParams({ limit: String(commentsLimit), start: String(commentsStart), state: commentsState });
+        const qs = new URLSearchParams({ limit: String(commentsLimit), start: String(commentsStart) });
+        if (commentsState !== 'ALL') qs.set('state', commentsState);
         const data = await this.request<BBPagedResult<BBComment>>(
           'GET',
           `${this.rp(projectKey, repoSlug)}/pull-requests/${prId}/blocker-comments?${qs}`
@@ -759,7 +761,7 @@ export class BitbucketClient {
           `${this.rp(projectKey, repoSlug)}/pull-requests/${prId}/activities?limit=${commentsLimit}&start=${commentsStart}`
         );
         const comments = uniqueCommentsFromActivities(activityData?.values ?? []).filter((comment) => {
-          const matchesState = commentMatchesState(comment, commentsState);
+          const matchesState = commentsState === 'ALL' ? true : commentMatchesState(comment, commentsState);
           return matchesState && commentMatchesSeverity(comment, commentsSeverity);
         });
         for (const comment of comments) collectFromCommentTree(comment, attachmentRefs);
@@ -768,7 +770,7 @@ export class BitbucketClient {
         } else {
           const blocks = comments.flatMap((comment) => formatCommentThread(comment));
           const paging = activityData ? pageHint(activityData) : '';
-          sections.push(`Comments (${comments.length} thread(s))${paging}:\n\n${blocks.join('\n\n')}`);
+          sections.push(`Comments (${comments.length} thread(s), newest first)${paging}:\n\n${blocks.join('\n\n')}`);
         }
       }
     }

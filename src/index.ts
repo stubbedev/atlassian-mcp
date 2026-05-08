@@ -380,7 +380,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           includeComments:   { type: 'boolean', description: 'Include review comments and blockers (default true)', default: true },
           includeDiff:       { type: 'boolean', description: 'Include diff text (default false)', default: false },
           includeBuildStatus:{ type: 'boolean', description: 'Include CI/build status for the head commit (default true)', default: true },
-          commentsState:     { type: 'string', enum: ['OPEN', 'RESOLVED', 'PENDING'], description: 'Comment state filter (default OPEN)', default: 'OPEN' },
+          commentsState:     { type: 'string', enum: ['ALL', 'OPEN', 'RESOLVED', 'PENDING'], description: 'Comment state filter (default ALL — returns every comment with its state badge so nothing is silently hidden). Pass OPEN/RESOLVED only when explicitly narrowing.', default: 'ALL' },
           commentsSeverity:  { type: 'string', enum: ['ALL', 'NORMAL', 'BLOCKER'], description: 'Comment severity filter (default ALL)', default: 'ALL' },
           commentsLimit:     { type: 'number', description: 'Max comments (default 50)', default: 50 },
           commentsStart:     { type: 'number', description: 'Comment pagination offset (default 0)', default: 0 },
