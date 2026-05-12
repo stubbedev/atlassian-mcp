@@ -430,7 +430,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'bitbucket_comment',
-      description: `Add, update, or delete a PR comment. action defaults to "add". For code changes, ALWAYS use inline comments with suggestion when exact replacement code is available. Keep any explanatory text before the suggestion block only (never after), or Bitbucket may hide Apply suggestion. Replies MUST use commentId. Keep comments concise, no emojis. Only call proactively (without being asked) when you are a reviewer on the PR (i.e. "Viewing as" says "you are a reviewer") — never post unsolicited comments on PRs you authored.`,
+      description: `Add, update, or delete a PR comment. action defaults to "add". For code changes, ALWAYS use inline comments with suggestion when exact replacement code is available. Keep any explanatory text before the suggestion block only (never after), or Bitbucket may hide Apply suggestion. Replies MUST use commentId. Keep comments concise, no emojis. Only call proactively (without being asked) when you are a reviewer on the PR (i.e. "Viewing as" says "you are a reviewer") — never post unsolicited comments on PRs you authored. For inline comments: ALWAYS pass fromHash + toHash matching the commit you actually reviewed (read from bitbucket_pr_diff or bitbucket_get_pr output). Without them the anchor falls back to current PR head, and if the branch advanced between review and post the line number will point at unrelated code.`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -449,6 +449,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           fileType:               { type: 'string', enum: ['TO', 'FROM'], description: 'Diff side: TO (new, default) or FROM (old)' },
           multilineStartLine:     { type: 'number', description: 'First line of multiline anchor (pair with line as last line)' },
           multilineStartLineType: { type: 'string', enum: ['ADDED', 'REMOVED', 'CONTEXT'], description: 'Line type for multilineStartLine' },
+          fromHash:               { type: 'string', description: 'Base/target commit of the diff you reviewed (from bitbucket_pr_diff or bitbucket_get_pr). Pair with toHash so the anchor binds to the exact commit, not whatever the PR head happens to be at post time.' },
+          toHash:                 { type: 'string', description: 'Source/feature commit of the diff you reviewed (from bitbucket_pr_diff or bitbucket_get_pr). Pair with fromHash. If the PR has advanced since, Bitbucket will mark the comment outdated — that is the correct behaviour.' },
           suggestion:             { type: 'string', description: 'Replacement code to suggest. Use whenever proposing a concrete code change. Posted as the final ```suggestion``` block so Apply suggestion appears. Requires filePath + line.' },
           state:                  { type: 'string', enum: ['OPEN', 'RESOLVED'], description: 'Task state for BLOCKER comments (update only)' },
           threadResolved:         { type: 'boolean', description: 'Resolve/reopen normal comment thread (update only)' },

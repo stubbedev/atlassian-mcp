@@ -113,14 +113,24 @@ interface BBBranch {
 
 interface BBDiffSegment {
   type: 'ADDED' | 'REMOVED' | 'CONTEXT';
-  lines?: Array<{ line: string }>;
+  lines?: Array<{ line: string; source?: number; destination?: number }>;
+}
+
+interface BBDiffHunk {
+  sourceLine?: number;
+  sourceSpan?: number;
+  destinationLine?: number;
+  destinationSpan?: number;
+  segments?: BBDiffSegment[];
 }
 
 interface BBDiff {
+  fromHash?: string;
+  toHash?: string;
   diffs: Array<{
     source?: { toString: string };
     destination?: { toString: string };
-    hunks?: Array<{ segments?: BBDiffSegment[] }>;
+    hunks?: BBDiffHunk[];
   }>;
 }
 
@@ -265,11 +275,20 @@ function pageHint(data: BBPagedResult<unknown>): string {
 
 function formatDiff(data: BBDiff, maxChars = 8000): string {
   const parts: string[] = [];
+  if (data.fromHash && data.toHash) {
+    parts.push(`# fromHash=${data.fromHash} toHash=${data.toHash}`);
+    parts.push('# Pass these to bitbucket_comment as fromHash/toHash to anchor inline comments to this exact diff.');
+  }
   for (const diff of data.diffs) {
     const from = diff.source?.toString ?? '/dev/null';
     const to = diff.destination?.toString ?? '/dev/null';
     parts.push(`--- a/${from}\n+++ b/${to}`);
     for (const hunk of diff.hunks ?? []) {
+      const srcLine = hunk.sourceLine ?? 0;
+      const srcSpan = hunk.sourceSpan ?? 0;
+      const dstLine = hunk.destinationLine ?? 0;
+      const dstSpan = hunk.destinationSpan ?? 0;
+      parts.push(`@@ -${srcLine},${srcSpan} +${dstLine},${dstSpan} @@`);
       for (const segment of hunk.segments ?? []) {
         const prefix = segment.type === 'ADDED' ? '+' : segment.type === 'REMOVED' ? '-' : ' ';
         for (const line of segment.lines ?? []) {
@@ -464,6 +483,59 @@ export class BitbucketClient {
     return res.status === 204 ? null : (res.json() as Promise<T>);
   }
 
+
+  /**
+   * Remap a source-side line number through an interim diff.
+   *
+   * Returns the destination line if the source line survives unchanged through the diff
+   * (in a CONTEXT segment), or null if the line was modified/removed and cannot be remapped.
+   */
+  private async remapLineThroughDiff(
+    projectKey: string,
+    repoSlug: string,
+    filePath: string,
+    sinceHash: string,
+    untilHash: string,
+    sourceLine: number,
+  ): Promise<number | null> {
+    const diff = await this.request<BBDiff>(
+      'GET',
+      `${this.rp(projectKey, repoSlug)}/diff/${filePath.split('/').map(encodeURIComponent).join('/')}?since=${encodeURIComponent(sinceHash)}&until=${encodeURIComponent(untilHash)}&contextLines=0`
+    ).catch(() => null);
+    if (!diff || !diff.diffs?.length) return sourceLine;
+
+    let offset = 0;
+    for (const fileDiff of diff.diffs) {
+      for (const hunk of fileDiff.hunks ?? []) {
+        const srcStart = hunk.sourceLine ?? 0;
+        const srcSpan = hunk.sourceSpan ?? 0;
+        const srcEnd = srcStart + srcSpan - 1;
+
+        if (srcSpan > 0 && sourceLine >= srcStart && sourceLine <= srcEnd) {
+          for (const segment of hunk.segments ?? []) {
+            if (segment.type === 'ADDED') continue;
+            for (const ln of segment.lines ?? []) {
+              if (ln.source === sourceLine) {
+                if (segment.type === 'CONTEXT' && ln.destination !== undefined) return ln.destination;
+                return null;
+              }
+            }
+          }
+          return null;
+        }
+
+        if (sourceLine > srcEnd || srcSpan === 0) {
+          const dstSpan = hunk.destinationSpan ?? 0;
+          if (srcSpan === 0 && (hunk.destinationLine ?? 0) <= sourceLine + offset) {
+            offset += dstSpan;
+          } else if (sourceLine > srcEnd) {
+            offset += dstSpan - srcSpan;
+          }
+        }
+      }
+    }
+    return sourceLine + offset;
+  }
 
   /** Returns true if the given remote URL belongs to this Bitbucket instance. */
   isRemoteForThisInstance(remoteUrl: string): boolean {
@@ -685,11 +757,17 @@ export class BitbucketClient {
     const reviewers = pr.reviewers.map((r) => `${r.user.displayName}${r.approved ? ' ✓' : ''}`).join(', ');
     const url = pr.links?.self?.[0]?.href;
 
+    const fromHash = pr.toRef.latestCommit;
+    const toHash = pr.fromRef.latestCommit;
+    const commitsLine = fromHash && toHash
+      ? `Commits:   fromHash=${fromHash} toHash=${toHash} (pass to bitbucket_comment to anchor inline comments to this exact state)`
+      : '';
     const header = [
       `PR #${pr.id}: ${pr.title}`,
       `State:     ${pr.state}`,
       `Author:    ${pr.author.user.displayName}`,
       `Branch:    ${pr.fromRef.displayId} → ${pr.toRef.displayId}`,
+      commitsLine,
       `Reviewers: ${reviewers || 'None'}`,
       url ? `URL:       ${url}` : '',
       '',
@@ -1317,6 +1395,8 @@ export class BitbucketClient {
     multilineStartLineType?: 'ADDED' | 'REMOVED' | 'CONTEXT';
     suggestion?: string;
     severity?: 'NORMAL' | 'BLOCKER';
+    fromHash?: string;
+    toHash?: string;
   }): Promise<ToolResult> {
     const { projectKey, repoSlug } = this.resolveProjectAndRepo(args.projectKey, args.repoSlug);
 
@@ -1331,6 +1411,8 @@ export class BitbucketClient {
         || args.fileType !== undefined
         || args.multilineStartLine !== undefined
         || args.multilineStartLineType !== undefined
+        || args.fromHash !== undefined
+        || args.toHash !== undefined
       )
     ) {
       throw new Error('Replies must target an existing comment thread only. Omit filePath/line and other anchor fields when replying.');
@@ -1358,15 +1440,14 @@ export class BitbucketClient {
     if (replyToCommentId !== undefined) body.parent = { id: replyToCommentId };
 
     let inlineAnchor: Record<string, unknown> | undefined;
+    let usedFallbackHashes = false;
+    let currentToHash: string | undefined;
+    let currentFromHash: string | undefined;
+    let remapNote: string | undefined;
     if (args.filePath !== undefined || args.line !== undefined) {
       if (args.filePath === undefined || args.line === undefined) {
         throw new Error('filePath and line must be provided together for inline comments.');
       }
-
-      const pr = await this.request<BBPullRequest>(
-        'GET',
-        `${this.rp(projectKey, repoSlug)}/pull-requests/${args.prId}`
-      );
 
       inlineAnchor = {
         diffType: 'EFFECTIVE',
@@ -1380,15 +1461,61 @@ export class BitbucketClient {
         inlineAnchor.srcPath = args.srcPath;
       }
 
-      const fromHash = pr?.toRef.latestCommit;
-      const toHash = pr?.fromRef.latestCommit;
+      const pr = await this.request<BBPullRequest>(
+        'GET',
+        `${this.rp(projectKey, repoSlug)}/pull-requests/${args.prId}`
+      ).catch(() => null);
+      currentToHash = pr?.fromRef.latestCommit;
+      currentFromHash = pr?.toRef.latestCommit;
+
+      let fromHash = args.fromHash ?? currentFromHash;
+      let toHash = args.toHash ?? currentToHash;
+      usedFallbackHashes = args.fromHash === undefined && args.toHash === undefined;
+
+      const fileType = args.fileType ?? 'TO';
+      const reviewedToHash = args.toHash;
+      if (
+        reviewedToHash
+        && currentToHash
+        && reviewedToHash !== currentToHash
+        && fileType === 'TO'
+      ) {
+        const remappedLine = await this.remapLineThroughDiff(
+          projectKey, repoSlug, args.filePath, reviewedToHash, currentToHash, args.line
+        );
+        let remappedMultilineStart: number | null | undefined;
+        if (args.multilineStartLine !== undefined) {
+          remappedMultilineStart = await this.remapLineThroughDiff(
+            projectKey, repoSlug, args.filePath, reviewedToHash, currentToHash, args.multilineStartLine
+          );
+        }
+
+        const lineOk = remappedLine !== null;
+        const multilineOk = remappedMultilineStart === undefined || remappedMultilineStart !== null;
+        if (lineOk && multilineOk) {
+          if (remappedLine !== args.line) {
+            remapNote = `Reviewed line ${args.line} remapped to ${remappedLine} on current head ${currentToHash.slice(0, 8)}.`;
+          }
+          inlineAnchor.line = remappedLine;
+          if (remappedMultilineStart !== undefined && remappedMultilineStart !== null) {
+            inlineAnchor.multilineStartLine = remappedMultilineStart;
+          }
+          toHash = currentToHash;
+          if (!args.fromHash) fromHash = currentFromHash;
+        } else {
+          remapNote = `Reviewed line ${args.line} was modified or removed in interim commits; anchoring to reviewed commit ${reviewedToHash.slice(0, 8)} (Bitbucket will mark the comment outdated, which is correct — the line you reviewed no longer exists at current head).`;
+        }
+      }
+
       if (fromHash && toHash) {
         inlineAnchor.fromHash = fromHash;
         inlineAnchor.toHash = toHash;
       }
 
-      if (args.multilineStartLine !== undefined) {
+      if (args.multilineStartLine !== undefined && inlineAnchor.multilineStartLine === undefined) {
         inlineAnchor.multilineStartLine = args.multilineStartLine;
+      }
+      if (inlineAnchor.multilineStartLine !== undefined) {
         inlineAnchor.multilineStartLineType = args.multilineStartLineType ?? args.lineType ?? 'ADDED';
       }
 
@@ -1422,7 +1549,13 @@ export class BitbucketClient {
       return text(`Reply #${created.id} added to comment #${replyToCommentId} on PR #${args.prId}.`);
     }
     const location = args.filePath && args.line ? ` on ${args.filePath}:${args.line}` : '';
-    return text(`Comment #${created.id} added to PR #${args.prId}${location}.`);
+    const warnings: string[] = [];
+    if (inlineAnchor && usedFallbackHashes) {
+      warnings.push('No fromHash/toHash passed — anchored to latest PR head. If you reviewed an older commit, the line may now point at unrelated code. Pass fromHash/toHash from bitbucket_pr_diff or bitbucket_get_pr to bind comments to the exact commit you reviewed.');
+    }
+    if (remapNote) warnings.push(remapNote);
+    const warnSuffix = warnings.length ? `\n\nNote: ${warnings.join(' ')}` : '';
+    return text(`Comment #${created.id} added to PR #${args.prId}${location}.${warnSuffix}`);
   }
 
   async updatePrComment(args: {
