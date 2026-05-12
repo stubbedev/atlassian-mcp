@@ -27,11 +27,12 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 
 | Tool | Description |
 |---|---|
-| `jira_search` | Discover resources: `issues`, `projects`, `issue_types`, `boards`, `sprints`, `board_overview`, or `users` via `resource` param |
+| `jira_search` | Discover resources: `issues`, `projects`, `issue_types`, `boards`, `sprints`, `board_overview`, `versions`, or `users` via `resource` param |
 | `jira_get` | Full details for one issue: summary, description, status, sprint, transitions, comments, and attachment list |
 | `jira_get_attachment` | Fetch a Jira attachment by ID; images are auto-resized via sharp and returned inline so the model can see them, text/JSON inline, larger/binary files via `saveTo` |
 | `jira_mutate` | Create, update, transition, comment, link, add to sprint, or log work — all in one call |
 | `jira_comment` | Add, update, or delete a comment on an issue (`action`: `add` / `update` / `delete`) |
+| `jira_version` | Manage fix versions/releases (`action`: `create` / `update` / `release` / `archive` / `delete`) |
 
 ### Bitbucket
 
@@ -62,6 +63,10 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 - "what's in the current sprint?" → `jira_search` with `resource=board_overview`
 - "move FOO-123 to In Progress" → `jira_mutate` with `transitionName="In Progress"`
 - "log 2h on FOO-123" → `jira_mutate` with `worklog`
+- "create version 9.1.0 in PAY" → `jira_version` with `action=create`, `projectKey=PAY`, `name=9.1.0`
+- "list releases for PAY" → `jira_search` with `resource=versions`, `project=PAY`
+- "release version 12345" → `jira_version` with `action=release`, `id=12345`
+- "set fix version 9.1.0 on FOO-123" → `jira_mutate` with `update.fixVersion=9.1.0`
 
 ---
 

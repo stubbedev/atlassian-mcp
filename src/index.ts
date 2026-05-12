@@ -215,11 +215,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'jira_search',
-      description: 'Discover Jira resources. Use when asked "find tickets for...", "what\'s in the backlog", "show me my issues", "list projects", or "which board is for project X". Set resource:\n• "issues" (default) — search by text, JQL, project, status, assignee, issue type, or mine=true for your queue\n• "projects" — list all projects and their keys\n• "issue_types" — valid types and statuses for a project\n• "boards" — list boards (pass project to filter by project key); use this to find the boardId before fetching sprints or board_overview\n• "sprints" — sprints for a board (pass boardId); if you don\'t know the boardId, first use resource=boards\n• "board_overview" — active/future sprints with their issues for a board (pass boardId); use when asked "what\'s in the sprint", "show me the board", or "what\'s everyone working on"\n• "users" — find users by name/email (pass query)',
+      description: 'Discover Jira resources. Use when asked "find tickets for...", "what\'s in the backlog", "show me my issues", "list projects", or "which board is for project X". Set resource:\n• "issues" (default) — search by text, JQL, project, status, assignee, issue type, or mine=true for your queue\n• "projects" — list all projects and their keys\n• "issue_types" — valid types and statuses for a project\n• "boards" — list boards (pass project to filter by project key); use this to find the boardId before fetching sprints or board_overview\n• "sprints" — sprints for a board (pass boardId); if you don\'t know the boardId, first use resource=boards\n• "board_overview" — active/future sprints with their issues for a board (pass boardId); use when asked "what\'s in the sprint", "show me the board", or "what\'s everyone working on"\n• "versions" — list fix versions/releases for a project (pass project); use this to find the exact version name or id before setting fixVersion or releasing a version\n• "users" — find users by name/email (pass query)',
       inputSchema: {
         type: 'object',
         properties: {
-          resource:        { type: 'string', enum: ['issues', 'projects', 'issue_types', 'boards', 'sprints', 'board_overview', 'users'], description: 'What to search (default: issues)' },
+          resource:        { type: 'string', enum: ['issues', 'projects', 'issue_types', 'boards', 'sprints', 'board_overview', 'versions', 'users'], description: 'What to search (default: issues)' },
           mine:            { type: 'boolean', description: 'Return issues assigned to you (resource=issues only)' },
           query:           { type: 'string', description: 'Text search or user name query' },
           jql:             { type: 'string', description: 'Raw JQL (resource=issues only, overrides other filters)' },
@@ -339,6 +339,25 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           body:      { type: 'string', description: `Comment text. ${JIRA_WIKI_MARKUP_HINT} Required for add/update.` },
         },
         required: ['issueKey'],
+      },
+    },
+    {
+      name: 'jira_version',
+      description: 'Manage Jira fix versions (releases). Use when asked to "create version 9.1.0", "release version X", "archive version X", "rename a version", or "delete a version". action defaults to "create". For create pass projectKey + name. For update/release/archive/delete pass id (look it up via jira_search resource=versions). "release" sets released=true and defaults releaseDate to today. Once a version exists you can set it on tickets via jira_mutate update.fixVersion.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          action:      { type: 'string', enum: ['create', 'update', 'release', 'archive', 'delete'], description: 'Operation (default: create)' },
+          projectKey:  { type: 'string', description: 'Jira project code (required for create when not auto-resolvable)' },
+          project:     { type: 'string', description: 'Alias for projectKey' },
+          id:          { type: 'string', description: 'Version id (required for update/release/archive/delete; look up via jira_search resource=versions)' },
+          name:        { type: 'string', description: 'Version name, e.g. "9.1.0" (required for create; optional rename for update)' },
+          description: { type: 'string', description: 'Version description (optional)' },
+          startDate:   { type: 'string', description: 'Start date in YYYY-MM-DD (optional)' },
+          releaseDate: { type: 'string', description: 'Release date in YYYY-MM-DD (optional; defaults to today on action=release)' },
+          released:    { type: 'boolean', description: 'Released flag (optional; action=release forces true)' },
+          archived:    { type: 'boolean', description: 'Archived flag (optional; action=archive forces true)' },
+        },
       },
     }] : []),
     ...(bitbucket ? [{
@@ -769,6 +788,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (resource === 'boards')       return await jira.getBoards({ projectKey: a.projectKey ?? a.project, maxResults: a.maxResults, startAt: a.startAt });
         if (resource === 'sprints')       return await jira.getSprints({ boardId: a.boardId!, state: a.sprintState, maxResults: a.maxResults, startAt: a.startAt });
         if (resource === 'board_overview') return await jira.boardOverview({ boardId: a.boardId!, sprintState: a.sprintState, sprintMaxResults: a.maxResults, sprintStartAt: a.startAt, includeIssues: (a as { includeIssues?: boolean }).includeIssues, assignee: a.assignee, status: a.status });
+        if (resource === 'versions')      return await jira.listVersions({ projectKey: a.projectKey ?? a.project, maxResults: a.maxResults });
         if (resource === 'users')         return await jira.searchUsers({ query: a.query ?? '', maxResults: a.maxResults });
         // issues (default)
         if (a.mine) return await jira.myIssues({ maxResults: a.maxResults, startAt: a.startAt });
@@ -792,6 +812,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (action === 'update') return await jira.editComment({ issueKey: a.issueKey, commentId: a.commentId!, body: a.body! });
         if (action === 'delete') return await jira.deleteComment({ issueKey: a.issueKey, commentId: a.commentId! });
         return await jira.addComment({ issueKey: a.issueKey, body: a.body! });
+      }
+      case 'jira_version': {
+        if (!jira) throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
+        const a = normalizeJiraProjectArgs(args) as Parameters<typeof jira.mutateVersion>[0];
+        return await jira.mutateVersion(a);
       }
       // Bitbucket
       case 'bitbucket_search': {

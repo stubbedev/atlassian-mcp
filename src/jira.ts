@@ -122,6 +122,17 @@ interface JiraIssueLink {
   outwardIssue?: { key: string; fields: { summary: string; status: { name: string } } };
 }
 
+interface JiraVersion {
+  id: string;
+  name: string;
+  description?: string;
+  archived: boolean;
+  released: boolean;
+  releaseDate?: string;
+  startDate?: string;
+  projectId?: number;
+}
+
 interface JiraAgileIssue {
   key: string;
   fields?: {
@@ -1056,5 +1067,96 @@ export class JiraClient {
     const transitionId = await this.resolveTransitionId(args.issueKey, args.transitionId, args.transitionName);
     await this.transitionIssueInternal(args.issueKey, transitionId);
     return text(`Transitioned ${args.issueKey} using transition ${transitionId}.\n${this.issueUrl(args.issueKey)}`);
+  }
+
+  async listVersions(args: { projectKey?: string; maxResults?: number }): Promise<ToolResult> {
+    const projectKey = await this.resolveProjectKey(args.projectKey);
+    const data = await this.request<JiraVersion[]>('GET', `/project/${encodeURIComponent(projectKey)}/versions`);
+    if (!data || data.length === 0) return text(`No versions in ${projectKey}.`);
+
+    const sorted = [...data].sort((a, b) => {
+      if (a.released !== b.released) return a.released ? 1 : -1;
+      if (a.archived !== b.archived) return a.archived ? 1 : -1;
+      const ad = a.releaseDate ?? '';
+      const bd = b.releaseDate ?? '';
+      return bd.localeCompare(ad);
+    });
+
+    const limit = args.maxResults ?? sorted.length;
+    const shown = sorted.slice(0, limit);
+    const lines = shown.map((v, i) => {
+      const tags: string[] = [];
+      if (v.released) tags.push('released');
+      if (v.archived) tags.push('archived');
+      const tagStr = tags.length ? ` [${tags.join(', ')}]` : '';
+      const dateParts = [v.startDate ? `start ${v.startDate}` : '', v.releaseDate ? `release ${v.releaseDate}` : ''].filter(Boolean);
+      const dateStr = dateParts.length ? ` (${dateParts.join(', ')})` : '';
+      return `${i + 1}. [${v.id}] ${v.name}${tagStr}${dateStr}`;
+    });
+
+    const more = data.length > shown.length ? `\n...and ${data.length - shown.length} more (raise maxResults).` : '';
+    return text(`${data.length} version(s) in ${projectKey}:\n${lines.join('\n')}${more}`);
+  }
+
+  async mutateVersion(args: {
+    action?: 'create' | 'update' | 'release' | 'archive' | 'delete';
+    projectKey?: string;
+    id?: string;
+    name?: string;
+    description?: string;
+    releaseDate?: string;
+    startDate?: string;
+    released?: boolean;
+    archived?: boolean;
+  }): Promise<ToolResult> {
+    const action = args.action ?? 'create';
+
+    if (action === 'create') {
+      const projectKey = await this.resolveProjectKey(args.projectKey);
+      const name = args.name?.trim();
+      if (!name) throw new Error('name is required to create a version.');
+      const body: Record<string, unknown> = { project: projectKey, name };
+      if (args.description !== undefined) body.description = args.description;
+      if (args.releaseDate)               body.releaseDate = args.releaseDate;
+      if (args.startDate)                 body.startDate = args.startDate;
+      if (args.released !== undefined)    body.released = args.released;
+      if (args.archived !== undefined)    body.archived = args.archived;
+      const created = await this.request<JiraVersion>('POST', '/version', body);
+      if (!created) throw new Error('Jira returned no body when creating version.');
+      return text(`Created version [${created.id}] ${created.name} in ${projectKey}.`);
+    }
+
+    const id = args.id?.trim();
+    if (!id) throw new Error(`version id is required for action=${action}.`);
+
+    if (action === 'delete') {
+      await this.request('DELETE', `/version/${encodeURIComponent(id)}`);
+      return text(`Deleted version ${id}.`);
+    }
+
+    const body: Record<string, unknown> = {};
+    if (args.name !== undefined)        body.name = args.name;
+    if (args.description !== undefined) body.description = args.description;
+    if (args.startDate !== undefined)   body.startDate = args.startDate;
+    if (args.releaseDate !== undefined) body.releaseDate = args.releaseDate;
+    if (args.released !== undefined)    body.released = args.released;
+    if (args.archived !== undefined)    body.archived = args.archived;
+
+    if (action === 'release') {
+      body.released = true;
+      if (body.releaseDate === undefined) body.releaseDate = new Date().toISOString().slice(0, 10);
+    } else if (action === 'archive') {
+      body.archived = true;
+    }
+
+    if (Object.keys(body).length === 0) {
+      throw new Error('Nothing to update.');
+    }
+
+    const updated = await this.request<JiraVersion>('PUT', `/version/${encodeURIComponent(id)}`, body);
+    const label = updated ? `[${updated.id}] ${updated.name}` : id;
+    if (action === 'release')  return text(`Released version ${label} on ${body.releaseDate}.`);
+    if (action === 'archive')  return text(`Archived version ${label}.`);
+    return text(`Updated version ${label}.`);
   }
 }
