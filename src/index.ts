@@ -410,7 +410,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'bitbucket_mutate',
-      description: 'Use when asked to "open a PR for this branch", "create a pull request", "approve this PR", "merge it", "ship it", or "decline this PR". Auto-targets the open PR for the current branch when prId is omitted. Handles create, update, approve/unapprove, decline, and merge in one call.',
+      description: 'Use when asked to "open a PR for this branch", "create a pull request", "approve this PR", "request changes / mark needs work", "merge it", "ship it", or "decline this PR". Auto-targets the open PR for the current branch when prId is omitted. Handles create, update, approve/unapprove, needs_work, decline, and merge in one call. needs_work sets your reviewer status to "Needs work" (Bitbucket Server\'s changes-requested signal); revert with action=unapprove.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -419,7 +419,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           repoSlug:      { type: 'string', description: 'Repository slug (usually auto-detected)' },
           repo:          { type: 'string', description: 'Alias for repoSlug' },
           prId:          { type: 'number', description: 'Target PR number (optional, auto-resolved from branch)' },
-          action:        { type: 'string', enum: ['approve', 'unapprove', 'decline', 'merge'], description: 'Lifecycle action to perform (optional)' },
+          action:        { type: 'string', enum: ['approve', 'unapprove', 'needs_work', 'decline', 'merge'], description: 'Lifecycle action to perform (optional). needs_work = mark your reviewer status as "Needs work" (changes requested).' },
           mergeStrategy: { type: 'string', enum: ['MERGE_COMMIT', 'SQUASH', 'FAST_FORWARD'], description: 'Merge strategy (action=merge only)' },
           mergeMessage:  { type: 'string', description: 'Custom merge commit message (action=merge only)' },
           declineMessage:{ type: 'string', description: 'Decline message (action=decline only)' },
@@ -842,10 +842,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!bitbucket) throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
         const a = normalizeBitbucketArgs(args) as { action?: string; mergeMessage?: string; declineMessage?: string; [k: string]: unknown };
         const action = a.action as string | undefined;
-        if (action === 'approve')   return await bitbucket.approvePr(a as Parameters<typeof bitbucket.approvePr>[0]);
-        if (action === 'unapprove') return await bitbucket.unapprovePr(a as Parameters<typeof bitbucket.unapprovePr>[0]);
-        if (action === 'decline')   return await bitbucket.declinePr({ ...a, message: a.declineMessage } as Parameters<typeof bitbucket.declinePr>[0]);
-        if (action === 'merge')     return await bitbucket.mergePr({ ...a, message: a.mergeMessage, mergeStrategy: a.mergeStrategy as string | undefined } as Parameters<typeof bitbucket.mergePr>[0]);
+        if (action === 'approve')    return await bitbucket.approvePr(a as Parameters<typeof bitbucket.approvePr>[0]);
+        if (action === 'unapprove')  return await bitbucket.unapprovePr(a as Parameters<typeof bitbucket.unapprovePr>[0]);
+        if (action === 'needs_work') return await bitbucket.needsWorkPr(a as Parameters<typeof bitbucket.needsWorkPr>[0]);
+        if (action === 'decline')    return await bitbucket.declinePr({ ...a, message: a.declineMessage } as Parameters<typeof bitbucket.declinePr>[0]);
+        if (action === 'merge')      return await bitbucket.mergePr({ ...a, message: a.mergeMessage, mergeStrategy: a.mergeStrategy as string | undefined } as Parameters<typeof bitbucket.mergePr>[0]);
 
         // Handle interactive reviewer picker for PR creation
         const createArgs = a.create as { title: string; description?: string; fromBranch?: string; toBranch?: string; reviewers?: string[]; pickReviewers?: boolean } | undefined;

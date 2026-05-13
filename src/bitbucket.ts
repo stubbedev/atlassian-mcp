@@ -1121,6 +1121,19 @@ export class BitbucketClient {
     return text(`Approval removed from PR #${args.prId}.\n${this.pullRequestUrl(projectKey, repoSlug, args.prId)}`);
   }
 
+  async needsWorkPr(args: { projectKey?: string; repoSlug?: string; prId: number }): Promise<ToolResult> {
+    const { projectKey, repoSlug } = this.resolveProjectAndRepo(args.projectKey, args.repoSlug);
+    const userSlug = await this.getCurrentUsername();
+    const data = await this.request<BBParticipant>(
+      'PUT',
+      `${this.rp(projectKey, repoSlug)}/pull-requests/${args.prId}/participants/${encodeURIComponent(userSlug)}`,
+      { user: { name: userSlug }, approved: false, status: 'NEEDS_WORK' }
+    );
+    const url = this.pullRequestUrl(projectKey, repoSlug, args.prId);
+    if (!data) return text(`Marked PR #${args.prId} as Needs work.\n${url}`);
+    return text(`Marked PR #${args.prId} as Needs work as ${data.user.displayName}.\n${url}`);
+  }
+
   async declinePr(args: { projectKey?: string; repoSlug?: string; prId: number; message?: string }): Promise<ToolResult> {
     const { projectKey, repoSlug } = this.resolveProjectAndRepo(args.projectKey, args.repoSlug);
     const pr = await this.request<BBPullRequest>(
