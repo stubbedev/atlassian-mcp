@@ -67,6 +67,8 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 - "list releases for PAY" → `jira_search` with `resource=versions`, `project=PAY`
 - "release version 12345" → `jira_version` with `action=release`, `id=12345`
 - "set fix version 9.1.0 on FOO-123" → `jira_mutate` with `update.fixVersion=9.1.0`
+- "create a task under epic FOO-100" → `jira_mutate` with `create.issueType=Task`, `create.parent=FOO-100` (auto-detects Epic and sets Epic Link)
+- "move FOO-123 under epic FOO-100" → `jira_mutate` with `update.epicLink=FOO-100`
 
 ---
 

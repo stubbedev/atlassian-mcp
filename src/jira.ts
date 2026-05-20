@@ -244,6 +244,8 @@ export class JiraClient {
   private currentUserCache?: JiraCurrentUser;
   private projectsCache?: JiraProject[];
   private issueLinkingEnabled?: boolean;
+  private epicLinkFieldIdCache?: string | null;
+  private issueTypeCache: Map<string, string> = new Map();
 
   constructor(baseUrl: string, token: string) {
     this.baseUrl = baseUrl.replace(/\/$/, '');
@@ -280,7 +282,14 @@ export class JiraClient {
       const details = parseJiraErrorDetails(errText);
       throw new Error(formatJiraError(res.status, method, path, details));
     }
-    return res.status === 204 ? null : (res.json() as Promise<T>);
+    if (res.status === 204) return null;
+    const raw = await res.text();
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as T;
+    } catch {
+      return null;
+    }
   }
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T | null> {
@@ -314,6 +323,24 @@ export class JiraClient {
     const config = await this.request<{ issueLinkingEnabled: boolean }>('GET', '/configuration');
     this.issueLinkingEnabled = config?.issueLinkingEnabled ?? false;
     return this.issueLinkingEnabled;
+  }
+
+  private async getEpicLinkFieldId(): Promise<string | null> {
+    if (this.epicLinkFieldIdCache !== undefined) return this.epicLinkFieldIdCache;
+    type JiraField = { id: string; schema?: { custom?: string } };
+    const fields = (await this.request<JiraField[]>('GET', '/field')) ?? [];
+    const match = fields.find((f) => f.schema?.custom === 'com.pyxis.greenhopper.jira:gh-epic-link');
+    this.epicLinkFieldIdCache = match?.id ?? null;
+    return this.epicLinkFieldIdCache;
+  }
+
+  private async getIssueType(issueKey: string): Promise<string | null> {
+    const cached = this.issueTypeCache.get(issueKey);
+    if (cached) return cached;
+    const data = await this.request<JiraIssue>('GET', `/issue/${encodeURIComponent(issueKey)}?fields=issuetype`);
+    const name = data?.fields?.issuetype?.name ?? null;
+    if (name) this.issueTypeCache.set(issueKey, name);
+    return name;
   }
 
   private async assertOwnComment(comment: JiraComment): Promise<void> {
@@ -359,6 +386,7 @@ export class JiraClient {
     labels?: string[];
     fixVersion?: string;
     parent?: string;
+    epicLink?: string;
   }): Promise<JiraCreatedIssue | null> {
     const projectKey = await this.resolveProjectKey(args.projectKey);
     const fields: Record<string, unknown> = {
@@ -371,7 +399,23 @@ export class JiraClient {
     if (args.priority)               fields.priority = { name: args.priority };
     if (args.labels?.length)         fields.labels = args.labels;
     if (args.fixVersion)             fields.fixVersions = [{ name: args.fixVersion }];
-    if (args.parent)                 fields.parent = { key: args.parent };
+
+    let epicLinkTarget = args.epicLink?.trim() || undefined;
+    if (args.parent) {
+      const parentType = await this.getIssueType(args.parent);
+      if (parentType === 'Epic') {
+        epicLinkTarget = epicLinkTarget ?? args.parent;
+      } else {
+        fields.parent = { key: args.parent };
+      }
+    }
+    if (epicLinkTarget) {
+      const epicFieldId = await this.getEpicLinkFieldId();
+      if (!epicFieldId) {
+        throw new Error('Epic Link custom field not found on this Jira instance. Set it manually in the Jira UI.');
+      }
+      fields[epicFieldId] = epicLinkTarget;
+    }
     return this.request<JiraCreatedIssue>('POST', '/issue', { fields });
   }
 
@@ -383,6 +427,7 @@ export class JiraClient {
     priority?: string;
     labels?: string[];
     fixVersion?: string;
+    epicLink?: string;
   }): Promise<boolean> {
     const fields: Record<string, unknown> = {};
     if (args.summary !== undefined)     fields.summary = args.summary;
@@ -391,6 +436,13 @@ export class JiraClient {
     if (args.priority !== undefined)    fields.priority = { name: args.priority };
     if (args.labels !== undefined)      fields.labels = args.labels;
     if (args.fixVersion !== undefined)  fields.fixVersions = args.fixVersion ? [{ name: args.fixVersion }] : [];
+    if (args.epicLink !== undefined) {
+      const epicFieldId = await this.getEpicLinkFieldId();
+      if (!epicFieldId) {
+        throw new Error('Epic Link custom field not found on this Jira instance. Set it manually in the Jira UI.');
+      }
+      fields[epicFieldId] = args.epicLink ? args.epicLink : null;
+    }
     if (Object.keys(fields).length === 0) return false;
     await this.request('PUT', `/issue/${encodeURIComponent(args.issueKey)}`, { fields });
     return true;
@@ -611,11 +663,16 @@ export class JiraClient {
     const commentsMaxResults = args.commentsMaxResults ?? 10;
     const commentsStartAt = args.commentsStartAt ?? 0;
 
-    const fields = 'summary,description,status,assignee,priority,issuetype,labels,components,parent,fixVersions,issuelinks,subtasks,attachment';
-    const issue = await this.request<JiraIssue>('GET', `/issue/${encodeURIComponent(args.issueKey)}?fields=${fields}`);
+    const baseFields = 'summary,description,status,assignee,priority,issuetype,labels,components,parent,fixVersions,issuelinks,subtasks,attachment';
+    const epicFieldId = await this.getEpicLinkFieldId();
+    const fields = epicFieldId ? `${baseFields},${epicFieldId}` : baseFields;
+    const issue = await this.request<JiraIssue & { fields: Record<string, unknown> }>('GET', `/issue/${encodeURIComponent(args.issueKey)}?fields=${fields}`);
     if (!issue) return text('Issue not found.');
 
     const f = issue.fields;
+    const epicLinkKey = epicFieldId && typeof (f as Record<string, unknown>)[epicFieldId] === 'string'
+      ? (f as Record<string, unknown>)[epicFieldId] as string
+      : undefined;
     const lines = [
       `Issue: ${issue.key} — ${f.summary}`,
       `URL:        ${this.issueUrl(issue.key)}`,
@@ -626,6 +683,7 @@ export class JiraClient {
       `Labels:     ${f.labels?.join(', ') || 'None'}`,
       `Components: ${f.components?.map((c) => c.name).join(', ') || 'None'}`,
       ...(f.parent ? [`Parent:     [${f.parent.key}] ${f.parent.fields.summary} (${f.parent.fields.issuetype.name})`] : []),
+      ...(epicLinkKey ? [`Epic Link:  ${epicLinkKey}`] : []),
       ...(f.fixVersions?.length ? [`Fix Vers:   ${f.fixVersions.map((v) => v.name).join(', ')}`] : []),
       ...(f.subtasks?.length ? [`Subtasks:   ${f.subtasks.map((s) => `[${s.key}] ${s.fields.summary} (${s.fields.status.name})`).join(', ')}`] : []),
       ...(f.issuelinks?.length ? [
@@ -874,6 +932,7 @@ export class JiraClient {
       labels?: string[];
       fixVersion?: string;
       parent?: string;
+      epicLink?: string;
     };
     update?: {
       summary?: string;
@@ -882,6 +941,7 @@ export class JiraClient {
       priority?: string;
       labels?: string[];
       fixVersion?: string;
+      epicLink?: string;
     };
     sprintId?: number;
     removeFromSprint?: boolean;
