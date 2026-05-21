@@ -1431,6 +1431,24 @@ export class BitbucketClient {
       throw new Error('Replies must target an existing comment thread only. Omit filePath/line and other anchor fields when replying.');
     }
 
+    if (replyToCommentId !== undefined) {
+      const parent = await this.request<BBComment>(
+        'GET',
+        `${this.rp(projectKey, repoSlug)}/pull-requests/${args.prId}/comments/${replyToCommentId}`
+      ).catch(() => null);
+      if (parent) {
+        const me = await this.getCurrentUsername();
+        const existingReply = (parent.comments ?? []).find(
+          (r) => !r.deleted && r.author?.name === me
+        );
+        if (existingReply) {
+          throw new Error(
+            `You already replied to comment #${replyToCommentId} (your reply is #${existingReply.id}). Never post a second reply on the same thread — update your existing reply instead: action=update commentId=${existingReply.id}.`
+          );
+        }
+      }
+    }
+
     if (args.text === undefined && args.suggestion === undefined) {
       throw new Error('Either text or suggestion is required when adding a comment.');
     }
