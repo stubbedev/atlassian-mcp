@@ -1466,6 +1466,13 @@ export class BitbucketClient {
       validateSuggestionPlacement(commentText);
     }
 
+    // Adding a comment must never create a task. In Bitbucket Server a comment with
+    // severity=BLOCKER renders as a PR task; tasks are created only via
+    // bitbucket_pr_tasks, and only when explicitly requested. Reject the BLOCKER
+    // severity here so an inline review comment can never silently become a task.
+    if (args.severity === 'BLOCKER') {
+      throw new Error('Adding a comment never creates a task. Omit severity (comments post as NORMAL). To create a task, use bitbucket_pr_tasks (action=create) — only when the user explicitly asks for one.');
+    }
     const body: Record<string, unknown> = { text: validateCommentText(commentText) };
     if (args.severity) body.severity = args.severity;
     if (replyToCommentId !== undefined) body.parent = { id: replyToCommentId };
