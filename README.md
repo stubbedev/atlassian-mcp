@@ -29,7 +29,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 |---|---|
 | `jira_search` | Discover resources: `issues`, `projects`, `issue_types`, `boards`, `sprints`, `board_overview`, `versions`, or `users` via `resource` param |
 | `jira_get` | Full details for one issue: summary, description, status, sprint, transitions, comments, and attachment list |
-| `jira_get_attachment` | Fetch a Jira attachment by ID; images are auto-resized via sharp and returned inline so the model can see them, text/JSON inline, larger/binary files via `saveTo` |
+| `jira_get_attachment` | Fetch a Jira attachment by ID. Images, videos, animated images (GIF/APNG/animated WebP), audio, and PDFs are all decoded inline so the model can see/hear them. Text/JSON inline. Oversized or non-renderable attachments are auto-saved to a temp file and the path is returned. `saveTo=/absolute/path` streams the original to disk |
 | `jira_mutate` | Create, update, transition, comment, link, add to sprint, or log work — all in one call |
 | `jira_comment` | Add, update, or delete a comment on an issue (`action`: `add` / `update` / `delete`) |
 | `jira_version` | Manage fix versions/releases (`action`: `create` / `update` / `release` / `archive` / `delete`) |
@@ -40,7 +40,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 |---|---|
 | `bitbucket_search` | Discover resources: `pull_requests` (default), `repos`, or `branches` via `resource` param; `mine=true` for your inbox |
 | `bitbucket_get_pr` | Full PR details: metadata, commits, comments, blockers, build status, optional diff, and any attachments referenced from the description or comments |
-| `bitbucket_get_attachment` | Fetch a repo attachment by ID (images auto-resized inline via sharp; text inline; binary/large via `saveTo`) |
+| `bitbucket_get_attachment` | Fetch a repo attachment by ID. Same decoding pipeline as `jira_get_attachment` (images, videos, animated images, audio, PDFs). Oversized or non-renderable attachments are auto-saved to a temp file and the path is returned; `saveTo` streams the original to disk |
 | `bitbucket_mutate` | Create/update a PR, or perform lifecycle actions: `approve`, `unapprove`, `merge`, `decline` |
 | `bitbucket_comment` | Add, update, or delete a PR comment; for code changes use `suggestion` so Bitbucket shows Apply suggestion (no trailing text after a suggestion block) |
 | `bitbucket_get_file` | Raw file content from Bitbucket at a branch, tag, or commit |
@@ -248,9 +248,36 @@ npm install
 
 Then use `node /path/to/atlassian-mcp/dist/index.js` instead of the `npx` command in the configs above.
 
-### Native dependency: `sharp`
+### Attachment decoding pipeline
 
-Image attachments are downscaled and re-encoded with [`sharp`](https://sharp.pixelplumbing.com/) before being returned to the model so they fit in context. Sharp ships prebuilt binaries for glibc Linux (x64/arm64), macOS, and Windows — no extra setup needed on those. Alpine / musl users may need `npm install --cpu=x64 --os=linux --libc=musl sharp`.
+The attachment tools (`jira_get_attachment`, `bitbucket_get_attachment`) decode binary attachments into model-readable content before returning them:
+
+| Input | What gets returned | How |
+| --- | --- | --- |
+| Static images (PNG/JPEG/WebP/AVIF/SVG…) | Resized image content blocks | `sharp` (long edge ≤ `maxDimension`, default 1568) |
+| Animated images (GIF/APNG/animated WebP) | N sampled frames as image content blocks | `ffmpeg-static` + `sharp` (default 6 frames @ 768 px) |
+| Video (mp4/webm/mov/…) | N sampled frames as image content blocks | `ffmpeg-static` + `sharp`. Uniform or scene-change sampling. Re-call with `start`, `end`, `frames`, `mode`, `sceneThreshold` to zoom in |
+| Audio (mp3/wav/ogg/…) | MCP audio content block | passthrough |
+| PDFs | Extracted text — or rasterized pages if text is empty (scanned PDFs) | `unpdf` + `@napi-rs/canvas` |
+| Text-like (json/xml/yaml/…) | Text content block | passthrough |
+| Everything else (or oversized) | Auto-saved to a temp file; path is returned | `os.tmpdir()` with `atlmcp-` prefix |
+
+Auto-saved files are periodically pruned by TTL and total-size quota — see *Environment overrides* below.
+
+### Native dependencies
+
+- [`sharp`](https://sharp.pixelplumbing.com/) — image decode/resize. Ships prebuilt binaries for glibc Linux (x64/arm64), macOS, Windows. Alpine / musl users may need `npm install --cpu=x64 --os=linux --libc=musl sharp`.
+- [`ffmpeg-static`](https://www.npmjs.com/package/ffmpeg-static) + [`ffprobe-static`](https://www.npmjs.com/package/ffprobe-static) — video/audio decode. ~80 MB bundled binary per platform. Override with env vars (below) if you have system ffmpeg.
+- [`@napi-rs/canvas`](https://www.npmjs.com/package/@napi-rs/canvas) + [`unpdf`](https://www.npmjs.com/package/unpdf) — PDF text extraction and page rasterization.
+
+### Environment overrides
+
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `ATLASSIAN_MCP_FFMPEG_PATH` | Path to `ffmpeg` binary. Overrides `ffmpeg-static`. Use this if you have system ffmpeg or `ffmpeg-static` doesn't ship for your platform (Alpine/musl, some ARM variants). | bundled `ffmpeg-static` |
+| `ATLASSIAN_MCP_FFPROBE_PATH` | Path to `ffprobe` binary. Overrides `ffprobe-static`. | bundled `ffprobe-static` |
+| `ATLASSIAN_MCP_TMP_TTL_DAYS` | Auto-saved attachments older than this are pruned. | `7` |
+| `ATLASSIAN_MCP_TMP_MAX_BYTES` | Total-size quota for auto-saved attachments in `os.tmpdir()`. When exceeded, oldest are evicted. | `1073741824` (1 GB) |
 
 ---
 

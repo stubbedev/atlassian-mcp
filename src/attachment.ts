@@ -1,5 +1,5 @@
 import sharp from 'sharp';
-import { writeFile } from 'fs/promises';
+import { writeFile, readdir, stat, rm } from 'fs/promises';
 import { resolve as resolvePath, join as joinPath } from 'path';
 import { tmpdir } from 'os';
 import {
@@ -80,8 +80,67 @@ function sanitizeFilename(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80) || 'attachment';
 }
 
+// --- Auto-saved temp file retention --------------------------------------
+// Auto-saved attachments accumulate in os.tmpdir() with prefix `atlmcp-`.
+// We prune on each save (with a 1h cooldown) using two policies:
+//   1. TTL: delete files whose mtime is older than ATLASSIAN_MCP_TMP_TTL_DAYS.
+//   2. Quota: if total size of remaining `atlmcp-*` files exceeds
+//      ATLASSIAN_MCP_TMP_MAX_BYTES, evict oldest-mtime-first until under cap.
+// Both knobs default to sane values if unset. Cleanup runs *before* the new
+// write so we never delete the file we're about to create.
+const TMP_PREFIX = 'atlmcp-';
+const TMP_PRUNE_COOLDOWN_MS = 60 * 60 * 1000;
+const tmpTtlMs = (() => {
+  const days = parseFloat(process.env.ATLASSIAN_MCP_TMP_TTL_DAYS ?? '');
+  return (Number.isFinite(days) && days > 0 ? days : 7) * 24 * 60 * 60 * 1000;
+})();
+const tmpMaxBytes = (() => {
+  const v = parseInt(process.env.ATLASSIAN_MCP_TMP_MAX_BYTES ?? '', 10);
+  return Number.isFinite(v) && v > 0 ? v : 1024 * 1024 * 1024;
+})();
+let lastPruneAt = 0;
+
+async function pruneTmpFiles(): Promise<void> {
+  const now = Date.now();
+  if (now - lastPruneAt < TMP_PRUNE_COOLDOWN_MS) return;
+  lastPruneAt = now;
+  const dir = tmpdir();
+  let entries: string[];
+  try {
+    entries = await readdir(dir);
+  } catch {
+    return;
+  }
+  const survivors: Array<{ path: string; size: number; mtime: number }> = [];
+  for (const name of entries) {
+    if (!name.startsWith(TMP_PREFIX)) continue;
+    const p = joinPath(dir, name);
+    try {
+      const st = await stat(p);
+      if (!st.isFile()) continue;
+      if (now - st.mtimeMs > tmpTtlMs) {
+        await rm(p, { force: true });
+        continue;
+      }
+      survivors.push({ path: p, size: st.size, mtime: st.mtimeMs });
+    } catch { /* ignore — file may have vanished mid-scan */ }
+  }
+  let total = survivors.reduce((s, c) => s + c.size, 0);
+  if (total > tmpMaxBytes) {
+    survivors.sort((a, b) => a.mtime - b.mtime);
+    for (const c of survivors) {
+      if (total <= tmpMaxBytes) break;
+      try {
+        await rm(c.path, { force: true });
+        total -= c.size;
+      } catch { /* ignore */ }
+    }
+  }
+}
+
 async function autoSaveOversized(id: string, filename: string, buffer: Buffer): Promise<string> {
-  const path = joinPath(tmpdir(), `atlmcp-${id}-${sanitizeFilename(filename)}`);
+  await pruneTmpFiles();
+  const path = joinPath(tmpdir(), `${TMP_PREFIX}${id}-${sanitizeFilename(filename)}`);
   await writeFile(path, buffer);
   return path;
 }
@@ -106,12 +165,19 @@ async function buildVideoResult(
     start?: number;
     end?: number;
     mode: SamplingMode;
+    sceneThreshold?: number;
     sourceLabel: string;
   },
 ): Promise<RichToolResult> {
   let result: ProcessVideoResult;
   try {
-    result = await processVideo(buffer, { frames: opts.frames, start: opts.start, end: opts.end, mode: opts.mode });
+    result = await processVideo(buffer, {
+      frames: opts.frames,
+      start: opts.start,
+      end: opts.end,
+      mode: opts.mode,
+      sceneThreshold: opts.sceneThreshold,
+    });
   } catch (err) {
     return {
       content: [{
@@ -171,6 +237,7 @@ export async function buildAttachmentResult(args: {
   start?: number;
   end?: number;
   mode?: SamplingMode;
+  sceneThreshold?: number;
 }): Promise<RichToolResult> {
   const { id, filename, mimeType, buffer, saveTo } = args;
   const sizeLabel = formatBytes(buffer.length);
@@ -198,6 +265,7 @@ export async function buildAttachmentResult(args: {
         start: args.start,
         end: args.end,
         mode: args.mode ?? 'uniform',
+        sceneThreshold: args.sceneThreshold,
         sourceLabel: 'animated image',
       });
     }
@@ -243,6 +311,7 @@ export async function buildAttachmentResult(args: {
       start: args.start,
       end: args.end,
       mode: args.mode ?? 'uniform',
+      sceneThreshold: args.sceneThreshold,
       sourceLabel: 'video',
     });
   }
@@ -266,14 +335,62 @@ export async function buildAttachmentResult(args: {
       return { content: [{ type: 'text', text: `${header}\nPDF exceeds ${formatBytes(MAX_INLINE_BYTES)} inline cap. Original saved to ${path}.` }] };
     }
     try {
-      const { extractText, getDocumentProxy } = await import('unpdf');
+      const { extractText, getDocumentProxy, definePDFJSModule, renderPageAsImage } = await import('unpdf');
       const pdf = await getDocumentProxy(new Uint8Array(buffer));
       const { totalPages, text } = await extractText(pdf, { mergePages: true });
-      const body = typeof text === 'string' ? text : (text as string[]).join('\n\n');
+      const body = (typeof text === 'string' ? text : (text as string[]).join('\n\n')).trim();
+
+      // Empty/sparse text → likely scanned PDF. Rasterize first few pages so the model can see them.
+      const RASTER_THRESHOLD = 20;
+      const MAX_RASTER_PAGES = 3;
+      if (body.length < RASTER_THRESHOLD && totalPages > 0) {
+        try {
+          await definePDFJSModule(() => import('pdfjs-dist'));
+          // unpdf requires an explicit canvasImport in Node so @napi-rs/canvas can be loaded lazily.
+          // NodeNext ESM types differ between two synthesized views of @napi-rs/canvas; cast through any.
+          const renderOpts = { width: 0, canvasImport: () => import('@napi-rs/canvas') } as unknown;
+          const pageCount = Math.min(totalPages, MAX_RASTER_PAGES);
+          const maxDimension = args.maxDimension ?? DEFAULT_MAX_DIMENSION;
+          const quality = args.quality ?? DEFAULT_JPEG_QUALITY;
+          const rasterized = await Promise.all(
+            Array.from({ length: pageCount }, (_, i) =>
+              (renderPageAsImage as (data: unknown, page: number, opts: unknown) => Promise<ArrayBuffer>)(
+                new Uint8Array(buffer),
+                i + 1,
+                { ...(renderOpts as object), width: maxDimension },
+              ).then(async (ab) => {
+                const png = Buffer.from(ab as ArrayBuffer);
+                return sharp(png, { failOn: 'none' })
+                  .resize({ width: maxDimension, height: maxDimension, fit: 'inside', withoutEnlargement: true })
+                  .jpeg({ quality, mozjpeg: true })
+                  .toBuffer();
+              }),
+            ),
+          );
+          const content: Array<TextContent | ImageContent | AudioContent> = [{
+            type: 'text',
+            text: `Attachment #${id}: ${header}\nNo extractable text found (likely scanned). Rasterized first ${pageCount} of ${totalPages} page(s):`,
+          }];
+          for (let i = 0; i < rasterized.length; i++) {
+            content.push({ type: 'text', text: `Page ${i + 1} (${formatBytes(rasterized[i].length)}):` });
+            content.push({ type: 'image', data: rasterized[i].toString('base64'), mimeType: 'image/jpeg' });
+          }
+          return { content };
+        } catch (rasterErr) {
+          const path = await autoSaveOversized(id, filename, buffer);
+          return {
+            content: [{
+              type: 'text',
+              text: `${header}\nNo extractable text and rasterization failed: ${(rasterErr as Error).message}. Original saved to ${path}.`,
+            }],
+          };
+        }
+      }
+
       return {
         content: [{
           type: 'text',
-          text: `Attachment #${id}: ${header}\nExtracted text from ${totalPages} page(s):\n\n${body.trim()}`,
+          text: `Attachment #${id}: ${header}\nExtracted text from ${totalPages} page(s):\n\n${body}`,
         }],
       };
     } catch (err) {

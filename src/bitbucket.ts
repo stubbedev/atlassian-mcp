@@ -1,4 +1,8 @@
 import { execSync } from 'child_process';
+import { createWriteStream } from 'fs';
+import { Readable } from 'stream';
+import { pipeline } from 'stream/promises';
+import { resolve as resolvePath } from 'path';
 import { buildAttachmentResult, formatBytes, type RichToolResult } from './attachment.js';
 import { MAX_VIDEO_SOURCE_BYTES, type SamplingMode } from './video.js';
 
@@ -1253,47 +1257,59 @@ export class BitbucketClient {
     start?: number;
     end?: number;
     mode?: SamplingMode;
+    sceneThreshold?: number;
   }): Promise<RichToolResult> {
     const { projectKey, repoSlug } = this.resolveProjectAndRepo(args.projectKey, args.repoSlug);
     const id = String(args.attachmentId ?? '').trim();
     if (!id) throw new Error('attachmentId is required.');
 
     const url = `${this.baseUrl}/rest/api/1.0${this.rp(projectKey, repoSlug)}/attachments/${encodeURIComponent(id)}`;
+    const fetchTimeoutMs = args.saveTo ? 300_000 : 60_000;
     const res = await fetch(url, {
       method: 'GET',
       headers: { Authorization: this.headers.Authorization },
-      signal: AbortSignal.timeout(60_000),
+      signal: AbortSignal.timeout(fetchTimeoutMs),
     });
     if (!res.ok) {
       const errText = await res.text();
       throw new Error(formatBitbucketError(res.status, 'GET', `${this.rp(projectKey, repoSlug)}/attachments/${id}`, parseBitbucketErrorDetails(errText)));
     }
-    const declaredLength = parseInt(res.headers.get('content-length') ?? '0', 10);
-    if (declaredLength > MAX_VIDEO_SOURCE_BYTES) {
-      try { await res.body?.cancel(); } catch { /* ignore */ }
-      throw new Error(`Attachment #${id} is ${formatBytes(declaredLength)}, exceeds the ${formatBytes(MAX_VIDEO_SOURCE_BYTES)} download cap. Download manually from ${url}.`);
-    }
-    const buffer = Buffer.from(await res.arrayBuffer());
-    if (buffer.length > MAX_VIDEO_SOURCE_BYTES) {
-      throw new Error(`Attachment #${id} downloaded ${formatBytes(buffer.length)}, exceeds the ${formatBytes(MAX_VIDEO_SOURCE_BYTES)} cap. Download manually from ${url}.`);
-    }
     const contentDisposition = res.headers.get('content-disposition') ?? '';
     const filenameMatch = contentDisposition.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
     const filename = filenameMatch ? decodeURIComponent(filenameMatch[1]) : `attachment-${id}`;
     const mimeType = (res.headers.get('content-type') ?? 'application/octet-stream').split(';')[0].trim();
+    const declaredLength = parseInt(res.headers.get('content-length') ?? '0', 10);
+
+    // saveTo path: stream directly to disk so we never buffer the whole attachment in memory.
+    if (args.saveTo) {
+      const path = resolvePath(args.saveTo);
+      if (!res.body) throw new Error(`Attachment #${id} response has no body.`);
+      await pipeline(Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]), createWriteStream(path));
+      const sizeLabel = declaredLength > 0 ? formatBytes(declaredLength) : 'unknown size';
+      return { content: [{ type: 'text', text: `Saved attachment #${id} (${filename} — ${mimeType}, ${sizeLabel}) to ${path}` }] };
+    }
+
+    if (declaredLength > MAX_VIDEO_SOURCE_BYTES) {
+      try { await res.body?.cancel(); } catch { /* ignore */ }
+      throw new Error(`Attachment #${id} is ${formatBytes(declaredLength)}, exceeds the ${formatBytes(MAX_VIDEO_SOURCE_BYTES)} inline cap. Pass saveTo=/absolute/path to stream it to disk.`);
+    }
+    const buffer = Buffer.from(await res.arrayBuffer());
+    if (buffer.length > MAX_VIDEO_SOURCE_BYTES) {
+      throw new Error(`Attachment #${id} downloaded ${formatBytes(buffer.length)}, exceeds the ${formatBytes(MAX_VIDEO_SOURCE_BYTES)} inline cap. Pass saveTo=/absolute/path to stream it to disk.`);
+    }
 
     return buildAttachmentResult({
       id,
       filename,
       mimeType,
       buffer,
-      saveTo: args.saveTo,
       maxDimension: args.maxDimension,
       quality: args.quality,
       frames: args.frames,
       start: args.start,
       end: args.end,
       mode: args.mode,
+      sceneThreshold: args.sceneThreshold,
     });
   }
 

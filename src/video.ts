@@ -42,12 +42,15 @@ export interface VideoFrame {
   approximate: boolean;
 }
 
+export const DEFAULT_SCENE_THRESHOLD = 0.3;
+
 export interface ProcessVideoOpts {
   frames?: number;
   start?: number;
   end?: number;
   dedup?: boolean;
   mode?: SamplingMode;
+  sceneThreshold?: number;
 }
 
 export interface ProcessVideoResult {
@@ -165,8 +168,9 @@ export async function processVideo(buffer: Buffer, opts: ProcessVideoOpts = {}):
   const frames = Math.max(VIDEO_FRAMES_MIN, Math.min(opts.frames ?? DEFAULT_VIDEO_FRAMES, VIDEO_FRAMES_MAX));
   const dedup = opts.dedup ?? true;
   const mode: SamplingMode = opts.mode ?? 'uniform';
+  const sceneThreshold = Math.max(0.01, Math.min(opts.sceneThreshold ?? DEFAULT_SCENE_THRESHOLD, 1));
 
-  const cacheKey = `${quickHash(buffer)}:${frames}:${opts.start ?? 'a'}:${opts.end ?? 'z'}:${dedup}:${mode}`;
+  const cacheKey = `${quickHash(buffer)}:${frames}:${opts.start ?? 'a'}:${opts.end ?? 'z'}:${dedup}:${mode}:${sceneThreshold}`;
   const cached = cacheGet(cacheKey);
   if (cached) return cached;
 
@@ -185,8 +189,8 @@ export async function processVideo(buffer: Buffer, opts: ProcessVideoOpts = {}):
     const extractWithMode = async (curMode: SamplingMode, useDedup: boolean): Promise<{ frames: VideoFrame[]; approximate: boolean }> => {
       const vfParts: string[] = [];
       if (curMode === 'scenes') {
-        // Threshold 0.3 gives moderate sensitivity. Output rate is non-uniform; -frames:v caps count.
-        vfParts.push(`select='gt(scene\\,0.3)'`);
+        // Threshold (default 0.3) sets scene-change sensitivity. Output rate is non-uniform; -frames:v caps count.
+        vfParts.push(`select='gt(scene\\,${sceneThreshold.toFixed(3)})'`);
       } else {
         const fps = Math.max(frames / window, 0.001);
         vfParts.push(`fps=${fps}`);

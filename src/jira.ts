@@ -1,4 +1,8 @@
 import { execSync } from 'child_process';
+import { createWriteStream } from 'fs';
+import { Readable } from 'stream';
+import { pipeline } from 'stream/promises';
+import { resolve as resolvePath } from 'path';
 import { buildAttachmentResult, formatBytes, type RichToolResult } from './attachment.js';
 import { MAX_VIDEO_SOURCE_BYTES, type SamplingMode } from './video.js';
 
@@ -1099,6 +1103,7 @@ export class JiraClient {
     start?: number;
     end?: number;
     mode?: SamplingMode;
+    sceneThreshold?: number;
   }): Promise<RichToolResult> {
     const id = String(args.attachmentId ?? '').trim();
     if (!id) throw new Error('attachmentId is required.');
@@ -1106,11 +1111,28 @@ export class JiraClient {
     const meta = await this.request<JiraAttachment>('GET', `/attachment/${encodeURIComponent(id)}`);
     if (!meta) throw new Error(`Attachment ${id} not found.`);
 
-    // Pre-flight HEAD lets us reject oversized downloads before buffering.
-    if (meta.size && meta.size > MAX_VIDEO_SOURCE_BYTES) {
-      throw new Error(`Attachment #${id} is ${formatBytes(meta.size)}, exceeds the ${formatBytes(MAX_VIDEO_SOURCE_BYTES)} download cap. Download manually from ${meta.content}.`);
+    // saveTo path: stream response directly to disk to bypass the in-memory size cap and avoid double-buffering.
+    if (args.saveTo) {
+      const path = resolvePath(args.saveTo);
+      const res = await fetch(meta.content, {
+        method: 'GET',
+        headers: { Authorization: this.headers.Authorization },
+        signal: AbortSignal.timeout(300_000),
+      });
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(formatJiraError(res.status, 'GET', meta.content, parseJiraErrorDetails(errText)));
+      }
+      if (!res.body) throw new Error(`Attachment #${id} response has no body.`);
+      await pipeline(Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]), createWriteStream(path));
+      const sizeLabel = meta.size ? formatBytes(meta.size) : 'unknown size';
+      return { content: [{ type: 'text', text: `Saved attachment #${id} (${meta.filename} — ${meta.mimeType ?? 'application/octet-stream'}, ${sizeLabel}) to ${path}` }] };
     }
 
+    // Inline path enforces the 250 MB cap so we don't OOM on accidental huge fetches.
+    if (meta.size && meta.size > MAX_VIDEO_SOURCE_BYTES) {
+      throw new Error(`Attachment #${id} is ${formatBytes(meta.size)}, exceeds the ${formatBytes(MAX_VIDEO_SOURCE_BYTES)} inline cap. Pass saveTo=/absolute/path to stream it to disk.`);
+    }
     const res = await fetch(meta.content, {
       method: 'GET',
       headers: { Authorization: this.headers.Authorization },
@@ -1123,11 +1145,11 @@ export class JiraClient {
     const declaredLength = parseInt(res.headers.get('content-length') ?? '0', 10);
     if (declaredLength > MAX_VIDEO_SOURCE_BYTES) {
       try { await res.body?.cancel(); } catch { /* ignore */ }
-      throw new Error(`Attachment #${id} is ${formatBytes(declaredLength)}, exceeds the ${formatBytes(MAX_VIDEO_SOURCE_BYTES)} download cap. Download manually from ${meta.content}.`);
+      throw new Error(`Attachment #${id} is ${formatBytes(declaredLength)}, exceeds the ${formatBytes(MAX_VIDEO_SOURCE_BYTES)} inline cap. Pass saveTo=/absolute/path to stream it to disk.`);
     }
     const buffer = Buffer.from(await res.arrayBuffer());
     if (buffer.length > MAX_VIDEO_SOURCE_BYTES) {
-      throw new Error(`Attachment #${id} downloaded ${formatBytes(buffer.length)}, exceeds the ${formatBytes(MAX_VIDEO_SOURCE_BYTES)} cap. Download manually from ${meta.content}.`);
+      throw new Error(`Attachment #${id} downloaded ${formatBytes(buffer.length)}, exceeds the ${formatBytes(MAX_VIDEO_SOURCE_BYTES)} inline cap. Pass saveTo=/absolute/path to stream it to disk.`);
     }
 
     return buildAttachmentResult({
@@ -1135,13 +1157,13 @@ export class JiraClient {
       filename: meta.filename,
       mimeType: meta.mimeType ?? 'application/octet-stream',
       buffer,
-      saveTo: args.saveTo,
       maxDimension: args.maxDimension,
       quality: args.quality,
       frames: args.frames,
       start: args.start,
       end: args.end,
       mode: args.mode,
+      sceneThreshold: args.sceneThreshold,
     });
   }
 

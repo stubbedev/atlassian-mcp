@@ -134,7 +134,7 @@ function normalizeJiraMutateArgs(args: unknown): Record<string, unknown> {
   return out;
 }
 
-function validateAttachmentArgs(a: { frames?: unknown; start?: unknown; end?: unknown; mode?: unknown; maxDimension?: unknown; quality?: unknown }): void {
+function validateAttachmentArgs(a: { frames?: unknown; start?: unknown; end?: unknown; mode?: unknown; maxDimension?: unknown; quality?: unknown; sceneThreshold?: unknown }): void {
   if (a.frames !== undefined && (typeof a.frames !== 'number' || !Number.isFinite(a.frames) || a.frames < 1 || a.frames > 60)) {
     throw new McpError(ErrorCode.InvalidParams, 'frames must be a number between 1 and 60.');
   }
@@ -155,6 +155,9 @@ function validateAttachmentArgs(a: { frames?: unknown; start?: unknown; end?: un
   }
   if (a.quality !== undefined && (typeof a.quality !== 'number' || !Number.isFinite(a.quality) || a.quality < 1 || a.quality > 100)) {
     throw new McpError(ErrorCode.InvalidParams, 'quality must be a number between 1 and 100.');
+  }
+  if (a.sceneThreshold !== undefined && (typeof a.sceneThreshold !== 'number' || !Number.isFinite(a.sceneThreshold) || a.sceneThreshold <= 0 || a.sceneThreshold > 1)) {
+    throw new McpError(ErrorCode.InvalidParams, 'sceneThreshold must be a number in (0, 1].');
   }
 }
 
@@ -353,6 +356,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           start:        { type: 'number', description: 'Video/animated-image only: start of sample window in seconds (default 0). Use with end/frames to zoom into a moment of interest after a coarse first pass.' },
           end:          { type: 'number', description: 'Video/animated-image only: end of sample window in seconds (default full duration). Must be greater than start.' },
           mode:         { type: 'string', enum: ['uniform', 'scenes'], description: 'Video/animated-image only: "uniform" samples N frames evenly (default); "scenes" uses ffmpeg scene-change detection, better for screencasts/narrative content.' },
+          sceneThreshold: { type: 'number', description: 'Video/animated-image only: scene-change sensitivity in 0-1 (default 0.3). Only used when mode=scenes. Lower = more frames, higher = fewer.' },
         },
         required: ['attachmentId'],
       },
@@ -542,6 +546,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           start:        { type: 'number', description: 'Video/animated-image only: start of sample window in seconds (default 0). Use with end/frames to zoom in.' },
           end:          { type: 'number', description: 'Video/animated-image only: end of sample window in seconds (default full duration). Must be greater than start.' },
           mode:         { type: 'string', enum: ['uniform', 'scenes'], description: 'Video/animated-image only: "uniform" samples N frames evenly (default); "scenes" uses scene-change detection.' },
+          sceneThreshold: { type: 'number', description: 'Video/animated-image only: scene-change sensitivity in 0-1 (default 0.3). Only used when mode=scenes. Lower = more frames, higher = fewer.' },
         },
         required: ['attachmentId'],
       },
@@ -836,7 +841,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return await jira.mutateIssue(normalizeJiraMutateArgs(args) as Parameters<typeof jira.mutateIssue>[0]);
       case 'jira_get_attachment': {
         if (!jira) throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
-        const a = args as { attachmentId: string; saveTo?: string; maxDimension?: number; quality?: number; frames?: number; start?: number; end?: number; mode?: string };
+        const a = args as { attachmentId: string; saveTo?: string; maxDimension?: number; quality?: number; frames?: number; start?: number; end?: number; mode?: string; sceneThreshold?: number };
         validateAttachmentArgs(a);
         return await jira.getAttachment(a as Parameters<typeof jira.getAttachment>[0]);
       }
