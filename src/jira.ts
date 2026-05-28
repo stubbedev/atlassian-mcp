@@ -1173,12 +1173,26 @@ export class JiraClient {
     return text(`Transitioned ${args.issueKey} using transition ${transitionId}.\n${this.issueUrl(args.issueKey)}`);
   }
 
-  async listVersions(args: { projectKey?: string; maxResults?: number }): Promise<ToolResult> {
+  async listVersions(args: { projectKey?: string; query?: string; maxResults?: number }): Promise<ToolResult> {
     const projectKey = await this.resolveProjectKey(args.projectKey);
     const data = await this.request<JiraVersion[]>('GET', `/project/${encodeURIComponent(projectKey)}/versions`);
-    if (!data || data.length === 0) return text(`No versions in ${projectKey}.`);
+    const query = args.query?.trim();
+    const createHint = (name: string) => `Create it with: jira_version action=create projectKey=${projectKey} name="${name}"`;
 
-    const sorted = [...data].sort((a, b) => {
+    if (!data || data.length === 0) {
+      if (query) return text(`No versions in ${projectKey}. ${createHint(query)}`);
+      return text(`No versions in ${projectKey}.`);
+    }
+
+    const filtered = query
+      ? data.filter(v => v.name.toLowerCase().includes(query.toLowerCase()))
+      : data;
+
+    if (query && filtered.length === 0) {
+      return text(`No version matching "${query}" in ${projectKey} (${data.length} other version(s) exist). ${createHint(query)}`);
+    }
+
+    const sorted = [...filtered].sort((a, b) => {
       if (a.released !== b.released) return a.released ? 1 : -1;
       if (a.archived !== b.archived) return a.archived ? 1 : -1;
       const ad = a.releaseDate ?? '';
@@ -1198,8 +1212,11 @@ export class JiraClient {
       return `${i + 1}. [${v.id}] ${v.name}${tagStr}${dateStr}`;
     });
 
-    const more = data.length > shown.length ? `\n...and ${data.length - shown.length} more (raise maxResults).` : '';
-    return text(`${data.length} version(s) in ${projectKey}:\n${lines.join('\n')}${more}`);
+    const header = query
+      ? `${filtered.length} version(s) matching "${query}" in ${projectKey}:`
+      : `${filtered.length} version(s) in ${projectKey}:`;
+    const more = filtered.length > shown.length ? `\n...and ${filtered.length - shown.length} more (raise maxResults).` : '';
+    return text(`${header}\n${lines.join('\n')}${more}`);
   }
 
   async mutateVersion(args: {
