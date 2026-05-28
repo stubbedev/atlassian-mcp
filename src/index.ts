@@ -134,6 +134,30 @@ function normalizeJiraMutateArgs(args: unknown): Record<string, unknown> {
   return out;
 }
 
+function validateAttachmentArgs(a: { frames?: unknown; start?: unknown; end?: unknown; mode?: unknown; maxDimension?: unknown; quality?: unknown }): void {
+  if (a.frames !== undefined && (typeof a.frames !== 'number' || !Number.isFinite(a.frames) || a.frames < 1 || a.frames > 60)) {
+    throw new McpError(ErrorCode.InvalidParams, 'frames must be a number between 1 and 60.');
+  }
+  if (a.start !== undefined && (typeof a.start !== 'number' || !Number.isFinite(a.start) || a.start < 0)) {
+    throw new McpError(ErrorCode.InvalidParams, 'start must be a non-negative number of seconds.');
+  }
+  if (a.end !== undefined && (typeof a.end !== 'number' || !Number.isFinite(a.end) || a.end <= 0)) {
+    throw new McpError(ErrorCode.InvalidParams, 'end must be a positive number of seconds.');
+  }
+  if (typeof a.start === 'number' && typeof a.end === 'number' && a.end <= a.start) {
+    throw new McpError(ErrorCode.InvalidParams, 'end must be greater than start.');
+  }
+  if (a.mode !== undefined && a.mode !== 'uniform' && a.mode !== 'scenes') {
+    throw new McpError(ErrorCode.InvalidParams, 'mode must be "uniform" or "scenes".');
+  }
+  if (a.maxDimension !== undefined && (typeof a.maxDimension !== 'number' || !Number.isFinite(a.maxDimension) || a.maxDimension < 64 || a.maxDimension > 4096)) {
+    throw new McpError(ErrorCode.InvalidParams, 'maxDimension must be a number between 64 and 4096.');
+  }
+  if (a.quality !== undefined && (typeof a.quality !== 'number' || !Number.isFinite(a.quality) || a.quality < 1 || a.quality > 100)) {
+    throw new McpError(ErrorCode.InvalidParams, 'quality must be a number between 1 and 100.');
+  }
+}
+
 const JIRA_WIKI_MARKUP_HINT = 'Use Jira wiki markup (Atlassian renderer syntax), not GitHub/CommonMark markdown.';
 
 function issueTypePrefix(issueType: string): string {
@@ -317,14 +341,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'jira_get_attachment',
-      description: 'Fetch a Jira attachment by ID and return its contents inline. Images are auto-resized (long edge ≤1568 px by default) and re-encoded so they fit in context, then returned as image content blocks (so you can see them); text/JSON/XML come back as text. For binary types (PDF, zip, office docs) or files larger than 10 MB, pass saveTo=/absolute/path to write the original file to disk and then read it locally. For screenshots of code or other detail-heavy images, raise maxDimension. Use jira_get first to discover attachment IDs.',
+      description: 'Fetch a Jira attachment by ID and return its contents inline. Images are auto-resized (long edge ≤1568 px by default) and re-encoded so they fit in context, then returned as image content blocks; text/JSON/XML come back as text. Videos AND animated images (GIF/APNG/animated WebP) are decoded with ffmpeg: by default 6 frames are sampled uniformly across the whole clip (768 px / q65, mpdecimate to drop near-duplicates) — re-call with start/end/frames or mode=scenes to refine. Audio is returned as an MCP audio block. PDFs return extracted text. Anything still too large or non-renderable is automatically saved to a temp file and the path is returned. Use jira_get first to discover attachment IDs.',
       inputSchema: {
         type: 'object',
         properties: {
           attachmentId: { type: 'string', description: 'Numeric attachment ID from jira_get output' },
           saveTo:       { type: 'string', description: 'Optional absolute path to save the original (un-resized) file to disk instead of returning inline' },
-          maxDimension: { type: 'number', description: 'Max long-edge size in pixels for inline images (default 1568). Larger images are downscaled with sharp.' },
-          quality:      { type: 'number', description: 'JPEG quality for re-encoded inline images (1-100, default 85). Ignored for images with alpha (encoded as PNG).' },
+          maxDimension: { type: 'number', description: 'Max long-edge size in pixels for inline images (default 1568 for images, 768 for video frames).' },
+          quality:      { type: 'number', description: 'JPEG quality for re-encoded inline images (1-100, default 85 for images, 65 for video frames). Ignored for images with alpha (encoded as PNG).' },
+          frames:       { type: 'number', description: 'Video/animated-image only: number of frames to sample (default 6, range 1-60). Higher = more detail + more context.' },
+          start:        { type: 'number', description: 'Video/animated-image only: start of sample window in seconds (default 0). Use with end/frames to zoom into a moment of interest after a coarse first pass.' },
+          end:          { type: 'number', description: 'Video/animated-image only: end of sample window in seconds (default full duration). Must be greater than start.' },
+          mode:         { type: 'string', enum: ['uniform', 'scenes'], description: 'Video/animated-image only: "uniform" samples N frames evenly (default); "scenes" uses ffmpeg scene-change detection, better for screencasts/narrative content.' },
         },
         required: ['attachmentId'],
       },
@@ -498,7 +526,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'bitbucket_get_attachment',
-      description: 'Fetch a Bitbucket repo attachment by ID and return its contents inline. Bitbucket Server attachments are repo-scoped and referenced from PR descriptions/comments via attachment:<id> markdown. Use bitbucket_get_pr first to surface attachment IDs. Images are auto-resized (long edge ≤1568 px by default) and re-encoded, then returned as image content blocks; text/JSON/XML as text; binary or >10 MB requires saveTo=/absolute/path.',
+      description: 'Fetch a Bitbucket repo attachment by ID and return its contents inline. Bitbucket Server attachments are repo-scoped and referenced from PR descriptions/comments via attachment:<id> markdown. Use bitbucket_get_pr first to surface attachment IDs. Images are auto-resized (long edge ≤1568 px by default) and re-encoded, then returned as image content blocks; text/JSON/XML as text. Videos AND animated images (GIF/APNG/animated WebP) are decoded with ffmpeg: by default 6 frames are sampled uniformly across the whole clip (768 px / q65, mpdecimate to drop near-duplicates) — re-call with start/end/frames or mode=scenes to refine. Audio is returned as an MCP audio block. PDFs return extracted text. Oversized/non-renderable attachments are auto-saved to a temp file and the path is returned.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -508,8 +536,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           repo:         { type: 'string', description: 'Alias for repoSlug' },
           attachmentId: { type: 'string', description: 'Numeric attachment ID' },
           saveTo:       { type: 'string', description: 'Optional absolute path to save the original (un-resized) file to disk instead of returning inline' },
-          maxDimension: { type: 'number', description: 'Max long-edge size in pixels for inline images (default 1568). Larger images are downscaled with sharp.' },
-          quality:      { type: 'number', description: 'JPEG quality for re-encoded inline images (1-100, default 85). Ignored for images with alpha (encoded as PNG).' },
+          maxDimension: { type: 'number', description: 'Max long-edge size in pixels for inline images (default 1568 for images, 768 for video frames).' },
+          quality:      { type: 'number', description: 'JPEG quality for re-encoded inline images (1-100, default 85 for images, 65 for video frames). Ignored for images with alpha (encoded as PNG).' },
+          frames:       { type: 'number', description: 'Video/animated-image only: number of frames to sample (default 6, range 1-60).' },
+          start:        { type: 'number', description: 'Video/animated-image only: start of sample window in seconds (default 0). Use with end/frames to zoom in.' },
+          end:          { type: 'number', description: 'Video/animated-image only: end of sample window in seconds (default full duration). Must be greater than start.' },
+          mode:         { type: 'string', enum: ['uniform', 'scenes'], description: 'Video/animated-image only: "uniform" samples N frames evenly (default); "scenes" uses scene-change detection.' },
         },
         required: ['attachmentId'],
       },
@@ -804,8 +836,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return await jira.mutateIssue(normalizeJiraMutateArgs(args) as Parameters<typeof jira.mutateIssue>[0]);
       case 'jira_get_attachment': {
         if (!jira) throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
-        const a = args as { attachmentId: string; saveTo?: string; maxDimension?: number; quality?: number };
-        return await jira.getAttachment(a);
+        const a = args as { attachmentId: string; saveTo?: string; maxDimension?: number; quality?: number; frames?: number; start?: number; end?: number; mode?: string };
+        validateAttachmentArgs(a);
+        return await jira.getAttachment(a as Parameters<typeof jira.getAttachment>[0]);
       }
       case 'jira_comment': {
         if (!jira) throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
@@ -903,7 +936,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return await bitbucket.getFile(normalizeBitbucketArgs(args) as Parameters<typeof bitbucket.getFile>[0]);
       case 'bitbucket_get_attachment': {
         if (!bitbucket) throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
-        return await bitbucket.getAttachment(normalizeBitbucketArgs(args) as Parameters<typeof bitbucket.getAttachment>[0]);
+        const normalized = normalizeBitbucketArgs(args) as Parameters<typeof bitbucket.getAttachment>[0];
+        validateAttachmentArgs(normalized);
+        return await bitbucket.getAttachment(normalized);
       }
       case 'bitbucket_pr_tasks': {
         if (!bitbucket) throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);

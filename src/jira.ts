@@ -1,5 +1,6 @@
 import { execSync } from 'child_process';
 import { buildAttachmentResult, formatBytes, type RichToolResult } from './attachment.js';
+import { MAX_VIDEO_SOURCE_BYTES, type SamplingMode } from './video.js';
 
 type ToolResult = { content: Array<{ type: 'text'; text: string }> };
 
@@ -1094,12 +1095,21 @@ export class JiraClient {
     saveTo?: string;
     maxDimension?: number;
     quality?: number;
+    frames?: number;
+    start?: number;
+    end?: number;
+    mode?: SamplingMode;
   }): Promise<RichToolResult> {
     const id = String(args.attachmentId ?? '').trim();
     if (!id) throw new Error('attachmentId is required.');
 
     const meta = await this.request<JiraAttachment>('GET', `/attachment/${encodeURIComponent(id)}`);
     if (!meta) throw new Error(`Attachment ${id} not found.`);
+
+    // Pre-flight HEAD lets us reject oversized downloads before buffering.
+    if (meta.size && meta.size > MAX_VIDEO_SOURCE_BYTES) {
+      throw new Error(`Attachment #${id} is ${formatBytes(meta.size)}, exceeds the ${formatBytes(MAX_VIDEO_SOURCE_BYTES)} download cap. Download manually from ${meta.content}.`);
+    }
 
     const res = await fetch(meta.content, {
       method: 'GET',
@@ -1110,7 +1120,15 @@ export class JiraClient {
       const errText = await res.text();
       throw new Error(formatJiraError(res.status, 'GET', meta.content, parseJiraErrorDetails(errText)));
     }
+    const declaredLength = parseInt(res.headers.get('content-length') ?? '0', 10);
+    if (declaredLength > MAX_VIDEO_SOURCE_BYTES) {
+      try { await res.body?.cancel(); } catch { /* ignore */ }
+      throw new Error(`Attachment #${id} is ${formatBytes(declaredLength)}, exceeds the ${formatBytes(MAX_VIDEO_SOURCE_BYTES)} download cap. Download manually from ${meta.content}.`);
+    }
     const buffer = Buffer.from(await res.arrayBuffer());
+    if (buffer.length > MAX_VIDEO_SOURCE_BYTES) {
+      throw new Error(`Attachment #${id} downloaded ${formatBytes(buffer.length)}, exceeds the ${formatBytes(MAX_VIDEO_SOURCE_BYTES)} cap. Download manually from ${meta.content}.`);
+    }
 
     return buildAttachmentResult({
       id,
@@ -1120,6 +1138,10 @@ export class JiraClient {
       saveTo: args.saveTo,
       maxDimension: args.maxDimension,
       quality: args.quality,
+      frames: args.frames,
+      start: args.start,
+      end: args.end,
+      mode: args.mode,
     });
   }
 

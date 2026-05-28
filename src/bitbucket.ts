@@ -1,5 +1,6 @@
 import { execSync } from 'child_process';
-import { buildAttachmentResult, type RichToolResult } from './attachment.js';
+import { buildAttachmentResult, formatBytes, type RichToolResult } from './attachment.js';
+import { MAX_VIDEO_SOURCE_BYTES, type SamplingMode } from './video.js';
 
 type ToolResult = { content: Array<{ type: 'text'; text: string }> };
 const EMOJI_RE = /\p{Extended_Pictographic}/u;
@@ -1248,6 +1249,10 @@ export class BitbucketClient {
     saveTo?: string;
     maxDimension?: number;
     quality?: number;
+    frames?: number;
+    start?: number;
+    end?: number;
+    mode?: SamplingMode;
   }): Promise<RichToolResult> {
     const { projectKey, repoSlug } = this.resolveProjectAndRepo(args.projectKey, args.repoSlug);
     const id = String(args.attachmentId ?? '').trim();
@@ -1263,7 +1268,15 @@ export class BitbucketClient {
       const errText = await res.text();
       throw new Error(formatBitbucketError(res.status, 'GET', `${this.rp(projectKey, repoSlug)}/attachments/${id}`, parseBitbucketErrorDetails(errText)));
     }
+    const declaredLength = parseInt(res.headers.get('content-length') ?? '0', 10);
+    if (declaredLength > MAX_VIDEO_SOURCE_BYTES) {
+      try { await res.body?.cancel(); } catch { /* ignore */ }
+      throw new Error(`Attachment #${id} is ${formatBytes(declaredLength)}, exceeds the ${formatBytes(MAX_VIDEO_SOURCE_BYTES)} download cap. Download manually from ${url}.`);
+    }
     const buffer = Buffer.from(await res.arrayBuffer());
+    if (buffer.length > MAX_VIDEO_SOURCE_BYTES) {
+      throw new Error(`Attachment #${id} downloaded ${formatBytes(buffer.length)}, exceeds the ${formatBytes(MAX_VIDEO_SOURCE_BYTES)} cap. Download manually from ${url}.`);
+    }
     const contentDisposition = res.headers.get('content-disposition') ?? '';
     const filenameMatch = contentDisposition.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
     const filename = filenameMatch ? decodeURIComponent(filenameMatch[1]) : `attachment-${id}`;
@@ -1277,6 +1290,10 @@ export class BitbucketClient {
       saveTo: args.saveTo,
       maxDimension: args.maxDimension,
       quality: args.quality,
+      frames: args.frames,
+      start: args.start,
+      end: args.end,
+      mode: args.mode,
     });
   }
 
