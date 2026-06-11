@@ -118,6 +118,7 @@ export async function getDevContext(
           commentsMaxResults: 5,
           includeTransitions: true,
           includeSprint: true,
+          descriptionMaxChars: 800,
         });
         return `── Jira ${key} ──\n${result.content[0].text}`;
       } catch {

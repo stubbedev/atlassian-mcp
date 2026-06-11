@@ -158,6 +158,14 @@ function text(t: string): ToolResult {
   return { content: [{ type: 'text', text: t }] };
 }
 
+// Cap long free-text (e.g. issue descriptions) so a single verbose ticket does
+// not flood the model's context. Returns the text untouched when within cap.
+function capText(value: string, max: number): string {
+  if (max <= 0 || value.length <= max) return value;
+  const more = value.length - max;
+  return `${value.slice(0, max)}\n... (truncated, ${more} more chars — pass fullDescription=true for the rest)`;
+}
+
 function pagination(total: number, startAt: number, count: number): string {
   const end = startAt + count;
   return total > end ? ` (showing ${startAt + 1}–${end} of ${total}, use startAt=${end} for next page)` : '';
@@ -661,10 +669,13 @@ export class JiraClient {
     commentsStartAt?: number;
     includeTransitions?: boolean;
     includeSprint?: boolean;
+    descriptionMaxChars?: number;
+    fullDescription?: boolean;
   }): Promise<ToolResult> {
     const includeComments = args.includeComments ?? true;
     const includeTransitions = args.includeTransitions ?? true;
     const includeSprint = args.includeSprint ?? true;
+    const descriptionCap = args.fullDescription ? 0 : args.descriptionMaxChars ?? 2000;
     const commentsMaxResults = args.commentsMaxResults ?? 10;
     const commentsStartAt = args.commentsStartAt ?? 0;
 
@@ -726,7 +737,7 @@ export class JiraClient {
       lines.push(`Transitions: ${names.length > 0 ? names.join(', ') : '(none)'}`);
     }
 
-    lines.push('', 'Description:', f.description ?? '(no description)');
+    lines.push('', 'Description:', f.description ? capText(f.description, descriptionCap) : '(no description)');
 
     if (f.attachment?.length) {
       lines.push('', `Attachments: ${f.attachment.length}`);

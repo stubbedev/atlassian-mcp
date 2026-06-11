@@ -201,17 +201,28 @@ function formatDate(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
+// Cap long free-text (e.g. PR descriptions) so one verbose PR does not flood
+// the model's context. Returns the text untouched when within cap.
+function capText(value: string, max: number): string {
+  if (max <= 0 || value.length <= max) return value;
+  const more = value.length - max;
+  return `${value.slice(0, max)}\n... (truncated, ${more} more chars — pass fullDescription=true for the rest)`;
+}
+
 function formatCommentThread(comment: BBComment, indent = '', depth = 0): string[] {
   if (depth > 20) return [`${indent}... (deeply nested replies omitted)`];
   const author = comment.author?.displayName ?? comment.author?.name ?? 'Unknown';
   const date = comment.createdDate ? ` (${formatDate(comment.createdDate)})` : '';
-  const state = comment.state ?? 'OPEN';
-  const severity = comment.severity ?? 'NORMAL';
-  const threadStatus = comment.threadResolved !== undefined
-    ? ` thread=${comment.threadResolved ? 'RESOLVED' : 'OPEN'}`
-    : '';
+  // Show only non-default flags: OPEN state, NORMAL severity and unresolved
+  // threads are the implied baseline, so badge only what deviates. Keeps the
+  // RESOLVED/BLOCKER signal while dropping repeated [OPEN/NORMAL thread=OPEN].
+  const flags: string[] = [];
+  if ((comment.state ?? 'OPEN') !== 'OPEN') flags.push(comment.state as string);
+  if ((comment.severity ?? 'NORMAL') !== 'NORMAL') flags.push(comment.severity as string);
+  if (comment.threadResolved === true) flags.push('thread=RESOLVED');
+  const flagStr = flags.length > 0 ? ` [${flags.join('/')}]` : '';
   const lines = [
-    `${indent}#${comment.id} [${state}/${severity}${threadStatus}] ${author}${date} (v${comment.version})`,
+    `${indent}#${comment.id}${flagStr} ${author}${date} (v${comment.version})`,
     `${indent}${comment.text}`,
   ];
 
@@ -728,12 +739,15 @@ export class BitbucketClient {
     commitsLimit?: number;
     commitsStart?: number;
     diffMaxChars?: number;
+    descriptionMaxChars?: number;
+    fullDescription?: boolean;
   }): Promise<ToolResult> {
     const { projectKey, repoSlug } = this.resolveProjectAndRepo(args.projectKey, args.repoSlug);
     const includeCommits = args.includeCommits ?? true;
     const includeComments = args.includeComments ?? true;
     const includeDiff = args.includeDiff ?? false;
     const includeBuildStatus = args.includeBuildStatus ?? true;
+    const descriptionCap = args.fullDescription ? 0 : args.descriptionMaxChars ?? 2000;
 
     let prId = args.prId;
     if (prId === undefined) {
@@ -777,7 +791,7 @@ export class BitbucketClient {
       url ? `URL:       ${url}` : '',
       '',
       'Description:',
-      pr.description ?? '(no description)',
+      pr.description ? capText(pr.description, descriptionCap) : '(no description)',
     ].filter((line) => line !== '');
     sections.push(header.join('\n'));
 

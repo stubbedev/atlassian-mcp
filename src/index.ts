@@ -214,7 +214,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     // ── Combined context (jira + bitbucket, or either alone) ─────────────
     ...(jira || bitbucket ? [{
       name: 'get_dev_context',
-      description: 'Master entry point. Use when asked "what am I working on?", "what\'s the status?", "show me the context", or before any review or coding task. Returns: git branch + upstream state, Jira ticket overview (status, transitions, sprint, comments), open PR with reviewer approvals, and actionable next-step hints (create PR, merge, address blockers).',
+      description: 'Master entry point for "what am I working on / what\'s the status", and before any review or coding task. Returns: git branch + upstream state, Jira ticket overview (status, transitions, sprint, comments), open PR with reviewer approvals, and actionable next-step hints (create PR, merge, address blockers).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -226,7 +226,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     ...(jira ? [
     {
       name: 'start_work',
-      description: 'Start working on a Jira ticket end-to-end: resolves the ticket (by key or free-text search with a picker when multiple match), creates a local branch with an auto-generated name, fetches the project README from Bitbucket so you have commit/PR conventions in context, and prints a ready-to-use next-steps summary. Use when told "make a branch for FOO-123", "start working on this ticket", "I want to work on the login bug", or "begin work on the payment gateway story". If issueKey is omitted, provide query for free-text search.',
+      description: 'Start working on a Jira ticket end-to-end: resolves the ticket (by key or free-text search with a picker when multiple match), creates a local branch with an auto-generated name, fetches the project README from Bitbucket so you have commit/PR conventions in context, and prints a next-steps summary. If issueKey is omitted, provide query for free-text search.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -242,7 +242,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'jira_search',
-      description: 'Discover Jira resources. Use when asked "find tickets for...", "what\'s in the backlog", "show me my issues", "list projects", or "which board is for project X". Set resource:\n• "issues" (default) — search by text, JQL, project, status, assignee, issue type, or mine=true for your queue\n• "projects" — list all projects and their keys\n• "issue_types" — valid types and statuses for a project\n• "boards" — list boards (pass project to filter by project key); use this to find the boardId before fetching sprints or board_overview\n• "sprints" — sprints for a board (pass boardId); if you don\'t know the boardId, first use resource=boards\n• "board_overview" — active/future sprints with their issues for a board (pass boardId); use when asked "what\'s in the sprint", "show me the board", or "what\'s everyone working on"\n• "versions" — list fix versions/releases for a project (pass project; optionally pass query to filter by name substring). If the version you need does not exist, create it yourself with `jira_version action=create` — do NOT ask the user to make it in the Jira UI.\n• "users" — find users by name/email (pass query)',
+      description: 'Discover Jira resources (tickets, projects, boards, sprints, versions, users). Set resource:\n• "issues" (default) — search by text, JQL, project, status, assignee, issue type, or mine=true for your queue\n• "projects" — list all projects and their keys\n• "issue_types" — valid types and statuses for a project\n• "boards" — list boards (pass project to filter by project key); use this to find the boardId before fetching sprints or board_overview\n• "sprints" — sprints for a board (pass boardId); if you don\'t know the boardId, first use resource=boards\n• "board_overview" — active/future sprints with their issues for a board (pass boardId); use when asked "what\'s in the sprint", "show me the board", or "what\'s everyone working on"\n• "versions" — list fix versions/releases for a project (pass project; optionally pass query to filter by name substring). If the version you need does not exist, create it yourself with `jira_version action=create` — do NOT ask the user to make it in the Jira UI.\n• "users" — find users by name/email (pass query)',
       inputSchema: {
         type: 'object',
         properties: {
@@ -264,7 +264,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'jira_get',
-      description: 'Full details for one Jira issue: summary, description, status, assignee, sprint, available transitions, recent comments, and a list of attachments (filename, size, mime type, attachment ID). Use when asked to "show me FOO-123", "what does this ticket say", "get the details for this issue", or after discovering a key from get_dev_context or jira_search. To view an attachment\'s contents (e.g. an image), call jira_get_attachment with the attachment ID surfaced here.',
+      description: 'Full details for one Jira issue: summary, description, status, assignee, sprint, available transitions, recent comments, and a list of attachments (filename, size, mime type, attachment ID). To view an attachment\'s contents (e.g. an image), call jira_get_attachment with the attachment ID surfaced here.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -274,13 +274,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           commentsStartAt:    { type: 'number', description: 'Comment pagination offset (default 0)', default: 0 },
           includeTransitions: { type: 'boolean', description: 'Include available transitions (default true)', default: true },
           includeSprint:      { type: 'boolean', description: 'Include sprint data (default true)', default: true },
+          fullDescription:    { type: 'boolean', description: 'Return the full description even when long (default false — descriptions over ~2000 chars are truncated to save context)', default: false },
         },
         required: ['issueKey'],
       },
     },
     {
       name: 'jira_mutate',
-      description: `Use when asked to "create a ticket", "log a bug", "move FOO-123 to In Progress", "close this issue", "assign to X", "add a comment on FOO-123", "FOO-123 blocks BAR-456", "log 2h on this ticket", or "add a sub-task". Bundles create/update/transition/comment/link/worklog in one call. ${JIRA_WIKI_MARKUP_HINT}`,
+      description: `Create/update a ticket, transition status, assign, comment, link issues, or log work — bundles create/update/transition/comment/link/worklog in one call. ${JIRA_WIKI_MARKUP_HINT}`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -344,7 +345,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'jira_get_attachment',
-      description: 'Fetch a Jira attachment by ID and return its contents inline. Images are auto-resized (long edge ≤1568 px by default) and re-encoded so they fit in context, then returned as image content blocks; text/JSON/XML come back as text. Videos AND animated images (GIF/APNG/animated WebP) are decoded with ffmpeg: by default 6 frames are sampled uniformly across the whole clip (768 px / q65, mpdecimate to drop near-duplicates) — re-call with start/end/frames or mode=scenes to refine. Audio is returned as an MCP audio block. PDFs return extracted text. Anything still too large or non-renderable is automatically saved to a temp file and the path is returned. Use jira_get first to discover attachment IDs.',
+      description: 'Fetch a Jira attachment by ID and return its contents inline. Images are auto-resized + re-encoded; text/JSON/XML return as text; videos and animated images (GIF/APNG/animated WebP) are decoded with ffmpeg into sampled frames (re-call with start/end/frames or mode=scenes to refine); audio returns as an audio block; PDFs return extracted text. Oversized/non-renderable files are saved to a temp file and the path returned. Use jira_get first to discover attachment IDs.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -363,7 +364,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'jira_comment',
-      description: `Add, update, or delete a comment on a Jira issue. Use when asked to "edit my comment on FOO-123", "delete comment 12345", or "update that comment". action defaults to "add". Can only edit/delete your own comments. ${JIRA_WIKI_MARKUP_HINT}`,
+      description: `Add, update, or delete a comment on a Jira issue. action defaults to "add". Can only edit/delete your own comments. ${JIRA_WIKI_MARKUP_HINT}`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -377,7 +378,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'jira_version',
-      description: 'Manage Jira fix versions (releases). Use when asked to "create version 9.1.0", "release version X", "archive version X", "rename a version", or "delete a version". action defaults to "create". For create pass projectKey + name. For update/release/archive/delete pass id (look it up via jira_search resource=versions). "release" sets released=true and defaults releaseDate to today. Once a version exists you can set it on tickets via jira_mutate update.fixVersion.',
+      description: 'Manage Jira fix versions (releases): create, update, release, archive, delete. action defaults to "create". For create pass projectKey + name. For update/release/archive/delete pass id (look it up via jira_search resource=versions). "release" sets released=true and defaults releaseDate to today. Once a version exists you can set it on tickets via jira_mutate update.fixVersion.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -396,7 +397,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     }] : []),
     ...(bitbucket ? [{
       name: 'bitbucket_search',
-      description: 'Discover Bitbucket resources. Use when asked "what PRs are open?", "show me the repos", "find the PR for this branch", or "list branches". Set resource:\n• "pull_requests" (default) — list PRs by state/branch/text; mine=true for your inbox\n• "repos" — list repositories in a project\n• "branches" — list or filter branches in a repo\n• "users" — find users by name/email (pass query); add projectKey+repoSlug to restrict to users with repo access. ALWAYS use this to look up valid usernames before adding reviewers to a PR.',
+      description: 'Discover Bitbucket resources (PRs, repos, branches, users). Set resource:\n• "pull_requests" (default) — list PRs by state/branch/text; mine=true for your inbox\n• "repos" — list repositories in a project\n• "branches" — list or filter branches in a repo\n• "users" — find users by name/email (pass query); add projectKey+repoSlug to restrict to users with repo access. ALWAYS use this to look up valid usernames before adding reviewers to a PR.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -419,7 +420,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'bitbucket_get_pr',
-      description: 'Full details for one PR: metadata, commits, open comments, blockers, optional diff, and any attachments referenced from the description or comments (with attachment ID + filename). Use when asked to "review this PR", "show me the review comments", "what\'s blocking the merge", or after get_dev_context surfaces a prId. IMPORTANT: The PR branch is often not the locally checked-out branch. Do NOT read files with local tools (Read, git_get_diff, etc.) for PR context — use bitbucket_get_file with the PR\'s source branch instead. To view an attachment\'s contents, call bitbucket_get_attachment with the surfaced attachment ID. The response includes a "Viewing as" line — if it says "you are the author", do NOT add review comments or a summary unless explicitly asked; just answer questions about the PR. If it says "you are a reviewer", default to posting inline comments for suggested changes and a final summary comment.',
+      description: 'Full details for one PR: metadata, commits, open comments, blockers, optional diff, and any attachments referenced from the description or comments (with attachment ID + filename). IMPORTANT: The PR branch is often not the locally checked-out branch. Do NOT read files with local tools (Read, git_get_diff, etc.) for PR context — use bitbucket_get_file with the PR\'s source branch instead. To view an attachment\'s contents, call bitbucket_get_attachment with the surfaced attachment ID. The response includes a "Viewing as" line — if it says "you are the author", do NOT add review comments or a summary unless explicitly asked; just answer questions about the PR. If it says "you are a reviewer", default to posting inline comments for suggested changes and a final summary comment.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -439,12 +440,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           commentsStart:     { type: 'number', description: 'Comment pagination offset (default 0)', default: 0 },
           commitsLimit:      { type: 'number', description: 'Max commits (default 25)', default: 25 },
           diffMaxChars:      { type: 'number', description: 'Max diff chars when includeDiff=true (default 8000)', default: 8000 },
+          fullDescription:   { type: 'boolean', description: 'Return the full PR description even when long (default false — descriptions over ~2000 chars are truncated to save context)', default: false },
         },
       },
     },
     {
       name: 'bitbucket_mutate',
-      description: 'Use when asked to "open a PR for this branch", "create a pull request", "approve this PR", "request changes / mark needs work", "merge it", "ship it", or "decline this PR". Auto-targets the open PR for the current branch when prId is omitted. Handles create, update, approve/unapprove, needs_work, decline, and merge in one call. needs_work sets your reviewer status to "Needs work" (Bitbucket Server\'s changes-requested signal); revert with action=unapprove.',
+      description: 'Create, update, approve/unapprove, mark needs_work, decline, or merge a PR — in one call. Auto-targets the open PR for the current branch when prId is omitted. needs_work sets your reviewer status to "Needs work" (Bitbucket Server\'s changes-requested signal); revert with action=unapprove.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -530,7 +532,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'bitbucket_get_attachment',
-      description: 'Fetch a Bitbucket repo attachment by ID and return its contents inline. Bitbucket Server attachments are repo-scoped and referenced from PR descriptions/comments via attachment:<id> markdown. Use bitbucket_get_pr first to surface attachment IDs. Images are auto-resized (long edge ≤1568 px by default) and re-encoded, then returned as image content blocks; text/JSON/XML as text. Videos AND animated images (GIF/APNG/animated WebP) are decoded with ffmpeg: by default 6 frames are sampled uniformly across the whole clip (768 px / q65, mpdecimate to drop near-duplicates) — re-call with start/end/frames or mode=scenes to refine. Audio is returned as an MCP audio block. PDFs return extracted text. Oversized/non-renderable attachments are auto-saved to a temp file and the path is returned.',
+      description: 'Fetch a Bitbucket repo attachment by ID and return its contents inline. Attachments are repo-scoped, referenced from PR descriptions/comments via attachment:<id> markdown; use bitbucket_get_pr first to surface IDs. Images are auto-resized + re-encoded; text/JSON/XML return as text; videos and animated images (GIF/APNG/animated WebP) are decoded with ffmpeg into sampled frames (re-call with start/end/frames or mode=scenes to refine); audio returns as an audio block; PDFs return extracted text. Oversized/non-renderable files are saved to a temp file and the path returned.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -553,7 +555,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'bitbucket_pr_tasks',
-      description: 'Manage PR tasks (checklist items). Use when asked to "list the tasks on this PR", "create a task for FOO-123", "mark task #5 as done", or "add a checklist item". Tasks are distinct from comments — they appear as a checklist in the PR sidebar.',
+      description: 'Manage PR tasks (checklist items): list, create, resolve, reopen, delete. Tasks are distinct from comments — they appear as a checklist in the PR sidebar.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -574,7 +576,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     // ── Combined workflow ─────────────────────────────────────────────────
     ...(jira && bitbucket ? [{
       name: 'complete_work',
-      description: 'Close the loop on a finished branch: merges the open PR and transitions the Jira ticket to Done (or a named transition). Use when asked to "ship this", "close out FOO-123", "merge and close the ticket", or "done with this branch". Mirrors start_work.',
+      description: 'Close the loop on a finished branch: merges the open PR and transitions the Jira ticket to Done (or a named transition). Mirrors start_work.',
       inputSchema: {
         type: 'object',
         properties: {
