@@ -685,12 +685,11 @@ export class BitbucketClient {
 
   async myPrs(args: { limit?: number; start?: number; role?: 'author' | 'reviewer' | 'participant' }): Promise<ToolResult> {
     const { limit = 25, start = 0, role } = args;
-    const userSlug = await this.getCurrentUsername();
     const qs = new URLSearchParams({ limit: String(limit), start: String(start), state: 'OPEN' });
     if (role) qs.set('role', role.toUpperCase());
     const data = await this.request<BBPagedResult<BBPullRequest>>(
       'GET',
-      `/users/${encodeURIComponent(userSlug)}/pull-requests?${qs}`
+      `/dashboard/pull-requests?${qs}`
     );
     if (!data || data.values.length === 0) return text('No pull requests found.');
     const lines = data.values.map((pr) => {
