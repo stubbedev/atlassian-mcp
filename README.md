@@ -267,8 +267,11 @@ ATLASSIAN_MCP_HTTP=1 atlassian-mcp   # same, via env
 ```
 
 - Single endpoint `POST /mcp` (JSON-RPC) plus an optional `GET /mcp` SSE stream that
-  carries server→client requests (`roots/list`, elicitation). `initialize` returns an
-  `Mcp-Session-Id` header — reuse it on subsequent requests and on the SSE stream.
+  carries server→client requests (`roots/list`, elicitation). The server is **stateful**:
+  `initialize` mints a session and returns an `Mcp-Session-Id` header, which the client
+  **must** echo on every subsequent request and on the SSE stream. Requests with a
+  missing/unknown/expired session id get **HTTP 404** so the client re-initializes
+  (standard MCP-client behaviour). Each connected client/worktree is an isolated session.
 - **Auth:** on a loopback bind no token is needed. Binding a non-loopback address
   **requires** `ATLASSIAN_MCP_HTTP_TOKEN` (sent by clients as `Authorization: Bearer …`);
   the server refuses to start otherwise. Terminate TLS at your proxy.
@@ -278,11 +281,14 @@ ATLASSIAN_MCP_HTTP=1 atlassian-mcp   # same, via env
 **Repo context comes from the client, not the server's working directory.** Tools that
 need a repo (the `git_*` tools, `get_dev_context`, `start_work`, `complete_work`, and
 Bitbucket project/repo auto-detection) resolve it in this order: an explicit `repoPath`
-argument → the client's **MCP workspace roots** (the server asks via `roots/list`) →
-the process cwd (stdio only). So one shared HTTP server handles many projects: each
-client's own workspace is used per call. For Bitbucket, passing `projectKey`+`repoSlug`
-explicitly skips repo detection entirely. The repos must be reachable on the server's
-host (the git tools run `git` locally).
+argument → the client's **MCP workspace roots** (the server asks via `roots/list`, caches
+per session, and refreshes on `notifications/roots/list_changed`) → the process cwd (stdio
+only). So one shared HTTP server handles many worktrees: each client's own workspace drives
+its calls. When a session exposes **several** roots (multiple worktrees), a tool with no
+`repoPath` uses the first git-repo root; pass `repoPath` (an absolute path, or a worktree
+name/basename that matches one of the roots) to target a specific worktree. For Bitbucket,
+passing `projectKey`+`repoSlug` explicitly skips repo detection entirely. The repos must be
+reachable on the server's host (the git tools run `git` locally).
 
 Client config for an already-running HTTP server (Claude Code example):
 
