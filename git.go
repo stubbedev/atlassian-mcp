@@ -79,18 +79,17 @@ func isGitRepo(repoPath string) bool {
 // cwd). Returns "" when nothing resolves (HTTP without roots/repoPath), which
 // downstream auto-detection turns into a clear error.
 func resolveRepoRoot(s Session, args map[string]any) string {
-	if p := argString(args, "repoPath"); p != "" {
-		return p
-	}
+	repoPathArg := argString(args, "repoPath")
 	if s != nil {
-		if r := s.repoRoot(); r != "" {
+		if r := s.resolveRepo(repoPathArg); r != "" {
 			return r
 		}
 		if s.isStdio() {
 			return mustGetwd()
 		}
+		return ""
 	}
-	return ""
+	return repoPathArg
 }
 
 func validateBranch(branch, label string) error {

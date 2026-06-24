@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -25,9 +27,13 @@ type Session interface {
 	sendRequest(method string, params any) (json.RawMessage, error)
 	elicitationSupported() bool
 	rootsSupported() bool
-	// repoRoot returns the client's workspace path (first git-repo root from
-	// roots/list), cached for the session; "" if unavailable.
+	// repoRoot returns the session's primary workspace path (first git-repo root
+	// from roots/list), cached for the session; "" if unavailable.
 	repoRoot() string
+	// resolveRepo resolves a tool's target repo: an explicit repoPath arg
+	// (absolute as-is; relative/basename matched against the session roots), or
+	// — when empty — the primary root. "" if nothing resolves.
+	resolveRepo(repoPathArg string) string
 	invalidateRoots()
 	isStdio() bool
 }
@@ -41,7 +47,14 @@ type sessionState struct {
 
 	mu        sync.Mutex
 	rootsDone bool
-	rootsPath string
+	roots     []rootEntry
+}
+
+// rootEntry is one client workspace root (a worktree).
+type rootEntry struct {
+	uri  string
+	path string
+	name string
 }
 
 func (s *sessionState) sendRequest(method string, params any) (json.RawMessage, error) {
@@ -54,27 +67,29 @@ func (s *sessionState) isStdio() bool              { return s.stdio }
 func (s *sessionState) invalidateRoots() {
 	s.mu.Lock()
 	s.rootsDone = false
-	s.rootsPath = ""
+	s.roots = nil
 	s.mu.Unlock()
 }
 
-func (s *sessionState) repoRoot() string {
+// loadRoots returns the session's workspace roots, querying roots/list once and
+// caching the result. The round-trip is issued WITHOUT holding the lock — it
+// blocks on the client (HTTP back-channel, up to 120s) and must not stall other
+// callers; concurrent first-callers may duplicate the harmless query.
+func (s *sessionState) loadRoots() []rootEntry {
 	if !s.caps.roots {
-		return ""
+		return nil
 	}
 	s.mu.Lock()
 	if s.rootsDone {
-		p := s.rootsPath
+		r := s.roots
 		s.mu.Unlock()
-		return p
+		return r
 	}
 	s.mu.Unlock()
 
-	// Issue the roots/list round-trip WITHOUT holding the lock — it blocks on the
-	// client (HTTP back-channel, up to 120s) and must not stall other callers.
 	raw, err := s.send("roots/list", nil)
 	if err != nil {
-		return "" // transient — leave rootsDone unset so a later call retries
+		return nil // transient — leave rootsDone unset so a later call retries
 	}
 	var res struct {
 		Roots []struct {
@@ -83,33 +98,55 @@ func (s *sessionState) repoRoot() string {
 		} `json:"roots"`
 	}
 	_ = json.Unmarshal(raw, &res)
-	// Prefer the first root that is a git repo; else the first root dir.
-	var resolved, firstDir string
+	var list []rootEntry
 	for _, r := range res.Roots {
-		p := fileURIToPath(r.URI)
-		if p == "" {
-			continue
+		if p := fileURIToPath(r.URI); p != "" {
+			list = append(list, rootEntry{uri: r.URI, path: p, name: r.Name})
 		}
-		if firstDir == "" {
-			firstDir = p
-		}
-		if isGitRepo(p) {
-			resolved = p
-			break
-		}
-	}
-	if resolved == "" {
-		resolved = firstDir
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.rootsDone { // another concurrent caller already resolved
-		return s.rootsPath
+		return s.roots
 	}
-	s.rootsPath = resolved
+	s.roots = list
 	s.rootsDone = true
-	return resolved
+	return list
+}
+
+// primaryRoot picks the first git-repo root, else the first root dir.
+func primaryRoot(list []rootEntry) string {
+	var first string
+	for _, e := range list {
+		if first == "" {
+			first = e.path
+		}
+		if isGitRepo(e.path) {
+			return e.path
+		}
+	}
+	return first
+}
+
+func (s *sessionState) repoRoot() string { return primaryRoot(s.loadRoots()) }
+
+func (s *sessionState) resolveRepo(repoPathArg string) string {
+	if repoPathArg != "" {
+		if filepath.IsAbs(repoPathArg) {
+			return repoPathArg
+		}
+		// Relative or basename — match against the session's worktree roots.
+		base := filepath.Base(repoPathArg)
+		for _, e := range s.loadRoots() {
+			if e.path == repoPathArg || strings.HasSuffix(e.path, "/"+repoPathArg) ||
+				filepath.Base(e.path) == base || (e.name != "" && e.name == repoPathArg) {
+				return e.path
+			}
+		}
+		return repoPathArg // best effort — let git report if it's not a repo
+	}
+	return primaryRoot(s.loadRoots())
 }
 
 // fileURIToPath converts a file:// URI to a local filesystem path. Returns ""

@@ -1,9 +1,53 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
+
+func fakeRootsSession(rootsJSON string) *sessionState {
+	return &sessionState{
+		caps: clientCaps{roots: true},
+		send: func(method string, params any) (json.RawMessage, error) {
+			return json.RawMessage(rootsJSON), nil
+		},
+	}
+}
+
+func TestResolveRepo(t *testing.T) {
+	twoRoots := `{"roots":[{"uri":"file:///home/u/wt-main","name":"main"},{"uri":"file:///home/u/feature-x","name":"feature"}]}`
+
+	// Absolute repoPath passes through untouched (no roots query needed).
+	noRoots := &sessionState{caps: clientCaps{roots: false}}
+	if got := noRoots.resolveRepo("/abs/repo"); got != "/abs/repo" {
+		t.Errorf("abs passthrough: got %q", got)
+	}
+	// No repoPath, no roots capability → "".
+	if got := noRoots.resolveRepo(""); got != "" {
+		t.Errorf("no roots: got %q", got)
+	}
+	// Relative/basename matches a root.
+	if got := fakeRootsSession(twoRoots).resolveRepo("feature-x"); got != "/home/u/feature-x" {
+		t.Errorf("basename match: got %q", got)
+	}
+	if got := fakeRootsSession(twoRoots).resolveRepo("feature"); got != "/home/u/feature-x" {
+		t.Errorf("name match: got %q", got)
+	}
+	// Unmatched relative arg → returned verbatim (best effort).
+	if got := fakeRootsSession(twoRoots).resolveRepo("nope"); got != "nope" {
+		t.Errorf("unmatched: got %q", got)
+	}
+	// No repoPath, multiple roots, none are git repos → first root path.
+	if got := fakeRootsSession(twoRoots).resolveRepo(""); got != "/home/u/wt-main" {
+		t.Errorf("primary root: got %q", got)
+	}
+	// Single root.
+	one := `{"roots":[{"uri":"file:///home/u/only","name":"only"}]}`
+	if got := fakeRootsSession(one).resolveRepo(""); got != "/home/u/only" {
+		t.Errorf("single root: got %q", got)
+	}
+}
 
 func TestParseBitbucketRemote(t *testing.T) {
 	cases := []struct {

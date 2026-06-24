@@ -229,7 +229,8 @@ func handleHTTPPost(w http.ResponseWriter, r *http.Request, instructions string)
 		return
 	}
 
-	// Resolve or create the session. initialize mints a new session id.
+	// Resolve or create the session. initialize mints a new session id; every
+	// other request must carry a known one (spec-compliant stateful server).
 	sessID := r.Header.Get(sessionHeader)
 	hs := getSession(sessID)
 	if req.Method == "initialize" {
@@ -237,8 +238,8 @@ func handleHTTPPost(w http.ResponseWriter, r *http.Request, instructions string)
 		putSession(hs)
 		w.Header().Set(sessionHeader, hs.id)
 	} else if hs == nil {
-		// Stateless fallback: a one-off session with no back-channel.
-		hs = newHTTPSession("")
+		http.Error(w, "session not found — send initialize first and reuse the Mcp-Session-Id header", http.StatusNotFound)
+		return
 	}
 
 	isNotification := len(req.ID) == 0
@@ -262,7 +263,7 @@ func handleHTTPGet(w http.ResponseWriter, r *http.Request) {
 	id := r.Header.Get(sessionHeader)
 	hs := getSession(id)
 	if hs == nil {
-		http.Error(w, "unknown session", http.StatusBadRequest)
+		http.Error(w, "session not found — send initialize first and reuse the Mcp-Session-Id header", http.StatusNotFound)
 		return
 	}
 	flusher, ok := w.(http.Flusher)
