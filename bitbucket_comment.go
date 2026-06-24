@@ -7,23 +7,23 @@ import (
 )
 
 // commentDispatch is the bitbucket_comment tool entry.
-func (c *BitbucketClient) commentDispatch(args map[string]any) (toolResult, error) {
+func (c *BitbucketClient) commentDispatch(args map[string]any, repoRoot string) (toolResult, error) {
 	action := argString(args, "action")
 	if action == "" {
 		action = "add"
 	}
 	switch action {
 	case "update":
-		return c.updatePrComment(args)
+		return c.updatePrComment(args, repoRoot)
 	case "delete":
-		return c.deletePrComment(args)
+		return c.deletePrComment(args, repoRoot)
 	default:
-		return c.addPrComment(args)
+		return c.addPrComment(args, repoRoot)
 	}
 }
 
-func (c *BitbucketClient) addPrComment(args map[string]any) (toolResult, error) {
-	pk, rs, err := c.resolveProjectAndRepo(argString(args, "projectKey"), argString(args, "repoSlug"))
+func (c *BitbucketClient) addPrComment(args map[string]any, repoRoot string) (toolResult, error) {
+	pk, rs, err := c.resolveProjectAndRepo(argString(args, "projectKey"), argString(args, "repoSlug"), repoRoot)
 	if err != nil {
 		return toolResult{}, err
 	}
@@ -244,8 +244,8 @@ func mapHas(m map[string]any, k string) (any, bool) {
 	return v, ok
 }
 
-func (c *BitbucketClient) updatePrComment(args map[string]any) (toolResult, error) {
-	pk, rs, err := c.resolveProjectAndRepo(argString(args, "projectKey"), argString(args, "repoSlug"))
+func (c *BitbucketClient) updatePrComment(args map[string]any, repoRoot string) (toolResult, error) {
+	pk, rs, err := c.resolveProjectAndRepo(argString(args, "projectKey"), argString(args, "repoSlug"), repoRoot)
 	if err != nil {
 		return toolResult{}, err
 	}
@@ -349,8 +349,8 @@ func (c *BitbucketClient) updatePrComment(args map[string]any) (toolResult, erro
 	return textResult(fmt.Sprintf("Comment #%d updated (%s/%s%s).", updated.ID, state, severity, threadStatus)), nil
 }
 
-func (c *BitbucketClient) deletePrComment(args map[string]any) (toolResult, error) {
-	pk, rs, err := c.resolveProjectAndRepo(argString(args, "projectKey"), argString(args, "repoSlug"))
+func (c *BitbucketClient) deletePrComment(args map[string]any, repoRoot string) (toolResult, error) {
+	pk, rs, err := c.resolveProjectAndRepo(argString(args, "projectKey"), argString(args, "repoSlug"), repoRoot)
 	if err != nil {
 		return toolResult{}, err
 	}
@@ -375,19 +375,19 @@ func (c *BitbucketClient) deletePrComment(args map[string]any) (toolResult, erro
 
 // ── Tasks ────────────────────────────────────────────────────────────────────
 
-func (c *BitbucketClient) prTasksDispatch(args map[string]any) (toolResult, error) {
+func (c *BitbucketClient) prTasksDispatch(args map[string]any, repoRoot string) (toolResult, error) {
 	action := argString(args, "action")
 	if action == "" {
 		action = "list"
 	}
 	if action == "list" {
-		return c.getPrTasks(args)
+		return c.getPrTasks(args, repoRoot)
 	}
-	return c.mutatePrTask(action, args)
+	return c.mutatePrTask(action, args, repoRoot)
 }
 
-func (c *BitbucketClient) getPrTasks(args map[string]any) (toolResult, error) {
-	pk, rs, err := c.resolveProjectAndRepo(argString(args, "projectKey"), argString(args, "repoSlug"))
+func (c *BitbucketClient) getPrTasks(args map[string]any, repoRoot string) (toolResult, error) {
+	pk, rs, err := c.resolveProjectAndRepo(argString(args, "projectKey"), argString(args, "repoSlug"), repoRoot)
 	if err != nil {
 		return toolResult{}, err
 	}
@@ -426,10 +426,10 @@ func (c *BitbucketClient) getPrTasks(args map[string]any) (toolResult, error) {
 	return textResult(fmt.Sprintf("%d task(s) on PR #%d (%d open)%s:\n%s", len(data.Values), prID, open, pageHintPaged(data.IsLastPage, data.NextPageStart), strings.Join(lines, "\n"))), nil
 }
 
-func (c *BitbucketClient) mutatePrTask(action string, args map[string]any) (toolResult, error) {
-	if _, _, err := c.resolveProjectAndRepo(argString(args, "projectKey"), argString(args, "repoSlug")); err != nil {
-		return toolResult{}, err
-	}
+func (c *BitbucketClient) mutatePrTask(action string, args map[string]any, repoRoot string) (toolResult, error) {
+	// Tasks use the global /tasks endpoint (anchored by prId/commentId/taskId),
+	// so project/repo are not required here.
+	_ = repoRoot
 	prID := argIntPtr(args, "prId")
 	commentID := argIntPtr(args, "commentId")
 	taskID := argIntPtr(args, "taskId")

@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/disintegration/imaging"
@@ -139,7 +140,10 @@ func isAnimatedImage(buffer []byte, mimeType string) bool {
 const tmpPrefix = "atlmcp-"
 const tmpPruneCooldown = time.Hour
 
-var lastPruneAt time.Time
+var (
+	pruneMu     sync.Mutex
+	lastPruneAt time.Time
+)
 
 func tmpTTL() time.Duration {
 	if v := os.Getenv("ATLASSIAN_MCP_TMP_TTL_DAYS"); v != "" {
@@ -160,6 +164,8 @@ func tmpMaxBytes() int64 {
 }
 
 func pruneTmpFiles() {
+	pruneMu.Lock()
+	defer pruneMu.Unlock()
 	now := time.Now()
 	if !lastPruneAt.IsZero() && now.Sub(lastPruneAt) < tmpPruneCooldown {
 		return

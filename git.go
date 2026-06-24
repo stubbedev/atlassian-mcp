@@ -68,6 +68,31 @@ func validateRepoPath(repoPath string) error {
 	return nil
 }
 
+func isGitRepo(repoPath string) bool {
+	_, err := gitIn(repoPath, "rev-parse", "--git-dir")
+	return err == nil
+}
+
+// resolveRepoRoot determines which repo a tool call targets: an explicit
+// `repoPath` arg wins, else the client's workspace root (MCP roots), else the
+// process cwd — but only in stdio mode (a shared HTTP server has no meaningful
+// cwd). Returns "" when nothing resolves (HTTP without roots/repoPath), which
+// downstream auto-detection turns into a clear error.
+func resolveRepoRoot(s Session, args map[string]any) string {
+	if p := argString(args, "repoPath"); p != "" {
+		return p
+	}
+	if s != nil {
+		if r := s.repoRoot(); r != "" {
+			return r
+		}
+		if s.isStdio() {
+			return mustGetwd()
+		}
+	}
+	return ""
+}
+
 func validateBranch(branch, label string) error {
 	if !safeBranchRe.MatchString(branch) {
 		return fmt.Errorf("Invalid %s %q. Use only letters, numbers, /, _, ., -", label, branch)
@@ -82,16 +107,11 @@ func validateRef(ref, label string) error {
 	return nil
 }
 
-func repoPathOrCwd(args map[string]any) string {
-	if p := argString(args, "repoPath"); p != "" {
-		return p
-	}
-	return mustGetwd()
-}
-
 // gitGetContext implements git_get_context.
-func gitGetContext(args map[string]any) toolResult {
-	repoPath := repoPathOrCwd(args)
+func gitGetContext(args map[string]any, repoPath string) toolResult {
+	if repoPath == "" {
+		return textResult("Error reading git context: no repo path — pass repoPath, or connect a client that provides workspace roots.")
+	}
 	limit := argIntDefault(args, "commitLimit", 10)
 	if limit < 1 {
 		limit = 1
@@ -175,8 +195,10 @@ func gitGetContext(args map[string]any) toolResult {
 }
 
 // getDiff implements the core of git_get_diff (before paging).
-func getDiff(args map[string]any) toolResult {
-	repoPath := repoPathOrCwd(args)
+func getDiff(args map[string]any, repoPath string) toolResult {
+	if repoPath == "" {
+		return textResult("Error reading diff: no repo path — pass repoPath, or connect a client that provides workspace roots.")
+	}
 	if err := validateRepoPath(repoPath); err != nil {
 		return textResult("Error reading diff: " + err.Error())
 	}
@@ -208,8 +230,8 @@ func getDiff(args map[string]any) toolResult {
 }
 
 // gitGetDiffPaged applies the maxChars/charOffset paging from src/index.ts.
-func gitGetDiffPaged(args map[string]any) toolResult {
-	result := getDiff(args)
+func gitGetDiffPaged(args map[string]any, repoPath string) toolResult {
+	result := getDiff(args, repoPath)
 	raw := result.Content[0].Text
 	offset := argInt(args, "charOffset")
 	limit := argIntDefault(args, "maxChars", 8000)
