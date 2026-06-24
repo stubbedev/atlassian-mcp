@@ -12,9 +12,7 @@ import (
 	"syscall"
 )
 
-// Version is the server version, overridable at build time via
-// -ldflags "-X main.Version=x.y.z". Kept in sync with package.json.
-var Version = "0.5.1"
+// Version is defined in version.go (embedded from package.json).
 
 const defaultProtocolVersion = "2025-06-18"
 
