@@ -3,9 +3,11 @@ node_modules/
 
 # build output
 dist/
+/atlassian-mcp
+atlassian-mcp_*
+bin/atlassian-mcp-native*
+result
 
 # config & secrets
 .env
 .atlassian-mcp.json
-
-# package-lock.json is tracked for reproducible installs (required by npm ci in CI)

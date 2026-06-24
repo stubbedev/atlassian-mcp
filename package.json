@@ -1,45 +1,32 @@
 {
   "name": "@stubbedev/atlassian-mcp",
   "version": "0.4.5",
-  "description": "MCP server for self-hosted Jira and Bitbucket",
+  "description": "MCP server for self-hosted Jira and Bitbucket (Go, distributed as a prebuilt binary)",
   "license": "MIT",
   "type": "module",
-  "main": "dist/index.js",
+  "bin": {
+    "atlassian-mcp": "bin/cli.mjs"
+  },
   "files": [
-    "dist",
+    "bin/cli.mjs",
+    "scripts/download.mjs",
+    "scripts/postinstall.mjs",
     "atlassian-mcp.schema.json",
     "README.md"
   ],
-  "bin": {
-    "atlassian-mcp": "dist/index.js"
-  },
   "scripts": {
-    "build": "tsc",
-    "start": "node dist/index.js",
-    "dev": "tsx src/index.ts",
-    "release:patch": "npm version patch && git push origin && git push origin --tags && gh release create $(git describe --tags) --generate-notes",
-    "release:minor": "npm version minor && git push origin && git push origin --tags && gh release create $(git describe --tags) --generate-notes",
-    "release:major": "npm version major && git push origin && git push origin --tags && gh release create $(git describe --tags) --generate-notes",
-    "smoke": "npm run build && npm run smoke:tools",
-    "smoke:tools": "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}' | node dist/index.js",
-    "smoke:validate": "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}' | node dist/index.js | node -e \"let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const r=JSON.parse(d.trim());if(r.error)throw new Error('server error: '+r.error.message);const t=r.result?.tools;if(!Array.isArray(t)||!t.length)throw new Error('no tools in response');const bad=t.filter(x=>!x.name||!x.inputSchema);if(bad.length)throw new Error('malformed tools: '+bad.map(x=>x.name??'(unnamed)').join(', '));console.log('smoke OK — '+t.length+' tool(s): '+t.map(x=>x.name).join(', '))}catch(e){console.error('smoke FAIL:',e.message);process.exit(1)}})\"",
-    "prerelease": "npm run build && npm run smoke:validate && ncu"
+    "postinstall": "node scripts/postinstall.mjs",
+    "build": "go build -o atlassian-mcp .",
+    "test": "go test ./...",
+    "smoke": "go build -o atlassian-mcp . && printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}' | ATLASSIAN_MCP_CONFIG=/nonexistent JIRA_URL=https://github.com JIRA_ACCESS_TOKEN=smoke BITBUCKET_URL=https://github.com BITBUCKET_ACCESS_TOKEN=smoke ./atlassian-mcp | node -e \"let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const r=JSON.parse(d.trim());if(r.error)throw new Error('server error: '+r.error.message);const t=r.result?.tools;if(!Array.isArray(t)||!t.length)throw new Error('no tools in response');const bad=t.filter(x=>!x.name||!x.inputSchema);if(bad.length)throw new Error('malformed tools: '+bad.map(x=>x.name??'(unnamed)').join(', '));console.log('smoke OK — '+t.length+' tool(s): '+t.map(x=>x.name).join(', '))}catch(e){console.error('smoke FAIL:',e.message);process.exit(1)}})\"",
+    "preversion": "go vet ./... && npm run test && npm run smoke",
+    "release:patch": "npm version patch && git push origin HEAD --follow-tags",
+    "release:minor": "npm version minor && git push origin HEAD --follow-tags",
+    "release:major": "npm version major && git push origin HEAD --follow-tags"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "@napi-rs/canvas": "^0.1.100",
-    "dotenv": "^17.4.2",
     "ffmpeg-static": "^5.3.0",
-    "ffprobe-static": "^3.1.0",
-    "pdfjs-dist": "^5.7.284",
-    "sharp": "^0.35.2",
-    "unpdf": "^1.6.2"
-  },
-  "devDependencies": {
-    "@types/node": "^25.9.4",
-    "npm-check-updates": "^21.0.3",
-    "tsx": "^4.22.4",
-    "typescript": "^6.0.3"
+    "ffprobe-static": "^3.1.0"
   },
   "engines": {
     "node": ">=18.0.0"

@@ -38,10 +38,10 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 
 | Tool | Description |
 |---|---|
-| `bitbucket_search` | Discover resources: `pull_requests` (default), `repos`, or `branches` via `resource` param; `mine=true` for your inbox |
+| `bitbucket_search` | Discover resources: `pull_requests` (default), `repos`, `branches`, or `users` via `resource` param; `mine=true` for your inbox |
 | `bitbucket_get_pr` | Full PR details: metadata, commits, comments, blockers, build status, optional diff, and any attachments referenced from the description or comments |
 | `bitbucket_get_attachment` | Fetch a repo attachment by ID. Same decoding pipeline as `jira_get_attachment` (images, videos, animated images, audio, PDFs). Oversized or non-renderable attachments are auto-saved to a temp file and the path is returned; `saveTo` streams the original to disk |
-| `bitbucket_mutate` | Create/update a PR, or perform lifecycle actions: `approve`, `unapprove`, `merge`, `decline` |
+| `bitbucket_mutate` | Create/update a PR, or perform lifecycle actions: `approve`, `unapprove`, `needs_work`, `merge`, `decline` |
 | `bitbucket_comment` | Add, update, or delete a PR comment; for code changes use `suggestion` so Bitbucket shows Apply suggestion (no trailing text after a suggestion block) |
 | `bitbucket_get_file` | Raw file content from Bitbucket at a branch, tag, or commit |
 | `bitbucket_pr_tasks` | Manage PR tasks (checklist items): `list`, `create`, `resolve`, `reopen`, `delete` |
@@ -114,7 +114,7 @@ BITBUCKET_URL=https://bitbucket.example.com
 BITBUCKET_ACCESS_TOKEN=your-bitbucket-personal-access-token
 ```
 
-Config is resolved in this order: `--config <path>` CLI arg → `ATLASSIAN_MCP_CONFIG` env var → `~/.atlassian-mcp.json` → `.atlassian-mcp.json` in cwd → environment variables.
+Config is resolved in this order: `--config <path>` CLI arg → `ATLASSIAN_MCP_CONFIG` env var → `~/.atlassian-mcp.json` → `$XDG_CONFIG_HOME/atlassian-mcp/config.json` (default `~/.config/atlassian-mcp/config.json`) → `.atlassian-mcp.json` in cwd → environment variables.
 
 ### 2. Connect to your AI tool
 
@@ -236,17 +236,23 @@ Then restart your MCP client.
 
 ---
 
-### Manual install (optional)
+### Install without npm
 
-If you prefer to clone and run locally:
+The server is a single static Go binary. The `npx` path above downloads the prebuilt
+binary for your platform on first run; these alternatives skip Node entirely:
 
 ```bash
-git clone git@github.com:stubbedev/atlassian-mcp.git
-cd atlassian-mcp
-npm install
+# Go toolchain — installs to $GOBIN / $GOPATH/bin
+go install github.com/stubbedev/atlassian-mcp@latest
+
+# Nix flake
+nix run github:stubbedev/atlassian-mcp -- --config ~/.atlassian-mcp.json
 ```
 
-Then use `node /path/to/atlassian-mcp/dist/index.js` instead of the `npx` command in the configs above.
+Then point your MCP client's `command` at the resulting `atlassian-mcp` binary
+instead of `npx`. On these paths `ffmpeg`/`ffprobe` must be available on `PATH`
+(or set `ATLASSIAN_MCP_FFMPEG_PATH` / `ATLASSIAN_MCP_FFPROBE_PATH`); the npm
+wrapper bundles them automatically.
 
 ### Attachment decoding pipeline
 
@@ -254,28 +260,35 @@ The attachment tools (`jira_get_attachment`, `bitbucket_get_attachment`) decode 
 
 | Input | What gets returned | How |
 | --- | --- | --- |
-| Static images (PNG/JPEG/WebP/AVIF/SVG…) | Resized image content blocks | `sharp` (long edge ≤ `maxDimension`, default 1568) |
-| Animated images (GIF/APNG/animated WebP) | N sampled frames as image content blocks | `ffmpeg-static` + `sharp` (default 6 frames @ 768 px) |
-| Video (mp4/webm/mov/…) | N sampled frames as image content blocks | `ffmpeg-static` + `sharp`. Uniform or scene-change sampling. Re-call with `start`, `end`, `frames`, `mode`, `sceneThreshold` to zoom in |
+| Static images (PNG/JPEG/WebP/BMP/TIFF/GIF/SVG…) | Resized image content blocks | native Go (`imaging`, long edge ≤ `maxDimension`, default 1568; EXIF auto-orient; PNG for alpha, else JPEG) |
+| Animated images (GIF/APNG/animated WebP) | N sampled frames as image content blocks | `ffmpeg` + native Go re-encode (default 6 frames @ 768 px) |
+| Video (mp4/webm/mov/…) | N sampled frames as image content blocks | `ffmpeg`/`ffprobe`. Uniform or scene-change sampling. Re-call with `start`, `end`, `frames`, `mode`, `sceneThreshold` to zoom in |
 | Audio (mp3/wav/ogg/…) | MCP audio content block | passthrough |
-| PDFs | Extracted text — or rasterized pages if text is empty (scanned PDFs) | `unpdf` + `@napi-rs/canvas` |
+| PDFs | Extracted text — or rasterized pages if text is empty (scanned PDFs) | native Go text extraction (`ledongthuc/pdf`); rasterization shells to `pdftoppm`/`mutool` if present, else the original is saved to disk |
 | Text-like (json/xml/yaml/…) | Text content block | passthrough |
-| Everything else (or oversized) | Auto-saved to a temp file; path is returned | `os.tmpdir()` with `atlmcp-` prefix |
+| Everything else (or oversized) | Auto-saved to a temp file; path is returned | `os.TempDir()` with `atlmcp-` prefix |
 
 Auto-saved files are periodically pruned by TTL and total-size quota — see *Environment overrides* below.
 
-### Native dependencies
+### External tools (optional)
 
-- [`sharp`](https://sharp.pixelplumbing.com/) — image decode/resize. Ships prebuilt binaries for glibc Linux (x64/arm64), macOS, Windows. Alpine / musl users may need `npm install --cpu=x64 --os=linux --libc=musl sharp`.
-- [`ffmpeg-static`](https://www.npmjs.com/package/ffmpeg-static) + [`ffprobe-static`](https://www.npmjs.com/package/ffprobe-static) — video/audio decode. ~80 MB bundled binary per platform. Override with env vars (below) if you have system ffmpeg.
-- [`@napi-rs/canvas`](https://www.npmjs.com/package/@napi-rs/canvas) + [`unpdf`](https://www.npmjs.com/package/unpdf) — PDF text extraction and page rasterization.
+Image and PDF-text decoding are pure Go and need nothing extra. The two pipelines that have no
+pure-Go implementation shell out to external binaries:
+
+- **`ffmpeg` + `ffprobe`** — video and animated-image frame sampling. The npm wrapper bundles
+  [`ffmpeg-static`](https://www.npmjs.com/package/ffmpeg-static) /
+  [`ffprobe-static`](https://www.npmjs.com/package/ffprobe-static) and injects their paths, so the
+  npx install path is zero-config. On the `go install` / Nix paths, install `ffmpeg` (it provides
+  `ffprobe`) or set the env vars below.
+- **`pdftoppm` (poppler) or `mutool` (MuPDF)** — only needed to rasterize *scanned* PDFs that have no
+  extractable text. If neither is on `PATH`, such PDFs are saved to disk instead.
 
 ### Environment overrides
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
-| `ATLASSIAN_MCP_FFMPEG_PATH` | Path to `ffmpeg` binary. Overrides `ffmpeg-static`. Use this if you have system ffmpeg or `ffmpeg-static` doesn't ship for your platform (Alpine/musl, some ARM variants). | bundled `ffmpeg-static` |
-| `ATLASSIAN_MCP_FFPROBE_PATH` | Path to `ffprobe` binary. Overrides `ffprobe-static`. | bundled `ffprobe-static` |
+| `ATLASSIAN_MCP_FFMPEG_PATH` | Path to `ffmpeg` binary. | npm: bundled `ffmpeg-static`; otherwise `ffmpeg` on `PATH` |
+| `ATLASSIAN_MCP_FFPROBE_PATH` | Path to `ffprobe` binary. | npm: bundled `ffprobe-static`; otherwise `ffprobe` on `PATH` |
 | `ATLASSIAN_MCP_TMP_TTL_DAYS` | Auto-saved attachments older than this are pruned. | `7` |
 | `ATLASSIAN_MCP_TMP_MAX_BYTES` | Total-size quota for auto-saved attachments in `os.tmpdir()`. When exceeded, oldest are evicted. | `1073741824` (1 GB) |
 
@@ -287,23 +300,20 @@ This package is published to npm as `@stubbedev/atlassian-mcp`.
 
 Use semantic versioning for releases. Breaking tool-surface changes should bump the minor version while `<1.0.0` (for example `0.0.x` -> `0.1.0`).
 
-Automatic publish is configured in `.github/workflows/publish.yml` and runs when a new version tag is pushed.
+On a pushed `v*` tag, `.github/workflows/publish.yml` cross-compiles the Go binary for 14
+OS/arch targets, attaches them to a GitHub release, and publishes the npm wrapper (which
+downloads the matching binary on install).
 
 Release flow:
 
 ```bash
-# choose one: patch | minor | major
-increment=patch
-
-# bumps package.json + package-lock.json,
-# creates a version commit, and creates a git tag (for example v0.1.17)
-npm version "$increment"
-
-# push commit and tag to GitHub
+# choose one: patch | minor | major (also: npm run release:patch / :minor / :major)
+npm version patch          # bumps package.json, commits, tags vX.Y.Z
 git push origin HEAD --follow-tags
 ```
 
-GitHub Actions will publish the npm release from that pushed tag.
+`flake.nix` reads its version from `package.json`, so the Nix package tracks the same bump
+automatically. GitHub Actions builds + publishes from the pushed tag.
 
 - The workflow is configured for npm Trusted Publisher (OIDC), so no `NPM_TOKEN` secret is required
 
@@ -351,22 +361,22 @@ Paste the token as the `token` value under `bitbucket` in your config file.
 
 ## Development
 
-```bash
-# Watch mode — recompiles on file changes
-npm run dev
+The server is a single Go module at the repo root (no `src/` tree).
 
-# Run the built server directly
-node dist/index.js
+```bash
+# Build the binary
+go build -o atlassian-mcp .
+
+# Run it
+./atlassian-mcp --config /path/to/config.json
+
+# Vet + unit tests
+go vet ./...
+go test ./...
 
 # Test the tool list
-echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | node dist/index.js
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | ./atlassian-mcp
 
-# Quick release smoke check
+# Quick release smoke check (build + tools/list validation)
 npm run smoke
-```
-
-To use a specific config file:
-
-```bash
-node dist/index.js --config /path/to/config.json
 ```
