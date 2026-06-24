@@ -63,15 +63,18 @@ func (s *sessionState) repoRoot() string {
 		return ""
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.rootsDone {
-		return s.rootsPath
+		p := s.rootsPath
+		s.mu.Unlock()
+		return p
 	}
-	s.rootsDone = true
+	s.mu.Unlock()
+
+	// Issue the roots/list round-trip WITHOUT holding the lock — it blocks on the
+	// client (HTTP back-channel, up to 120s) and must not stall other callers.
 	raw, err := s.send("roots/list", nil)
 	if err != nil {
-		s.rootsDone = false // transient — allow retry on next call
-		return ""
+		return "" // transient — leave rootsDone unset so a later call retries
 	}
 	var res struct {
 		Roots []struct {
@@ -79,11 +82,9 @@ func (s *sessionState) repoRoot() string {
 			Name string `json:"name"`
 		} `json:"roots"`
 	}
-	if json.Unmarshal(raw, &res) != nil {
-		return ""
-	}
+	_ = json.Unmarshal(raw, &res)
 	// Prefer the first root that is a git repo; else the first root dir.
-	var firstDir string
+	var resolved, firstDir string
 	for _, r := range res.Roots {
 		p := fileURIToPath(r.URI)
 		if p == "" {
@@ -93,12 +94,22 @@ func (s *sessionState) repoRoot() string {
 			firstDir = p
 		}
 		if isGitRepo(p) {
-			s.rootsPath = p
-			return p
+			resolved = p
+			break
 		}
 	}
-	s.rootsPath = firstDir
-	return firstDir
+	if resolved == "" {
+		resolved = firstDir
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.rootsDone { // another concurrent caller already resolved
+		return s.rootsPath
+	}
+	s.rootsPath = resolved
+	s.rootsDone = true
+	return resolved
 }
 
 // fileURIToPath converts a file:// URI to a local filesystem path. Returns ""
