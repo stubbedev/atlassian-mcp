@@ -26,10 +26,11 @@ type httpSession struct {
 	id string
 	*sessionState
 
-	mu      sync.Mutex
-	sse     chan []byte
-	pending map[string]chan backResp
-	hasSSE  bool
+	mu       sync.Mutex
+	sse      chan []byte
+	pending  map[string]chan backResp
+	hasSSE   bool
+	lastSeen time.Time // guarded by httpSessionsMu
 }
 
 func newHTTPSession(id string) *httpSession {
@@ -97,11 +98,16 @@ var (
 func getSession(id string) *httpSession {
 	httpSessionsMu.Lock()
 	defer httpSessionsMu.Unlock()
-	return httpSessions[id]
+	hs := httpSessions[id]
+	if hs != nil {
+		hs.lastSeen = time.Now()
+	}
+	return hs
 }
 
 func putSession(hs *httpSession) {
 	httpSessionsMu.Lock()
+	hs.lastSeen = time.Now()
 	httpSessions[hs.id] = hs
 	httpSessionsMu.Unlock()
 }
@@ -110,6 +116,28 @@ func dropSession(id string) {
 	httpSessionsMu.Lock()
 	delete(httpSessions, id)
 	httpSessionsMu.Unlock()
+}
+
+const sessionIdleTTL = time.Hour
+
+// sweepSessions evicts sessions idle longer than sessionIdleTTL so a long-lived
+// server does not leak sessions whose clients never sent DELETE.
+func sweepSessions() {
+	t := time.NewTicker(10 * time.Minute)
+	defer t.Stop()
+	for range t.C {
+		cutoff := time.Now().Add(-sessionIdleTTL)
+		httpSessionsMu.Lock()
+		for id, hs := range httpSessions {
+			hs.mu.Lock()
+			open := hs.hasSSE
+			hs.mu.Unlock()
+			if !open && hs.lastSeen.Before(cutoff) {
+				delete(httpSessions, id)
+			}
+		}
+		httpSessionsMu.Unlock()
+	}
 }
 
 const sessionHeader = "Mcp-Session-Id"
@@ -151,8 +179,10 @@ func runHTTP(addr, instructions string) {
 		}
 	})
 
+	go sweepSessions()
+
 	logf("Listening on http://%s/mcp (loopback=%v, auth=%v)", addr, loopback, token != "")
-	srv := &http.Server{Addr: addr, Handler: mux}
+	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	if err := srv.ListenAndServe(); err != nil {
 		logf("http server error: %v", err)
 		os.Exit(1)
