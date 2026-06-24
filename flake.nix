@@ -24,7 +24,8 @@
           # pkgs.lib.fakeHash, run `nix build`, and paste the reported hash.
           vendorHash = "sha256-ZEHPPbKl0eST6q576s40Bp227gf55H2yjqfm0+DOsVg=";
 
-          ldflags = [ "-s" "-w" "-X main.Version=${version}" ];
+          # Version is embedded from package.json (single source of truth) — no -X needed.
+          ldflags = [ "-s" "-w" ];
           doCheck = true;
 
           meta = {

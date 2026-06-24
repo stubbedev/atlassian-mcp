@@ -46,12 +46,11 @@ jobs:
           GOARM: ${{ matrix.goarm }}
           CGO_ENABLED: '0'
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          case "$GITHUB_REF_NAME" in v*) ;; *) VERSION="$(node -p "require('./package.json').version")" ;; esac
+          # Version is embedded from package.json (single source of truth) — no -X needed.
           EXT=""
           [ "$GOOS" = "windows" ] && EXT=".exe"
           OUT="atlassian-mcp_${GOOS}_${GOARCH}${EXT}"
-          go build -trimpath -ldflags "-s -w -X main.Version=${VERSION}" -o "$OUT" .
+          go build -trimpath -ldflags "-s -w" -o "$OUT" .
           echo "ASSET=$OUT" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v7
