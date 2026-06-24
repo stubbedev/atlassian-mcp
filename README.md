@@ -272,6 +272,8 @@ ATLASSIAN_MCP_HTTP=1 atlassian-mcp   # same, via env
 - **Auth:** on a loopback bind no token is needed. Binding a non-loopback address
   **requires** `ATLASSIAN_MCP_HTTP_TOKEN` (sent by clients as `Authorization: Bearer …`);
   the server refuses to start otherwise. Terminate TLS at your proxy.
+- **`GET /healthz`** is an unauthenticated liveness probe (returns `ok`) for proxies/load
+  balancers. Idle sessions are evicted after 1h.
 
 **Repo context comes from the client, not the server's working directory.** Tools that
 need a repo (the `git_*` tools, `get_dev_context`, `start_work`, `complete_work`, and

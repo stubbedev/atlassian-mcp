@@ -159,6 +159,11 @@ func runHTTP(addr, instructions string) {
 	}
 
 	mux := http.NewServeMux()
+	// Unauthenticated liveness probe for proxies/load balancers.
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write([]byte("ok\n"))
+	})
 	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
 		if !authOK(r) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
