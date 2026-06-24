@@ -281,14 +281,28 @@ ATLASSIAN_MCP_HTTP=1 atlassian-mcp   # same, via env
 **Repo context comes from the client, not the server's working directory.** Tools that
 need a repo (the `git_*` tools, `get_dev_context`, `start_work`, `complete_work`, and
 Bitbucket project/repo auto-detection) resolve it in this order: an explicit `repoPath`
-argument → the client's **MCP workspace roots** (the server asks via `roots/list`, caches
-per session, and refreshes on `notifications/roots/list_changed`) → the process cwd (stdio
+argument → a **root pinned via request header** (see below) → the client's **MCP workspace
+roots** (the server asks via `roots/list`, caches per session, and refreshes on
+`notifications/roots/list_changed`) → the process cwd (stdio
 only). So one shared HTTP server handles many worktrees: each client's own workspace drives
 its calls. When a session exposes **several** roots (multiple worktrees), a tool with no
 `repoPath` uses the first git-repo root; pass `repoPath` (an absolute path, or a worktree
 name/basename that matches one of the roots) to target a specific worktree. For Bitbucket,
 passing `projectKey`+`repoSlug` explicitly skips repo detection entirely. The repos must be
 reachable on the server's host (the git tools run `git` locally).
+
+**Pinning the root via a request header (HTTP).** A reverse proxy or harness that already
+knows the working tree can hand it to the server directly, skipping the `roots/list`
+round-trip (and working even when the client never advertised the `roots` capability).
+Send a `file://` URI or absolute path (comma-separated for multiple; first git repo wins):
+
+```
+X-Mcp-Root: file:///srv/myrepo
+X-Mcp-Roots: /srv/a, /srv/b
+```
+
+Accepted header names: `X-Mcp-Roots`, `X-Mcp-Root`, `Mcp-Roots`, `Mcp-Root`. A header value
+is authoritative — it takes precedence over `roots/list` and survives `list_changed`.
 
 Client config for an already-running HTTP server (Claude Code example):
 

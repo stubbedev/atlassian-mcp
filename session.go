@@ -45,9 +45,10 @@ type sessionState struct {
 	caps  clientCaps
 	stdio bool
 
-	mu        sync.Mutex
-	rootsDone bool
-	roots     []rootEntry
+	mu          sync.Mutex
+	rootsDone   bool
+	headerRoots bool // roots pinned via request header — authoritative
+	roots       []rootEntry
 }
 
 // rootEntry is one client workspace root (a worktree).
@@ -66,8 +67,22 @@ func (s *sessionState) isStdio() bool              { return s.stdio }
 
 func (s *sessionState) invalidateRoots() {
 	s.mu.Lock()
-	s.rootsDone = false
-	s.roots = nil
+	if !s.headerRoots { // header-pinned roots are authoritative
+		s.rootsDone = false
+		s.roots = nil
+	}
+	s.mu.Unlock()
+}
+
+// setHeaderRoots pins workspace roots supplied via a request header (proxy
+// injection). They are authoritative: they satisfy loadRoots without a
+// roots/list round-trip, work even when the client did not advertise the roots
+// capability, and survive list_changed invalidation.
+func (s *sessionState) setHeaderRoots(list []rootEntry) {
+	s.mu.Lock()
+	s.roots = list
+	s.rootsDone = true
+	s.headerRoots = true
 	s.mu.Unlock()
 }
 
@@ -76,9 +91,8 @@ func (s *sessionState) invalidateRoots() {
 // blocks on the client (HTTP back-channel, up to 120s) and must not stall other
 // callers; concurrent first-callers may duplicate the harmless query.
 func (s *sessionState) loadRoots() []rootEntry {
-	if !s.caps.roots {
-		return nil
-	}
+	// Cached (incl. header-pinned) roots return first — header roots work even
+	// when the client never advertised the roots capability.
 	s.mu.Lock()
 	if s.rootsDone {
 		r := s.roots
@@ -86,6 +100,9 @@ func (s *sessionState) loadRoots() []rootEntry {
 		return r
 	}
 	s.mu.Unlock()
+	if !s.caps.roots {
+		return nil
+	}
 
 	raw, err := s.send("roots/list", nil)
 	if err != nil {

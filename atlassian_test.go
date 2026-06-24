@@ -2,9 +2,56 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 )
+
+func TestRootsFromHeaders(t *testing.T) {
+	h := http.Header{}
+	h.Set("X-Mcp-Root", "file:///srv/a")
+	h.Add("X-Mcp-Roots", "/srv/b, /srv/c")
+
+	roots := rootsFromHeaders(h)
+	want := []string{"/srv/b", "/srv/c", "/srv/a"} // order follows rootHeaders precedence (X-Mcp-Roots before X-Mcp-Root)
+	if len(roots) != len(want) {
+		t.Fatalf("got %d roots, want %d: %+v", len(roots), len(want), roots)
+	}
+	for i, w := range want {
+		if roots[i].path != w {
+			t.Errorf("root[%d].path = %q, want %q", i, roots[i].path, w)
+		}
+	}
+	if got := rootsFromHeaders(http.Header{}); got != nil {
+		t.Errorf("empty headers should yield nil, got %+v", got)
+	}
+}
+
+func TestHeaderRootsAreAuthoritative(t *testing.T) {
+	// Client did NOT advertise roots capability, and send would fail — header
+	// roots must still resolve without a roots/list round-trip.
+	s := &sessionState{
+		caps: clientCaps{roots: false},
+		send: func(string, any) (json.RawMessage, error) {
+			t.Fatal("roots/list must not be called when header roots are set")
+			return nil, nil
+		},
+	}
+	s.setHeaderRoots([]rootEntry{{uri: "file:///srv/x", path: "/srv/x"}})
+
+	if got := s.repoRoot(); got != "/srv/x" {
+		t.Fatalf("repoRoot = %q, want /srv/x", got)
+	}
+	// list_changed must not clear header-pinned roots.
+	s.invalidateRoots()
+	if got := s.resolveRepo(""); got != "/srv/x" {
+		t.Errorf("header roots cleared by invalidate: %q", got)
+	}
+	// A basename arg still resolves against header roots.
+	if got := s.resolveRepo("x"); got != "/srv/x" {
+		t.Errorf("basename match against header roots: %q", got)
+	}
+}
 
 func fakeRootsSession(rootsJSON string) *sessionState {
 	return &sessionState{

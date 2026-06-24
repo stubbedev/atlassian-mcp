@@ -242,6 +242,12 @@ func handleHTTPPost(w http.ResponseWriter, r *http.Request, instructions string)
 		return
 	}
 
+	// A proxy/harness may pin the workspace root via headers — authoritative,
+	// no roots/list round-trip needed.
+	if roots := rootsFromHeaders(r.Header); len(roots) > 0 {
+		hs.setHeaderRoots(roots)
+	}
+
 	isNotification := len(req.ID) == 0
 	result, rerr := dispatch(hs.sessionState, &req, instructions)
 	if isNotification {
@@ -303,6 +309,29 @@ func handleHTTPGet(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+
+// rootHeaders are the request headers a proxy/harness may set to hand the
+// server the workspace root(s) without the MCP roots/list round-trip. Values
+// are file:// URIs or absolute paths; multiple roots may be comma-separated.
+var rootHeaders = []string{"X-Mcp-Roots", "X-Mcp-Root", "Mcp-Roots", "Mcp-Root"}
+
+func rootsFromHeaders(h http.Header) []rootEntry {
+	var list []rootEntry
+	for _, name := range rootHeaders {
+		for _, v := range h.Values(name) {
+			for _, part := range strings.Split(v, ",") {
+				part = strings.TrimSpace(part)
+				if part == "" {
+					continue
+				}
+				if p := fileURIToPath(part); p != "" {
+					list = append(list, rootEntry{uri: part, path: p})
+				}
+			}
+		}
+	}
+	return list
 }
 
 func isLoopbackAddr(addr string) bool {
