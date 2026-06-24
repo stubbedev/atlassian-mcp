@@ -1,4 +1,4 @@
-name: Publish Package
+name: Publish
 
 on:
   push:
@@ -6,31 +6,101 @@ on:
       - 'v*'
   workflow_dispatch:
 
+permissions:
+  contents: write
+  id-token: write
+
 jobs:
-  publish:
+  binaries:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: linux, goarch: arm, goarm: '7' }
+          - { goos: linux, goarch: '386' }
+          - { goos: linux, goarch: ppc64le }
+          - { goos: linux, goarch: s390x }
+          - { goos: linux, goarch: riscv64 }
+          - { goos: darwin, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+          - { goos: windows, goarch: arm64 }
+          - { goos: windows, goarch: '386' }
+          - { goos: freebsd, goarch: amd64 }
+          - { goos: freebsd, goarch: arm64 }
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7
 
-      - name: Setup Node
-        uses: actions/setup-node@v6.4.0
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+          CGO_ENABLED: '0'
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          case "$GITHUB_REF_NAME" in v*) ;; *) VERSION="$(node -p "require('./package.json').version")" ;; esac
+          EXT=""
+          [ "$GOOS" = "windows" ] && EXT=".exe"
+          OUT="atlassian-mcp_${GOOS}_${GOARCH}${EXT}"
+          go build -trimpath -ldflags "-s -w -X main.Version=${VERSION}" -o "$OUT" .
+          echo "ASSET=$OUT" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.ASSET }}
+          path: ${{ env.ASSET }}
+          if-no-files-found: error
+
+  release:
+    name: Attach binaries to release
+    needs: binaries
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create / update GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: dist/*
+
+  npm:
+    name: Publish npm wrapper
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build
-        run: npm run build
-
-      - name: Smoke validate
-        run: npm run smoke:validate
+      - name: Verify version matches tag
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG="$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "Tag v$TAG does not match package.json version $PKG" >&2
+            exit 1
+          fi
 
       - name: Publish to npm
+        env:
+          ATLASSIAN_MCP_SKIP_DOWNLOAD: '1'
         run: npm publish --provenance --access public

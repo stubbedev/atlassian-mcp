@@ -1,0 +1,49 @@
+name: Flake
+
+on:
+  push:
+    branches: [master]
+    paths: ['go.mod', 'go.sum', 'flake.nix', 'flake.lock', '**/*.go', 'package.json']
+  pull_request:
+    paths: ['go.mod', 'go.sum', 'flake.nix', 'flake.lock', '**/*.go', 'package.json']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  vendor-hash:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      # Recompute the Go module vendorHash from go.mod/go.sum. Setting it to a
+      # fake value makes `nix build` fail and report the correct one, which we
+      # then write back. Idempotent: a current hash converges to no change.
+      - name: Recompute vendorHash
+        run: |
+          FAKE="sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+          CUR="$(grep -oP 'vendorHash = "\K[^"]+' flake.nix)"
+          sed -i "s#vendorHash = \"${CUR}\"#vendorHash = \"${FAKE}\"#" flake.nix
+          GOT="$(nix build .#default --no-link 2>&1 | grep -oP 'got:\s+\K(sha256-\S+)' | head -1 || true)"
+          [ -z "$GOT" ] && GOT="$CUR"
+          sed -i "s#vendorHash = \"${FAKE}\"#vendorHash = \"${GOT}\"#" flake.nix
+          echo "vendorHash = ${GOT}"
+
+      - name: Build check (compiles + runs go test via doCheck)
+        run: nix build .#default --no-link --print-build-logs
+
+      - name: Commit updated vendorHash
+        if: github.event_name != 'pull_request'
+        run: |
+          if git diff --quiet flake.nix; then
+            echo "vendorHash already current."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add flake.nix
+            git commit -m "chore(nix): update vendorHash [skip ci]"
+            git push
+          fi
