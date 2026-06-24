@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -334,6 +335,7 @@ type JiraClient struct {
 	baseURL string
 	token   string
 
+	mu                 sync.Mutex // guards the lazily-populated caches below (HTTP is concurrent)
 	currentUser        *jiraCurrentUser
 	projects           []jiraProject
 	projectsCached     bool
@@ -425,6 +427,8 @@ func (c *JiraClient) agile(method, path string, body any) ([]byte, error) {
 func normalizeIdentity(v string) string { return strings.ToLower(strings.TrimSpace(v)) }
 
 func (c *JiraClient) getCurrentUser() (*jiraCurrentUser, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.currentUser != nil {
 		return c.currentUser, nil
 	}
@@ -442,6 +446,8 @@ func (c *JiraClient) getCurrentUser() (*jiraCurrentUser, error) {
 func (c *JiraClient) whoami() (*jiraCurrentUser, error) { return c.getCurrentUser() }
 
 func (c *JiraClient) getIssueLinkingEnabled() (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.issueLinkingCached {
 		return c.issueLinking, nil
 	}
@@ -457,6 +463,8 @@ func (c *JiraClient) getIssueLinkingEnabled() (bool, error) {
 }
 
 func (c *JiraClient) getEpicLinkFieldID() (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.epicLinkCached {
 		return c.epicLinkFieldID, nil
 	}
@@ -482,6 +490,8 @@ func (c *JiraClient) getEpicLinkFieldID() (string, error) {
 }
 
 func (c *JiraClient) getIssueType(issueKey string) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if cached, ok := c.issueTypeCache[issueKey]; ok && cached != "" {
 		return cached, nil
 	}
@@ -527,10 +537,12 @@ func (c *JiraClient) addIssuesToSprintInternal(sprintID int, issueKeys []string)
 	return err
 }
 
-func (c *JiraClient) resolveProjectKey(projectKey string) (string, error) {
+func (c *JiraClient) resolveProjectKey(projectKey, repoRoot string) (string, error) {
 	if projectKey != "" {
 		return projectKey, nil
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if !c.projectsCached {
 		data, err := jiraGet[[]jiraProject](c, "/rest/api/2", "GET", "/project?maxResults=100", nil)
 		if err != nil {
@@ -549,10 +561,12 @@ func (c *JiraClient) resolveProjectKey(projectKey string) (string, error) {
 	for _, p := range projects {
 		keys[p.Key] = true
 	}
-	branch := safeExecGit("rev-parse", "--abbrev-ref", "HEAD")
-	if m := jiraKeyInBranchRe.FindStringSubmatch(branch); m != nil {
-		if keys[m[1]] {
-			return m[1], nil
+	if repoRoot != "" {
+		branch := safeGit(repoRoot, "", "rev-parse", "--abbrev-ref", "HEAD")
+		if m := jiraKeyInBranchRe.FindStringSubmatch(branch); m != nil {
+			if keys[m[1]] {
+				return m[1], nil
+			}
 		}
 	}
 	if len(projects) == 1 {
@@ -604,8 +618,8 @@ func (c *JiraClient) resolveTransitionID(issueKey, transitionID, transitionName 
 	return "", fmt.Errorf("Transition %q not found for %s. Available: %s", requested, issueKey, avail)
 }
 
-func (c *JiraClient) createIssueInternal(create map[string]any) (*jiraCreatedIssue, error) {
-	projectKey, err := c.resolveProjectKey(argString(create, "projectKey"))
+func (c *JiraClient) createIssueInternal(create map[string]any, repoRoot string) (*jiraCreatedIssue, error) {
+	projectKey, err := c.resolveProjectKey(argString(create, "projectKey"), repoRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -712,7 +726,7 @@ func (c *JiraClient) updateIssueFieldsInternal(issueKey string, update map[strin
 // ── Public tool methods ──────────────────────────────────────────────────────
 
 // search dispatches the jira_search resource routing from src/index.ts.
-func (c *JiraClient) search(args map[string]any) (toolResult, error) {
+func (c *JiraClient) search(args map[string]any, repoRoot string) (toolResult, error) {
 	resource := argString(args, "resource")
 	if resource == "" {
 		resource = "issues"
@@ -721,7 +735,7 @@ func (c *JiraClient) search(args map[string]any) (toolResult, error) {
 	case "projects":
 		return c.getProjects(args)
 	case "issue_types":
-		return c.getIssueTypes(argString(args, "projectKey"))
+		return c.getIssueTypes(argString(args, "projectKey"), repoRoot)
 	case "boards":
 		return c.getBoards(argString(args, "projectKey"), argIntDefault(args, "maxResults", 25), argInt(args, "startAt"))
 	case "sprints":
@@ -729,7 +743,7 @@ func (c *JiraClient) search(args map[string]any) (toolResult, error) {
 	case "board_overview":
 		return c.boardOverview(args)
 	case "versions":
-		return c.listVersions(argString(args, "projectKey"), argString(args, "query"), argIntPtr(args, "maxResults"))
+		return c.listVersions(argString(args, "projectKey"), argString(args, "query"), argIntPtr(args, "maxResults"), repoRoot)
 	case "users":
 		return c.searchUsers(argString(args, "query"), argIntDefault(args, "maxResults", 10))
 	default:
@@ -815,8 +829,8 @@ func (c *JiraClient) getProjects(args map[string]any) (toolResult, error) {
 	return textResult(fmt.Sprintf("%d project(s):\n%s", len(*data), strings.Join(lines, "\n"))), nil
 }
 
-func (c *JiraClient) getIssueTypes(projectKey string) (toolResult, error) {
-	pk, err := c.resolveProjectKey(projectKey)
+func (c *JiraClient) getIssueTypes(projectKey, repoRoot string) (toolResult, error) {
+	pk, err := c.resolveProjectKey(projectKey, repoRoot)
 	if err != nil {
 		return toolResult{}, err
 	}
@@ -1235,12 +1249,12 @@ func (c *JiraClient) boardOverview(args map[string]any) (toolResult, error) {
 }
 
 // mutateIssue handles jira_mutate: create/update/sprint/transition/comment/link/worklog.
-func (c *JiraClient) mutateIssue(args map[string]any) (toolResult, error) {
+func (c *JiraClient) mutateIssue(args map[string]any, repoRoot string) (toolResult, error) {
 	issueKey := strings.TrimSpace(argString(args, "issueKey"))
 	var actions []string
 
 	if create := argMap(args, "create"); create != nil {
-		created, err := c.createIssueInternal(create)
+		created, err := c.createIssueInternal(create, repoRoot)
 		if err != nil {
 			return toolResult{}, err
 		}
@@ -1460,8 +1474,8 @@ func (c *JiraClient) getBoards(projectKey string, maxResults, startAt int) (tool
 	return textResult(fmt.Sprintf("%d board(s)%s:\n%s", len(data.Values), page, strings.Join(lines, "\n"))), nil
 }
 
-func (c *JiraClient) listVersions(projectKey, query string, maxResults *int) (toolResult, error) {
-	pk, err := c.resolveProjectKey(projectKey)
+func (c *JiraClient) listVersions(projectKey, query string, maxResults *int, repoRoot string) (toolResult, error) {
+	pk, err := c.resolveProjectKey(projectKey, repoRoot)
 	if err != nil {
 		return toolResult{}, err
 	}
@@ -1560,13 +1574,13 @@ func versionLess(a, b jiraVersion) bool {
 	return b.ReleaseDate < a.ReleaseDate // releaseDate DESC
 }
 
-func (c *JiraClient) mutateVersion(args map[string]any) (toolResult, error) {
+func (c *JiraClient) mutateVersion(args map[string]any, repoRoot string) (toolResult, error) {
 	action := argString(args, "action")
 	if action == "" {
 		action = "create"
 	}
 	if action == "create" {
-		pk, err := c.resolveProjectKey(argString(args, "projectKey"))
+		pk, err := c.resolveProjectKey(argString(args, "projectKey"), repoRoot)
 		if err != nil {
 			return toolResult{}, err
 		}

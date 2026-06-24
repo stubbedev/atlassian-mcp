@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 const (
@@ -252,11 +253,14 @@ func quickHash(buf []byte) string {
 const videoCacheMax = 16
 
 var (
+	videoCacheMu    sync.Mutex
 	videoCache      = map[string]*processVideoResult{}
 	videoCacheOrder []string
 )
 
 func videoCacheGet(key string) *processVideoResult {
+	videoCacheMu.Lock()
+	defer videoCacheMu.Unlock()
 	hit, ok := videoCache[key]
 	if !ok {
 		return nil
@@ -273,6 +277,8 @@ func videoCacheGet(key string) *processVideoResult {
 }
 
 func videoCacheSet(key string, value *processVideoResult) {
+	videoCacheMu.Lock()
+	defer videoCacheMu.Unlock()
 	if len(videoCache) >= videoCacheMax && len(videoCacheOrder) > 0 {
 		oldest := videoCacheOrder[0]
 		videoCacheOrder = videoCacheOrder[1:]

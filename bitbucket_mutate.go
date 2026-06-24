@@ -8,17 +8,17 @@ import (
 )
 
 // createPullRequest opens a PR, or returns the existing open PR for the branch.
-func (c *BitbucketClient) createPullRequest(projectKey, repoSlug, title, description, fromBranch, toBranch string, reviewers []string) (toolResult, error) {
-	pk, rs, err := c.resolveProjectAndRepo(projectKey, repoSlug)
+func (c *BitbucketClient) createPullRequest(projectKey, repoSlug, repoRoot, title, description, fromBranch, toBranch string, reviewers []string) (toolResult, error) {
+	pk, rs, err := c.resolveProjectAndRepo(projectKey, repoSlug, repoRoot)
 	if err != nil {
 		return toolResult{}, err
 	}
 	sourceBranch := fromBranch
-	if sourceBranch == "" {
-		sourceBranch = safeExecGit("rev-parse", "--abbrev-ref", "HEAD")
+	if sourceBranch == "" && repoRoot != "" {
+		sourceBranch = safeGit(repoRoot, "", "rev-parse", "--abbrev-ref", "HEAD")
 	}
 	if sourceBranch == "" || sourceBranch == "HEAD" {
-		return toolResult{}, fmt.Errorf("Could not determine source branch. Provide fromBranch or run from a checked-out branch.")
+		return toolResult{}, fmt.Errorf("Could not determine source branch. Provide create.fromBranch or pass repoPath / connect a client with workspace roots.")
 	}
 	sourceBranchName := branchDisplayID(sourceBranch)
 	existing, err := c.findOpenPrForBranch(pk, rs, sourceBranchName)
@@ -33,7 +33,7 @@ func (c *BitbucketClient) createPullRequest(projectKey, repoSlug, title, descrip
 	if toBranch != "" {
 		toRef = toBranchRef(toBranch)
 	} else {
-		toRef, err = c.getDefaultBranchRef(pk, rs)
+		toRef, err = c.getDefaultBranchRef(pk, rs, repoRoot)
 		if err != nil {
 			return toolResult{}, err
 		}
@@ -59,8 +59,8 @@ func (c *BitbucketClient) createPullRequest(projectKey, repoSlug, title, descrip
 	return textResult(fmt.Sprintf("Created PR #%d: %q\n%s", data.ID, data.Title, c.pullRequestURL(pk, rs, data.ID, data))), nil
 }
 
-func (c *BitbucketClient) updatePullRequest(projectKey, repoSlug string, prID int, titleP, descP, toBranchP *string, reviewersP *[]string) (toolResult, error) {
-	pk, rs, err := c.resolveProjectAndRepo(projectKey, repoSlug)
+func (c *BitbucketClient) updatePullRequest(projectKey, repoSlug, repoRoot string, prID int, titleP, descP, toBranchP *string, reviewersP *[]string) (toolResult, error) {
+	pk, rs, err := c.resolveProjectAndRepo(projectKey, repoSlug, repoRoot)
 	if err != nil {
 		return toolResult{}, err
 	}
@@ -124,9 +124,17 @@ func (c *BitbucketClient) updatePullRequest(projectKey, repoSlug string, prID in
 	return textResult(fmt.Sprintf("Updated PR #%d: %q (%s → %s).\n%s", updated.ID, updated.Title, updated.FromRef.DisplayID, updated.ToRef.DisplayID, c.pullRequestURL(pk, rs, updated.ID, updated))), nil
 }
 
-func (c *BitbucketClient) mutatePullRequest(args map[string]any) (toolResult, error) {
-	pk, rs, err := c.resolveProjectAndRepo(argString(args, "projectKey"), argString(args, "repoSlug"))
+func (c *BitbucketClient) mutatePullRequest(args map[string]any, repoRoot string) (toolResult, error) {
+	pk, rs, err := c.resolveProjectAndRepo(argString(args, "projectKey"), argString(args, "repoSlug"), repoRoot)
 	if err != nil {
+		// Resolution may fail when no repo is available and only `create` is
+		// given with an explicit fromBranch — handle the create-only path below.
+		if !has(args, "prId") && argMap(args, "create") != nil {
+			create := argMap(args, "create")
+			if argString(create, "fromBranch") != "" || repoRoot != "" {
+				return c.createFromMap(argString(args, "projectKey"), argString(args, "repoSlug"), repoRoot, create)
+			}
+		}
 		return toolResult{}, err
 	}
 	update := argMap(args, "update")
@@ -138,23 +146,23 @@ func (c *BitbucketClient) mutatePullRequest(args map[string]any) (toolResult, er
 	if has(args, "prId") {
 		prID := argInt(args, "prId")
 		if !hasUpdate {
-			return c.getPullRequest(pk, rs, prID)
+			return c.getPullRequest(pk, rs, "", prID)
 		}
-		return c.updatePullRequest(pk, rs, prID, titleP, descP, toBranchP, reviewersP)
+		return c.updatePullRequest(pk, rs, "", prID, titleP, descP, toBranchP, reviewersP)
 	}
 
 	sourceBranch := ""
 	if create != nil {
 		sourceBranch = argString(create, "fromBranch")
 	}
-	if sourceBranch == "" {
-		sourceBranch = safeExecGit("rev-parse", "--abbrev-ref", "HEAD")
+	if sourceBranch == "" && repoRoot != "" {
+		sourceBranch = safeGit(repoRoot, "", "rev-parse", "--abbrev-ref", "HEAD")
 	}
 	if sourceBranch == "" || sourceBranch == "HEAD" {
 		if create != nil {
-			return c.createFromMap(pk, rs, create)
+			return c.createFromMap(pk, rs, repoRoot, create)
 		}
-		return toolResult{}, fmt.Errorf("Could not determine source branch. Provide create.fromBranch or run from a checked-out branch.")
+		return toolResult{}, fmt.Errorf("Could not determine source branch. Provide create.fromBranch, pass repoPath, or connect a client with workspace roots.")
 	}
 
 	existing, err := c.findOpenPrForBranch(pk, rs, sourceBranch)
@@ -163,18 +171,18 @@ func (c *BitbucketClient) mutatePullRequest(args map[string]any) (toolResult, er
 	}
 	if existing != nil {
 		if hasUpdate {
-			return c.updatePullRequest(pk, rs, existing.ID, titleP, descP, toBranchP, reviewersP)
+			return c.updatePullRequest(pk, rs, "", existing.ID, titleP, descP, toBranchP, reviewersP)
 		}
-		return c.getPullRequest(pk, rs, existing.ID)
+		return c.getPullRequest(pk, rs, "", existing.ID)
 	}
 	if create == nil {
 		return toolResult{}, fmt.Errorf("No open PR found for branch %q. Provide create to open one.", branchDisplayID(sourceBranch))
 	}
-	return c.createFromMap(pk, rs, create)
+	return c.createFromMap(pk, rs, repoRoot, create)
 }
 
-func (c *BitbucketClient) createFromMap(pk, rs string, create map[string]any) (toolResult, error) {
-	return c.createPullRequest(pk, rs, argString(create, "title"), argString(create, "description"), argString(create, "fromBranch"), argString(create, "toBranch"), argStrSlice(create, "reviewers"))
+func (c *BitbucketClient) createFromMap(pk, rs, repoRoot string, create map[string]any) (toolResult, error) {
+	return c.createPullRequest(pk, rs, repoRoot, argString(create, "title"), argString(create, "description"), argString(create, "fromBranch"), argString(create, "toBranch"), argStrSlice(create, "reviewers"))
 }
 
 func updatePointers(update map[string]any) (titleP, descP, toBranchP *string, reviewersP *[]string) {
@@ -199,8 +207,8 @@ func updatePointers(update map[string]any) (titleP, descP, toBranchP *string, re
 	return
 }
 
-func (c *BitbucketClient) approvePr(projectKey, repoSlug string, prID int) (toolResult, error) {
-	pk, rs, err := c.resolveProjectAndRepo(projectKey, repoSlug)
+func (c *BitbucketClient) approvePr(projectKey, repoSlug, repoRoot string, prID int) (toolResult, error) {
+	pk, rs, err := c.resolveProjectAndRepo(projectKey, repoSlug, repoRoot)
 	if err != nil {
 		return toolResult{}, err
 	}
@@ -215,8 +223,8 @@ func (c *BitbucketClient) approvePr(projectKey, repoSlug string, prID int) (tool
 	return textResult(fmt.Sprintf("Approved PR #%d as %s.\n%s", prID, data.User.DisplayName, u)), nil
 }
 
-func (c *BitbucketClient) unapprovePr(projectKey, repoSlug string, prID int) (toolResult, error) {
-	pk, rs, err := c.resolveProjectAndRepo(projectKey, repoSlug)
+func (c *BitbucketClient) unapprovePr(projectKey, repoSlug, repoRoot string, prID int) (toolResult, error) {
+	pk, rs, err := c.resolveProjectAndRepo(projectKey, repoSlug, repoRoot)
 	if err != nil {
 		return toolResult{}, err
 	}
@@ -226,8 +234,8 @@ func (c *BitbucketClient) unapprovePr(projectKey, repoSlug string, prID int) (to
 	return textResult(fmt.Sprintf("Approval removed from PR #%d.\n%s", prID, c.pullRequestURL(pk, rs, prID, nil))), nil
 }
 
-func (c *BitbucketClient) needsWorkPr(projectKey, repoSlug string, prID int) (toolResult, error) {
-	pk, rs, err := c.resolveProjectAndRepo(projectKey, repoSlug)
+func (c *BitbucketClient) needsWorkPr(projectKey, repoSlug, repoRoot string, prID int) (toolResult, error) {
+	pk, rs, err := c.resolveProjectAndRepo(projectKey, repoSlug, repoRoot)
 	if err != nil {
 		return toolResult{}, err
 	}
@@ -248,8 +256,8 @@ func (c *BitbucketClient) needsWorkPr(projectKey, repoSlug string, prID int) (to
 	return textResult(fmt.Sprintf("Marked PR #%d as Needs work as %s.\n%s", prID, data.User.DisplayName, u)), nil
 }
 
-func (c *BitbucketClient) declinePr(projectKey, repoSlug string, prID int, message string) (toolResult, error) {
-	pk, rs, err := c.resolveProjectAndRepo(projectKey, repoSlug)
+func (c *BitbucketClient) declinePr(projectKey, repoSlug, repoRoot string, prID int, message string) (toolResult, error) {
+	pk, rs, err := c.resolveProjectAndRepo(projectKey, repoSlug, repoRoot)
 	if err != nil {
 		return toolResult{}, err
 	}
@@ -274,8 +282,8 @@ func (c *BitbucketClient) declinePr(projectKey, repoSlug string, prID int, messa
 	return textResult(fmt.Sprintf("Declined PR #%d: %q.\n%s", data.ID, data.Title, c.pullRequestURL(pk, rs, data.ID, data))), nil
 }
 
-func (c *BitbucketClient) mergePr(projectKey, repoSlug string, prID int, mergeStrategy, message string) (toolResult, error) {
-	pk, rs, err := c.resolveProjectAndRepo(projectKey, repoSlug)
+func (c *BitbucketClient) mergePr(projectKey, repoSlug, repoRoot string, prID int, mergeStrategy, message string) (toolResult, error) {
+	pk, rs, err := c.resolveProjectAndRepo(projectKey, repoSlug, repoRoot)
 	if err != nil {
 		return toolResult{}, err
 	}
@@ -305,26 +313,28 @@ func (c *BitbucketClient) mergePr(projectKey, repoSlug string, prID int, mergeSt
 
 // bitbucketMutate is the bitbucket_mutate tool entry: action routing, the
 // interactive reviewer picker, then mutatePullRequest.
-func bitbucketMutate(args map[string]any) (toolResult, error) {
+func bitbucketMutate(session *sessionState, args map[string]any, repoRoot string) (toolResult, error) {
+	pk := argString(args, "projectKey")
+	rs := argString(args, "repoSlug")
 	action := argString(args, "action")
 	prID := argInt(args, "prId")
 	switch action {
 	case "approve":
-		return bitbucket.approvePr(argString(args, "projectKey"), argString(args, "repoSlug"), prID)
+		return bitbucket.approvePr(pk, rs, repoRoot, prID)
 	case "unapprove":
-		return bitbucket.unapprovePr(argString(args, "projectKey"), argString(args, "repoSlug"), prID)
+		return bitbucket.unapprovePr(pk, rs, repoRoot, prID)
 	case "needs_work":
-		return bitbucket.needsWorkPr(argString(args, "projectKey"), argString(args, "repoSlug"), prID)
+		return bitbucket.needsWorkPr(pk, rs, repoRoot, prID)
 	case "decline":
-		return bitbucket.declinePr(argString(args, "projectKey"), argString(args, "repoSlug"), prID, argString(args, "declineMessage"))
+		return bitbucket.declinePr(pk, rs, repoRoot, prID, argString(args, "declineMessage"))
 	case "merge":
-		return bitbucket.mergePr(argString(args, "projectKey"), argString(args, "repoSlug"), prID, argString(args, "mergeStrategy"), argString(args, "mergeMessage"))
+		return bitbucket.mergePr(pk, rs, repoRoot, prID, argString(args, "mergeStrategy"), argString(args, "mergeMessage"))
 	}
 
 	// Interactive reviewer picker for PR creation.
 	create := argMap(args, "create")
 	if create != nil && argBool(create, "pickReviewers") && !has(args, "prId") {
-		users, err := bitbucket.searchUsersRaw(argString(args, "projectKey"), argString(args, "repoSlug"), "", 30)
+		users, err := bitbucket.searchUsersRaw(pk, rs, "", 30)
 		if err == nil && len(users) > 0 {
 			properties := map[string]any{}
 			schemaKeyToUser := map[string]string{}
@@ -333,7 +343,7 @@ func bitbucketMutate(args map[string]any) (toolResult, error) {
 				schemaKeyToUser[key] = u.Name
 				properties[key] = map[string]any{"type": "boolean", "title": fmt.Sprintf("%s (%s)", u.DisplayName, u.Name)}
 			}
-			res, eerr := elicit("Select reviewers to add to this PR:", map[string]any{"type": "object", "properties": properties})
+			res, eerr := elicit(session, "Select reviewers to add to this PR:", map[string]any{"type": "object", "properties": properties})
 			if eerr == nil && res != nil && res.Action == "accept" && res.Content != nil {
 				var selected []string
 				for key, username := range schemaKeyToUser {
@@ -349,7 +359,7 @@ func bitbucketMutate(args map[string]any) (toolResult, error) {
 		}
 	}
 
-	return bitbucket.mutatePullRequest(args)
+	return bitbucket.mutatePullRequest(args, repoRoot)
 }
 
 var schemaKeyRe = regexp.MustCompile(`[^a-zA-Z0-9]`)

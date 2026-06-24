@@ -254,6 +254,40 @@ instead of `npx`. On these paths `ffmpeg`/`ffprobe` must be available on `PATH`
 (or set `ATLASSIAN_MCP_FFMPEG_PATH` / `ATLASSIAN_MCP_FFPROBE_PATH`); the npm
 wrapper bundles them automatically.
 
+### Running as an HTTP server (shared / behind a proxy)
+
+By default the server speaks MCP over **stdio** (one process per client, launched
+by your editor). It can instead run as a long-lived **Streamable HTTP** server that
+many clients share — useful behind a reverse proxy:
+
+```bash
+atlassian-mcp --http                 # binds 127.0.0.1:7337
+atlassian-mcp --http 127.0.0.1:9000  # custom address
+ATLASSIAN_MCP_HTTP=1 atlassian-mcp   # same, via env
+```
+
+- Single endpoint `POST /mcp` (JSON-RPC) plus an optional `GET /mcp` SSE stream that
+  carries server→client requests (`roots/list`, elicitation). `initialize` returns an
+  `Mcp-Session-Id` header — reuse it on subsequent requests and on the SSE stream.
+- **Auth:** on a loopback bind no token is needed. Binding a non-loopback address
+  **requires** `ATLASSIAN_MCP_HTTP_TOKEN` (sent by clients as `Authorization: Bearer …`);
+  the server refuses to start otherwise. Terminate TLS at your proxy.
+
+**Repo context comes from the client, not the server's working directory.** Tools that
+need a repo (the `git_*` tools, `get_dev_context`, `start_work`, `complete_work`, and
+Bitbucket project/repo auto-detection) resolve it in this order: an explicit `repoPath`
+argument → the client's **MCP workspace roots** (the server asks via `roots/list`) →
+the process cwd (stdio only). So one shared HTTP server handles many projects: each
+client's own workspace is used per call. For Bitbucket, passing `projectKey`+`repoSlug`
+explicitly skips repo detection entirely. The repos must be reachable on the server's
+host (the git tools run `git` locally).
+
+Client config for an already-running HTTP server (Claude Code example):
+
+```bash
+claude mcp add --transport http atlassian http://127.0.0.1:7337/mcp
+```
+
 ### Attachment decoding pipeline
 
 The attachment tools (`jira_get_attachment`, `bitbucket_get_attachment`) decode binary attachments into model-readable content before returning them:
@@ -287,6 +321,8 @@ pure-Go implementation shell out to external binaries:
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
+| `ATLASSIAN_MCP_HTTP` | Run as a Streamable HTTP server instead of stdio. `1`/`true` → `127.0.0.1:7337`; or set an explicit `host:port`. Same as `--http`. | unset (stdio) |
+| `ATLASSIAN_MCP_HTTP_TOKEN` | Bearer token for HTTP mode. Optional on loopback binds; **required** on non-loopback binds. | unset |
 | `ATLASSIAN_MCP_FFMPEG_PATH` | Path to `ffmpeg` binary. | npm: bundled `ffmpeg-static`; otherwise `ffmpeg` on `PATH` |
 | `ATLASSIAN_MCP_FFPROBE_PATH` | Path to `ffprobe` binary. | npm: bundled `ffprobe-static`; otherwise `ffprobe` on `PATH` |
 | `ATLASSIAN_MCP_TMP_TTL_DAYS` | Auto-saved attachments older than this are pruned. | `7` |

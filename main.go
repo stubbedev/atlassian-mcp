@@ -8,14 +8,13 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 )
 
 // Version is the server version, overridable at build time via
 // -ldflags "-X main.Version=x.y.z". Kept in sync with package.json.
-var Version = "0.4.5"
+var Version = "0.5.0"
 
 const defaultProtocolVersion = "2025-06-18"
 
@@ -82,9 +81,6 @@ var (
 
 	stdinReader  *bufio.Reader
 	stdoutWriter *bufio.Writer
-
-	clientSupportsElicitation bool
-	nextReqID                 = 1
 )
 
 func main() {
@@ -92,17 +88,12 @@ func main() {
 	if config.Jira != nil {
 		jira = NewJiraClient(config.Jira.URL, config.Jira.Token)
 	}
-	// Bitbucket is gated on the current repo's origin remote matching the
-	// configured instance host (mirrors src/index.ts).
+	// Bitbucket tools register whenever Bitbucket is configured — they are no
+	// longer gated on the process cwd's git remote. Per-call resolution still
+	// validates the remote host when auto-detecting project/repo from a repo.
 	if config.Bitbucket != nil {
-		remote := currentGitRemote()
-		if remoteMatchesBitbucketInstance(remote, config.Bitbucket.URL) {
-			bitbucket = NewBitbucketClient(config.Bitbucket.URL, config.Bitbucket.Token)
-		} else {
-			logf("Bitbucket configured but remote %q does not match %s — Bitbucket tools disabled for this repo.", remote, config.Bitbucket.URL)
-		}
+		bitbucket = NewBitbucketClient(config.Bitbucket.URL, config.Bitbucket.Token)
 	}
-
 	if jira == nil && bitbucket == nil {
 		logf("No Jira or Bitbucket configuration found. Set jira.{url,token} / bitbucket.{url,token} in ~/.atlassian-mcp.json or JIRA_URL/JIRA_ACCESS_TOKEN/BITBUCKET_URL/BITBUCKET_ACCESS_TOKEN env vars. Only git tools will be available.")
 	}
@@ -116,13 +107,53 @@ func main() {
 		os.Exit(0)
 	}()
 
+	if addr := httpAddr(); addr != "" {
+		runHTTP(addr, instructions)
+		return
+	}
+	runStdio(instructions)
+}
+
+// httpAddr returns the HTTP bind address if HTTP mode is requested via
+// --http [addr] or ATLASSIAN_MCP_HTTP, else "" (stdio mode). A bare --http or
+// empty env value defaults to 127.0.0.1:7337.
+func httpAddr() string {
+	const def = "127.0.0.1:7337"
+	args := os.Args[1:]
+	for i, a := range args {
+		if a == "--http" {
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				return args[i+1]
+			}
+			return def
+		}
+		if strings.HasPrefix(a, "--http=") {
+			if v := strings.TrimPrefix(a, "--http="); v != "" {
+				return v
+			}
+			return def
+		}
+	}
+	if v, ok := os.LookupEnv("ATLASSIAN_MCP_HTTP"); ok {
+		if v == "" || v == "1" || strings.EqualFold(v, "true") {
+			return def
+		}
+		return v
+	}
+	return ""
+}
+
+// ── stdio transport ──────────────────────────────────────────────────────────
+
+func runStdio(instructions string) {
 	stdinReader = bufio.NewReader(os.Stdin)
 	stdoutWriter = bufio.NewWriter(os.Stdout)
+	session := newStdioSession(clientCaps{})
 
 	for {
 		line, err := stdinReader.ReadBytes('\n')
 		if len(line) > 0 {
-			handleLine(line, instructions)
+			handleLine(session, line, instructions)
 			stdoutWriter.Flush()
 		}
 		if err != nil {
@@ -135,7 +166,7 @@ func main() {
 	}
 }
 
-func handleLine(line []byte, instructions string) {
+func handleLine(session *sessionState, line []byte, instructions string) {
 	trimmed := bytes.TrimSpace(line)
 	if len(trimmed) == 0 {
 		return
@@ -147,7 +178,7 @@ func handleLine(line []byte, instructions string) {
 	}
 	isNotification := len(req.ID) == 0
 
-	result, rerr := dispatch(&req, instructions)
+	result, rerr := dispatch(session, &req, instructions)
 
 	if isNotification {
 		return
@@ -163,17 +194,25 @@ func handleLine(line []byte, instructions string) {
 	stdoutWriter.WriteByte('\n')
 }
 
-func dispatch(req *rpcRequest, instructions string) (any, *rpcError) {
+// dispatch handles one JSON-RPC request for the given session. Transport-
+// agnostic: used by both stdio and HTTP.
+func dispatch(session *sessionState, req *rpcRequest, instructions string) (any, *rpcError) {
 	switch req.Method {
 	case "initialize":
 		var p struct {
 			ProtocolVersion string `json:"protocolVersion"`
 			Capabilities    struct {
+				Roots       *json.RawMessage `json:"roots"`
 				Elicitation *json.RawMessage `json:"elicitation"`
 			} `json:"capabilities"`
 		}
 		json.Unmarshal(req.Params, &p)
-		clientSupportsElicitation = p.Capabilities.Elicitation != nil
+		if session != nil {
+			session.caps = clientCaps{
+				roots:       p.Capabilities.Roots != nil,
+				elicitation: p.Capabilities.Elicitation != nil,
+			}
+		}
 		protocol := p.ProtocolVersion
 		if protocol == "" {
 			protocol = defaultProtocolVersion
@@ -186,6 +225,12 @@ func dispatch(req *rpcRequest, instructions string) (any, *rpcError) {
 		}, nil
 
 	case "notifications/initialized", "notifications/cancelled":
+		return nil, nil
+
+	case "notifications/roots/list_changed":
+		if session != nil {
+			session.invalidateRoots()
+		}
 		return nil, nil
 
 	case "ping":
@@ -202,7 +247,7 @@ func dispatch(req *rpcRequest, instructions string) (any, *rpcError) {
 		if err := json.Unmarshal(req.Params, &p); err != nil {
 			return nil, &rpcError{Code: codeInvalidParams, Message: "invalid params: " + err.Error()}
 		}
-		return callTool(p.Name, p.Arguments)
+		return callTool(session, p.Name, p.Arguments)
 
 	default:
 		return nil, &rpcError{Code: codeMethodNotFound, Message: "Method not found: " + req.Method}
@@ -211,17 +256,16 @@ func dispatch(req *rpcRequest, instructions string) (any, *rpcError) {
 
 // callTool dispatches a tools/call. A returned *rpcError is a protocol-level
 // error; a tool-execution error is returned as an isError tool result.
-func callTool(name string, rawArgs map[string]any) (any, *rpcError) {
+func callTool(session *sessionState, name string, rawArgs map[string]any) (any, *rpcError) {
 	if rawArgs == nil {
 		rawArgs = map[string]any{}
 	}
-	result, err := runTool(name, rawArgs)
+	result, err := runTool(session, name, rawArgs)
 	if err != nil {
 		if err == errUnknownTool {
 			return nil, &rpcError{Code: codeMethodNotFound, Message: "Unknown tool: " + name}
 		}
-		var re *rpcError
-		if errAs(err, &re) {
+		if re, ok := err.(*rpcError); ok {
 			return nil, re
 		}
 		return toolResult{Content: []contentBlock{{Type: "text", Text: "Error: " + err.Error()}}, IsError: true}, nil
@@ -229,95 +273,13 @@ func callTool(name string, rawArgs map[string]any) (any, *rpcError) {
 	return result, nil
 }
 
-func errAs(err error, target **rpcError) bool {
-	if re, ok := err.(*rpcError); ok {
-		*target = re
-		return true
-	}
-	return false
-}
-
-// ── Elicitation (server → client request) ────────────────────────────────────
-
-type elicitResult struct {
-	Action  string         `json:"action"` // accept | decline | cancel
-	Content map[string]any `json:"content"`
-}
-
-var errNoElicitation = fmt.Errorf("client does not support elicitation")
-
-// elicit sends an elicitation/create request to the client and blocks reading
-// stdin until the matching response arrives. Returns errNoElicitation if the
-// client did not declare elicitation support at initialize.
-func elicit(message string, schema map[string]any) (*elicitResult, error) {
-	if !clientSupportsElicitation {
-		return nil, errNoElicitation
-	}
-	id := nextReqID
-	nextReqID++
-	req := map[string]any{
-		"jsonrpc": "2.0",
-		"id":      id,
-		"method":  "elicitation/create",
-		"params":  map[string]any{"message": message, "requestedSchema": schema},
-	}
-	out, _ := json.Marshal(req)
-	stdoutWriter.Write(out)
-	stdoutWriter.WriteByte('\n')
-	stdoutWriter.Flush()
-
-	want := strconv.Itoa(id)
-	for {
-		line, err := stdinReader.ReadBytes('\n')
-		if len(line) > 0 {
-			trimmed := bytes.TrimSpace(line)
-			if len(trimmed) > 0 {
-				var resp struct {
-					ID     json.RawMessage `json:"id"`
-					Result *elicitResult   `json:"result"`
-					Error  *rpcError       `json:"error"`
-				}
-				if json.Unmarshal(trimmed, &resp) == nil && len(resp.ID) > 0 && string(resp.ID) == want {
-					if resp.Error != nil {
-						return nil, resp.Error
-					}
-					if resp.Result == nil {
-						return &elicitResult{Action: "cancel"}, nil
-					}
-					return resp.Result, nil
-				}
-				// Any other line during elicitation (notification or unrelated
-				// request) is ignored — well-behaved clients block until they
-				// answer the elicitation.
-			}
-		}
-		if err != nil {
-			return nil, fmt.Errorf("elicitation aborted: %w", err)
-		}
-	}
-}
-
 // ── Instructions ─────────────────────────────────────────────────────────────
 
+// buildInstructions runs before any client handshake, so it cannot know the
+// client's repo — repo state is surfaced dynamically by get_dev_context.
 func buildInstructions(config Config) string {
 	var b strings.Builder
 	w := func(s string) { b.WriteString(s); b.WriteByte('\n') }
-
-	branch := currentGitBranch()
-	isGitRepo := branch != ""
-	var jiraKeys []string
-	if isGitRepo {
-		jiraKeys = uniqueStrings(jiraKeyRe.FindAllString(branch, -1))
-	}
-	remote := currentGitRemote()
-	var parsed *bitbucketRemote
-	if bitbucket != nil && remote != "" {
-		parsed = parseBitbucketRemote(remote)
-	}
-	var committers []committer
-	if isGitRepo {
-		committers = getTopCommitters(mustGetwd(), 50, 5)
-	}
 
 	var jiraMe *jiraCurrentUser
 	if jira != nil {
@@ -360,44 +322,13 @@ func buildInstructions(config Config) string {
 		if bbMe != "" {
 			bbLine += " — you are " + bbMe
 		}
-	} else if config.Bitbucket != nil {
-		bbLine += config.Bitbucket.URL + " — DISABLED for this cwd (remote does not match)"
 	} else {
 		bbLine += "(not configured)"
 	}
 	w(bbLine)
 	w("")
-
-	w("## Current repo")
-	if isGitRepo {
-		w(fmt.Sprintf("- Branch: %s (may have changed since startup — re-run `get_dev_context` to refresh)", branch))
-		r := remote
-		if r == "" {
-			r = "(none)"
-		}
-		w("- Remote: " + r)
-		if parsed != nil {
-			w(fmt.Sprintf("- Bitbucket repo: %s/%s", parsed.projectKey, parsed.repoSlug))
-		}
-		if len(jiraKeys) > 0 {
-			w("- Jira keys in branch: " + strings.Join(jiraKeys, ", "))
-		}
-	} else {
-		w("- Not a git repository.")
-	}
-
-	if len(committers) > 0 {
-		w("")
-		w("## Recent committers in this repo (last 50 commits)")
-		for _, c := range committers {
-			ident := c.name
-			if c.email != "" {
-				ident = c.name + " <" + c.email + ">"
-			}
-			w(fmt.Sprintf("- %d× %s", c.commits, ident))
-		}
-	}
-
+	w("## Repo context")
+	w("- Tools that need a repo (git_*, get_dev_context, start_work, complete_work, and Bitbucket project/repo auto-detection) resolve it from your MCP workspace roots, or from an explicit `repoPath` argument. Pass `repoPath` (or `projectKey`+`repoSlug` for Bitbucket) when working outside a single known workspace.")
 	w("")
 	w("## Use these tools — do NOT shell out")
 	w("- \"What am I working on / what's the status / show me the context\" → call `get_dev_context` first. It returns branch state, linked Jira tickets, the open PR, and reviewer status in one shot.")

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -558,6 +559,7 @@ func validateSuggestionPlacement(textValue string) error {
 type BitbucketClient struct {
 	baseURL         string
 	token           string
+	mu              sync.Mutex // guards currentUsername (HTTP is concurrent)
 	currentUsername string
 }
 
@@ -668,6 +670,8 @@ func (c *BitbucketClient) requestBuildStatus(path string) (*struct {
 func (c *BitbucketClient) whoami() (string, error) { return c.getCurrentUsername() }
 
 func (c *BitbucketClient) getCurrentUsername() (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.currentUsername != "" {
 		return c.currentUsername, nil
 	}
@@ -727,11 +731,18 @@ func (c *BitbucketClient) isRemoteForThisInstance(remoteURL string) bool {
 	return c.remoteMatchesInstance(remoteURL)
 }
 
-func (c *BitbucketClient) resolveProjectAndRepo(projectKey, repoSlug string) (string, string, error) {
+// resolveProjectAndRepo returns the project/repo for a call. Explicit
+// projectKey+repoSlug bypass git entirely (the primary HTTP path). Otherwise
+// they are auto-detected from the origin remote of repoRoot (the client-
+// supplied repo); repoRoot is "" when no repoPath/roots/cwd resolved.
+func (c *BitbucketClient) resolveProjectAndRepo(projectKey, repoSlug, repoRoot string) (string, string, error) {
 	if projectKey != "" && repoSlug != "" {
 		return projectKey, repoSlug, nil
 	}
-	remote := safeExecGit("remote", "get-url", "origin")
+	if repoRoot == "" {
+		return "", "", fmt.Errorf("Could not determine projectKey/repoSlug — provide them explicitly, pass repoPath, or connect a client that provides workspace roots.")
+	}
+	remote := safeGit(repoRoot, "", "remote", "get-url", "origin")
 	if remote != "" {
 		if !c.remoteMatchesInstance(remote) {
 			return "", "", fmt.Errorf("This repo's remote does not point to your configured Bitbucket instance (%s). Bitbucket tools only work with repos hosted on that instance.", c.baseURL)
@@ -786,14 +797,17 @@ func (c *BitbucketClient) findOpenPrByBranchFilter(projectKey, repoSlug, filterT
 	return nil, nil
 }
 
-func (c *BitbucketClient) getDefaultBranchRef(projectKey, repoSlug string) (string, error) {
+func (c *BitbucketClient) getDefaultBranchRef(projectKey, repoSlug, repoRoot string) (string, error) {
 	data, err := bbDecode[struct {
 		DisplayID string `json:"displayId"`
 	}](c, "GET", c.rp(projectKey, repoSlug)+"/default-branch", nil)
 	if err == nil && data != nil && data.DisplayID != "" {
 		return "refs/heads/" + data.DisplayID, nil
 	}
-	head := safeExecGit("rev-parse", "--abbrev-ref", "origin/HEAD")
+	head := ""
+	if repoRoot != "" {
+		head = safeGit(repoRoot, "", "rev-parse", "--abbrev-ref", "origin/HEAD")
+	}
 	if strings.HasPrefix(head, "origin/") {
 		return "refs/heads/" + strings.TrimPrefix(head, "origin/"), nil
 	}
@@ -802,7 +816,7 @@ func (c *BitbucketClient) getDefaultBranchRef(projectKey, repoSlug string) (stri
 
 // ── search dispatcher (bitbucket_search) ─────────────────────────────────────
 
-func (c *BitbucketClient) search(args map[string]any) (toolResult, error) {
+func (c *BitbucketClient) search(args map[string]any, repoRoot string) (toolResult, error) {
 	resource := argString(args, "resource")
 	if resource == "" {
 		resource = "pull_requests"
@@ -811,14 +825,14 @@ func (c *BitbucketClient) search(args map[string]any) (toolResult, error) {
 	case "repos":
 		return c.listRepos(argString(args, "projectKey"), argIntDefault(args, "limit", 50), argInt(args, "start"))
 	case "branches":
-		return c.getBranches(argString(args, "projectKey"), argString(args, "repoSlug"), argString(args, "filter"), argIntDefault(args, "limit", 25), argInt(args, "start"))
+		return c.getBranches(argString(args, "projectKey"), argString(args, "repoSlug"), repoRoot, argString(args, "filter"), argIntDefault(args, "limit", 25), argInt(args, "start"))
 	case "users":
 		return c.searchUsers(argString(args, "projectKey"), argString(args, "repoSlug"), argString(args, "query"), argIntDefault(args, "limit", 25), argInt(args, "start"))
 	default:
 		if argBool(args, "mine") {
 			return c.myPrs(argIntDefault(args, "limit", 25), argInt(args, "start"), argString(args, "role"))
 		}
-		return c.listPullRequests(argString(args, "projectKey"), argString(args, "repoSlug"), argString(args, "state"), argString(args, "fromBranch"), argString(args, "text"), argIntDefault(args, "limit", 25), argInt(args, "start"))
+		return c.listPullRequests(argString(args, "projectKey"), argString(args, "repoSlug"), repoRoot, argString(args, "state"), argString(args, "fromBranch"), argString(args, "text"), argIntDefault(args, "limit", 25), argInt(args, "start"))
 	}
 }
 
@@ -911,8 +925,8 @@ func (c *BitbucketClient) searchUsersRaw(projectKey, repoSlug, query string, lim
 	return out, nil
 }
 
-func (c *BitbucketClient) listPullRequests(projectKey, repoSlug, state, fromBranch, searchText string, limit, start int) (toolResult, error) {
-	pk, rs, err := c.resolveProjectAndRepo(projectKey, repoSlug)
+func (c *BitbucketClient) listPullRequests(projectKey, repoSlug, repoRoot, state, fromBranch, searchText string, limit, start int) (toolResult, error) {
+	pk, rs, err := c.resolveProjectAndRepo(projectKey, repoSlug, repoRoot)
 	if err != nil {
 		return toolResult{}, err
 	}
@@ -967,8 +981,8 @@ func (c *BitbucketClient) myPrs(limit, start int, role string) (toolResult, erro
 	return textResult(fmt.Sprintf("%d PR(s)%s:\n%s", len(data.Values), pageHintPaged(data.IsLastPage, data.NextPageStart), strings.Join(lines, "\n"))), nil
 }
 
-func (c *BitbucketClient) getPullRequest(projectKey, repoSlug string, prID int) (toolResult, error) {
-	pk, rs, err := c.resolveProjectAndRepo(projectKey, repoSlug)
+func (c *BitbucketClient) getPullRequest(projectKey, repoSlug, repoRoot string, prID int) (toolResult, error) {
+	pk, rs, err := c.resolveProjectAndRepo(projectKey, repoSlug, repoRoot)
 	if err != nil {
 		return toolResult{}, err
 	}
@@ -1009,8 +1023,8 @@ func joinReviewers(reviewers []bbReviewer) string {
 	return strings.Join(parts, ", ")
 }
 
-func (c *BitbucketClient) getPrOverview(args map[string]any) (toolResult, error) {
-	pk, rs, err := c.resolveProjectAndRepo(argString(args, "projectKey"), argString(args, "repoSlug"))
+func (c *BitbucketClient) getPrOverview(args map[string]any, repoRoot string) (toolResult, error) {
+	pk, rs, err := c.resolveProjectAndRepo(argString(args, "projectKey"), argString(args, "repoSlug"), repoRoot)
 	if err != nil {
 		return toolResult{}, err
 	}
@@ -1031,7 +1045,9 @@ func (c *BitbucketClient) getPrOverview(args map[string]any) (toolResult, error)
 	} else {
 		branch := argString(args, "fromBranch")
 		if branch == "" {
-			branch = safeExecGit("rev-parse", "--abbrev-ref", "HEAD")
+			if repoRoot != "" {
+				branch = safeGit(repoRoot, "", "rev-parse", "--abbrev-ref", "HEAD")
+			}
 		}
 		if branch == "" || branch == "HEAD" {
 			return toolResult{}, fmt.Errorf("Provide prId or fromBranch, or run from a checked-out branch.")
@@ -1260,8 +1276,8 @@ func firstLine(s string) string {
 	return s
 }
 
-func (c *BitbucketClient) getBranches(projectKey, repoSlug, filter string, limit, start int) (toolResult, error) {
-	pk, rs, err := c.resolveProjectAndRepo(projectKey, repoSlug)
+func (c *BitbucketClient) getBranches(projectKey, repoSlug, repoRoot, filter string, limit, start int) (toolResult, error) {
+	pk, rs, err := c.resolveProjectAndRepo(projectKey, repoSlug, repoRoot)
 	if err != nil {
 		return toolResult{}, err
 	}
@@ -1293,8 +1309,8 @@ func (c *BitbucketClient) getBranches(projectKey, repoSlug, filter string, limit
 	return textResult(fmt.Sprintf("%d branch(es)%s:\n%s", len(data.Values), pageHintPaged(data.IsLastPage, data.NextPageStart), strings.Join(lines, "\n"))), nil
 }
 
-func (c *BitbucketClient) getFile(args map[string]any) (toolResult, error) {
-	pk, rs, err := c.resolveProjectAndRepo(argString(args, "projectKey"), argString(args, "repoSlug"))
+func (c *BitbucketClient) getFile(args map[string]any, repoRoot string) (toolResult, error) {
+	pk, rs, err := c.resolveProjectAndRepo(argString(args, "projectKey"), argString(args, "repoSlug"), repoRoot)
 	if err != nil {
 		return toolResult{}, err
 	}
@@ -1331,8 +1347,8 @@ func (c *BitbucketClient) fetchFileText(projectKey, repoSlug, filePath string) s
 
 var contentDispositionRe = regexp.MustCompile(`(?i)filename\*?=(?:UTF-8'')?"?([^";]+)"?`)
 
-func (c *BitbucketClient) getAttachment(args map[string]any) (toolResult, error) {
-	pk, rs, err := c.resolveProjectAndRepo(argString(args, "projectKey"), argString(args, "repoSlug"))
+func (c *BitbucketClient) getAttachment(args map[string]any, repoRoot string) (toolResult, error) {
+	pk, rs, err := c.resolveProjectAndRepo(argString(args, "projectKey"), argString(args, "repoSlug"), repoRoot)
 	if err != nil {
 		return toolResult{}, err
 	}

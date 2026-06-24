@@ -75,7 +75,10 @@ func getTopCommitters(repoPath string, lookback, top int) []committer {
 // current branch into one report (get_dev_context tool).
 func getDevContext(repoPath string) (toolResult, error) {
 	if repoPath == "" {
-		repoPath = mustGetwd()
+		return textResult("No repo resolved. Pass repoPath, or connect a client that provides workspace roots (MCP roots)."), nil
+	}
+	if !isGitRepo(repoPath) {
+		return textResult(fmt.Sprintf("Not a git repository: %s", repoPath)), nil
 	}
 	var sections []string
 

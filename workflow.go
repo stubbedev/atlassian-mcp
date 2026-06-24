@@ -36,7 +36,7 @@ func slugifyBranchName(issueKey, summary, issueType string) string {
 var jiraKeyCaptureRe = regexp.MustCompile(`\b([A-Z][A-Z0-9]+-\d+)\b`)
 
 // startWork implements the start_work tool.
-func startWork(args map[string]any) (toolResult, error) {
+func startWork(session *sessionState, args map[string]any, repoRoot string) (toolResult, error) {
 	issueKey := argString(args, "issueKey")
 	query := argString(args, "query")
 	if issueKey == "" && query == "" {
@@ -68,7 +68,7 @@ func startWork(args map[string]any) (toolResult, error) {
 				},
 				"required": []any{"ticket"},
 			}
-			res, err := elicit(strings.Join(pickerMessage, "\n"), schema)
+			res, err := elicit(session, strings.Join(pickerMessage, "\n"), schema)
 			if err != nil {
 				// Elicitation unsupported — list options and ask to retry.
 				var list []string
@@ -103,7 +103,10 @@ func startWork(args map[string]any) (toolResult, error) {
 	if branchName == "" {
 		branchName = slugifyBranchName(issueKey, summary, issueType)
 	}
-	repoPath := repoPathOrCwd(args)
+	repoPath := repoRoot
+	if repoPath == "" {
+		return toolResult{}, fmt.Errorf("No repo resolved for branch creation. Pass repoPath, or connect a client that provides workspace roots.")
+	}
 
 	remote, err := checkRemoteBranch(branchName, repoPath)
 	if err != nil {
@@ -143,7 +146,7 @@ func startWork(args map[string]any) (toolResult, error) {
 			},
 			"required": []any{"action"},
 		}
-		res, eerr := elicit(message, schema)
+		res, eerr := elicit(session, message, schema)
 		if eerr != nil {
 			return textResult(strings.Join([]string{
 				message, "",
@@ -176,7 +179,7 @@ func startWork(args map[string]any) (toolResult, error) {
 		branchResult.Content[0].Text,
 	}
 	if tn := argString(args, "transitionName"); tn != "" {
-		if _, err := jira.mutateIssue(map[string]any{"issueKey": issueKey, "transitionName": tn}); err != nil {
+		if _, err := jira.mutateIssue(map[string]any{"issueKey": issueKey, "transitionName": tn}, repoRoot); err != nil {
 			lines = append(lines, "Jira:    could not transition — "+err.Error())
 		} else {
 			lines = append(lines, "Jira:    transitioned → "+tn)
@@ -212,8 +215,8 @@ func startWork(args map[string]any) (toolResult, error) {
 }
 
 // completeWork implements the complete_work tool.
-func completeWork(args map[string]any) (toolResult, error) {
-	repoPath := repoPathOrCwd(args)
+func completeWork(args map[string]any, repoRoot string) (toolResult, error) {
+	repoPath := repoRoot
 	var lines []string
 
 	issueKey := argString(args, "issueKey")
@@ -222,6 +225,9 @@ func completeWork(args map[string]any) (toolResult, error) {
 	if hasPrID {
 		resolvedPrID = argInt(args, "prId")
 	} else {
+		if repoPath == "" {
+			return toolResult{}, fmt.Errorf("No repo resolved. Provide prId, or pass repoPath / connect a client that provides workspace roots.")
+		}
 		branch := safeGit(repoPath, "", "rev-parse", "--abbrev-ref", "HEAD")
 		if branch == "" || branch == "HEAD" {
 			return toolResult{}, fmt.Errorf("Could not determine current branch. Provide prId or run from a checked-out branch.")
@@ -256,7 +262,7 @@ func completeWork(args map[string]any) (toolResult, error) {
 		}
 	}
 
-	mergeResult, err := bitbucket.mergePr(argString(args, "projectKey"), argString(args, "repoSlug"), resolvedPrID, argString(args, "mergeStrategy"), argString(args, "mergeMessage"))
+	mergeResult, err := bitbucket.mergePr(argString(args, "projectKey"), argString(args, "repoSlug"), repoRoot, resolvedPrID, argString(args, "mergeStrategy"), argString(args, "mergeMessage"))
 	if err != nil {
 		return toolResult{}, err
 	}
@@ -268,7 +274,7 @@ func completeWork(args map[string]any) (toolResult, error) {
 		if transitionName == "" {
 			transitionName = "Done"
 		}
-		if _, err := jira.mutateIssue(map[string]any{"issueKey": issueKey, "transitionName": transitionName}); err != nil {
+		if _, err := jira.mutateIssue(map[string]any{"issueKey": issueKey, "transitionName": transitionName}, repoRoot); err != nil {
 			lines = append(lines, fmt.Sprintf("Jira:    could not transition %s — %s", issueKey, err.Error()))
 		} else {
 			lines = append(lines, fmt.Sprintf("Jira:    %s transitioned → %s", issueKey, transitionName))
