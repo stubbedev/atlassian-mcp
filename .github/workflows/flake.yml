@@ -28,7 +28,7 @@ jobs:
       # The action starts attic-watch-store in the background, so anything
       # realised after this step (incl. Go deps) is uploaded. Skipped on PRs
       # from forks where the secret is unavailable.
-      - uses: ryantm/attic-action@v0
+      - uses: ryanccn/attic-action@v0.5
         if: ${{ env.ATTIC_TOKEN != '' }}
         with:
           endpoint: https://nix.stubbe.dev
