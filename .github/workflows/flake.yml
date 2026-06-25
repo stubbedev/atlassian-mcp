@@ -14,10 +14,26 @@ permissions:
 jobs:
   vendor-hash:
     runs-on: ubuntu-latest
+    env:
+      ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
     steps:
       - uses: actions/checkout@v7
 
       - uses: DeterminateSystems/nix-installer-action@main
+
+      # Push every store path produced by the nix builds below to the attic
+      # cache at nix.stubbe.dev so consumers can use it as a substituter:
+      #   nix.settings.substituters = [ "https://nix.stubbe.dev/default" ];
+      #   nix.settings.trusted-public-keys = [ "<default:...>" ];  # attic cache public key
+      # The action starts attic-watch-store in the background, so anything
+      # realised after this step (incl. Go deps) is uploaded. Skipped on PRs
+      # from forks where the secret is unavailable.
+      - uses: ryantm/attic-action@v0
+        if: ${{ env.ATTIC_TOKEN != '' }}
+        with:
+          endpoint: https://nix.stubbe.dev
+          cache: default
+          token: ${{ secrets.ATTIC_TOKEN }}
 
       # Recompute the Go module vendorHash from go.mod/go.sum. Setting it to a
       # fake value makes `nix build` fail and report the correct one, which we
