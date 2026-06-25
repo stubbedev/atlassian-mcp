@@ -1,34 +1,26 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
-	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
+	"time"
 )
 
 // Version is defined in version.go (embedded from package.json).
-
-const defaultProtocolVersion = "2025-06-18"
 
 func logf(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "[atlassian-mcp] "+format+"\n", args...)
 }
 
-// ── JSON-RPC types ───────────────────────────────────────────────────────────
+// ── Errors ───────────────────────────────────────────────────────────────────
 
-type rpcRequest struct {
-	Jsonrpc string          `json:"jsonrpc"`
-	ID      json.RawMessage `json:"id"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params"`
-}
-
+// rpcError is a structured error a tool may return for invalid params; the MCP
+// layer surfaces it as an isError tool result. Kept as a small typed error so
+// validation helpers can carry a code + message.
 type rpcError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
@@ -37,19 +29,7 @@ type rpcError struct {
 
 func (e *rpcError) Error() string { return e.Message }
 
-type rpcResponse struct {
-	Jsonrpc string          `json:"jsonrpc"`
-	ID      json.RawMessage `json:"id"`
-	Result  any             `json:"result,omitempty"`
-	Error   *rpcError       `json:"error,omitempty"`
-}
-
-const (
-	codeInvalidRequest = -32600
-	codeMethodNotFound = -32601
-	codeInvalidParams  = -32602
-	codeInternalError  = -32603
-)
+const codeInvalidParams = -32602
 
 // ── Tool result types ────────────────────────────────────────────────────────
 
@@ -76,9 +56,6 @@ var errUnknownTool = fmt.Errorf("unknown tool")
 var (
 	jira      *JiraClient
 	bitbucket *BitbucketClient
-
-	stdinReader  *bufio.Reader
-	stdoutWriter *bufio.Writer
 )
 
 func main() {
@@ -105,11 +82,7 @@ func main() {
 		os.Exit(0)
 	}()
 
-	if addr := httpAddr(); addr != "" {
-		runHTTP(addr, instructions)
-		return
-	}
-	runStdio(instructions)
+	runServer(instructions)
 }
 
 // httpAddr returns the HTTP bind address if HTTP mode is requested via
@@ -141,136 +114,6 @@ func httpAddr() string {
 	return ""
 }
 
-// ── stdio transport ──────────────────────────────────────────────────────────
-
-func runStdio(instructions string) {
-	stdinReader = bufio.NewReader(os.Stdin)
-	stdoutWriter = bufio.NewWriter(os.Stdout)
-	session := newStdioSession(clientCaps{})
-
-	for {
-		line, err := stdinReader.ReadBytes('\n')
-		if len(line) > 0 {
-			handleLine(session, line, instructions)
-			stdoutWriter.Flush()
-		}
-		if err != nil {
-			if err == io.EOF {
-				return
-			}
-			logf("read error: %v", err)
-			return
-		}
-	}
-}
-
-func handleLine(session *sessionState, line []byte, instructions string) {
-	trimmed := bytes.TrimSpace(line)
-	if len(trimmed) == 0 {
-		return
-	}
-	var req rpcRequest
-	if err := json.Unmarshal(trimmed, &req); err != nil {
-		logf("parse error: %v", err)
-		return
-	}
-	isNotification := len(req.ID) == 0
-
-	result, rerr := dispatch(session, &req, instructions)
-
-	if isNotification {
-		return
-	}
-	resp := rpcResponse{Jsonrpc: "2.0", ID: req.ID}
-	if rerr != nil {
-		resp.Error = rerr
-	} else {
-		resp.Result = result
-	}
-	out, _ := json.Marshal(resp)
-	stdoutWriter.Write(out)
-	stdoutWriter.WriteByte('\n')
-}
-
-// dispatch handles one JSON-RPC request for the given session. Transport-
-// agnostic: used by both stdio and HTTP.
-func dispatch(session *sessionState, req *rpcRequest, instructions string) (any, *rpcError) {
-	switch req.Method {
-	case "initialize":
-		var p struct {
-			ProtocolVersion string `json:"protocolVersion"`
-			Capabilities    struct {
-				Roots       *json.RawMessage `json:"roots"`
-				Elicitation *json.RawMessage `json:"elicitation"`
-			} `json:"capabilities"`
-		}
-		json.Unmarshal(req.Params, &p)
-		if session != nil {
-			session.caps = clientCaps{
-				roots:       p.Capabilities.Roots != nil,
-				elicitation: p.Capabilities.Elicitation != nil,
-			}
-		}
-		protocol := p.ProtocolVersion
-		if protocol == "" {
-			protocol = defaultProtocolVersion
-		}
-		return map[string]any{
-			"protocolVersion": protocol,
-			"capabilities":    map[string]any{"tools": map[string]any{}},
-			"serverInfo":      map[string]any{"name": "atlassian-mcp", "version": Version},
-			"instructions":    instructions,
-		}, nil
-
-	case "notifications/initialized", "notifications/cancelled":
-		return nil, nil
-
-	case "notifications/roots/list_changed":
-		if session != nil {
-			session.invalidateRoots()
-		}
-		return nil, nil
-
-	case "ping":
-		return map[string]any{}, nil
-
-	case "tools/list":
-		return map[string]any{"tools": toolList()}, nil
-
-	case "tools/call":
-		var p struct {
-			Name      string         `json:"name"`
-			Arguments map[string]any `json:"arguments"`
-		}
-		if err := json.Unmarshal(req.Params, &p); err != nil {
-			return nil, &rpcError{Code: codeInvalidParams, Message: "invalid params: " + err.Error()}
-		}
-		return callTool(session, p.Name, p.Arguments)
-
-	default:
-		return nil, &rpcError{Code: codeMethodNotFound, Message: "Method not found: " + req.Method}
-	}
-}
-
-// callTool dispatches a tools/call. A returned *rpcError is a protocol-level
-// error; a tool-execution error is returned as an isError tool result.
-func callTool(session *sessionState, name string, rawArgs map[string]any) (any, *rpcError) {
-	if rawArgs == nil {
-		rawArgs = map[string]any{}
-	}
-	result, err := runTool(session, name, rawArgs)
-	if err != nil {
-		if err == errUnknownTool {
-			return nil, &rpcError{Code: codeMethodNotFound, Message: "Unknown tool: " + name}
-		}
-		if re, ok := err.(*rpcError); ok {
-			return nil, re
-		}
-		return toolResult{Content: []contentBlock{{Type: "text", Text: "Error: " + err.Error()}}, IsError: true}, nil
-	}
-	return result, nil
-}
-
 // ── Instructions ─────────────────────────────────────────────────────────────
 
 // buildInstructions runs before any client handshake, so it cannot know the
@@ -279,14 +122,38 @@ func buildInstructions(config Config) string {
 	var b strings.Builder
 	w := func(s string) { b.WriteString(s); b.WriteByte('\n') }
 
-	var jiraMe *jiraCurrentUser
-	if jira != nil {
-		jiraMe, _ = jira.whoami()
+	// Identity enrichment ("you are X") is best-effort and must NOT delay the
+	// listener: each whoami can block up to 30s when Jira/Bitbucket is slow or
+	// unreachable (e.g. VPN not up yet at boot), which would otherwise stall the
+	// HTTP server ~60s and make clients fail to connect. Fetch both concurrently
+	// and wait only briefly; if they're not back in time, serve instructions
+	// without the identity line (the background fetch is harmless and discarded).
+	type identity struct {
+		jira *jiraCurrentUser
+		bb   string
 	}
-	var bbMe string
-	if bitbucket != nil {
-		bbMe, _ = bitbucket.whoami()
+	idCh := make(chan identity, 1)
+	go func() {
+		var id identity
+		var wg sync.WaitGroup
+		if jira != nil {
+			wg.Add(1)
+			go func() { defer wg.Done(); id.jira, _ = jira.whoami() }()
+		}
+		if bitbucket != nil {
+			wg.Add(1)
+			go func() { defer wg.Done(); id.bb, _ = bitbucket.whoami() }()
+		}
+		wg.Wait()
+		idCh <- id
+	}()
+	var who identity
+	select {
+	case who = <-idCh:
+	case <-time.After(3 * time.Second):
 	}
+	jiraMe := who.jira
+	bbMe := who.bb
 
 	w("# atlassian-mcp")
 	w("")

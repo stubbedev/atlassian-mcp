@@ -1,15 +1,12 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/url"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 )
 
 // clientCaps holds the client capabilities declared at initialize.
@@ -186,69 +183,6 @@ func fileURIToPath(uri string) string {
 		p = p[1:]
 	}
 	return p
-}
-
-// ── server→client request id ─────────────────────────────────────────────────
-
-var reqIDCounter int64
-
-func nextRequestID() string {
-	return strconv.FormatInt(atomic.AddInt64(&reqIDCounter, 1), 10)
-}
-
-// ── stdio session ────────────────────────────────────────────────────────────
-
-func newStdioSession(caps clientCaps) *sessionState {
-	return &sessionState{stdio: true, caps: caps, send: stdioSendRequest}
-}
-
-// stdioSendRequest writes the request to stdout then reads stdin until the
-// matching response arrives. Safe because the stdio loop is single-threaded:
-// it is only ever called from within a tool handler, mid-read.
-func stdioSendRequest(method string, params any) (json.RawMessage, error) {
-	id := nextRequestID()
-	req := map[string]any{"jsonrpc": "2.0", "id": id, "method": method}
-	if params != nil {
-		req["params"] = params
-	}
-	out, _ := json.Marshal(req)
-	stdoutWriter.Write(out)
-	stdoutWriter.WriteByte('\n')
-	stdoutWriter.Flush()
-
-	for {
-		line, err := stdinReader.ReadBytes('\n')
-		if len(line) > 0 {
-			trimmed := bytes.TrimSpace(line)
-			if len(trimmed) > 0 {
-				var resp struct {
-					ID     json.RawMessage `json:"id"`
-					Result json.RawMessage `json:"result"`
-					Error  *rpcError       `json:"error"`
-				}
-				if json.Unmarshal(trimmed, &resp) == nil && len(resp.ID) > 0 && trimQuotes(string(resp.ID)) == id {
-					if resp.Error != nil {
-						return nil, resp.Error
-					}
-					return resp.Result, nil
-				}
-				// Any other line during a server→client request (notification or
-				// unrelated request) is ignored — well-behaved clients answer first.
-			}
-		}
-		if err != nil {
-			return nil, fmt.Errorf("server request aborted: %w", err)
-		}
-	}
-}
-
-// trimQuotes strips surrounding quotes from a JSON id token so numeric ("5")
-// and string ("\"5\"") ids compare equal to our string id.
-func trimQuotes(s string) string {
-	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
-		return s[1 : len(s)-1]
-	}
-	return s
 }
 
 // ── elicitation (built on the back-channel) ──────────────────────────────────

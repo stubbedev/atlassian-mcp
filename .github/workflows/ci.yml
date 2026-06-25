@@ -25,24 +25,21 @@ jobs:
       - name: Build
         run: go build -o atlassian-mcp .
 
-      # Bitbucket tools are gated on the repo's origin remote matching the
-      # configured instance host, so smoke from a temp repo whose remote host
-      # matches BITBUCKET_URL to exercise the full tool set.
-      - name: Smoke — tools/list
+      # Real-binary smoke over stdio: a full MCP handshake (initialize →
+      # initialized → tools/list) on the official SDK transport. Both services
+      # are configured (via env) so the full tool set registers. The trailing
+      # sleep keeps stdin open so the server flushes responses before EOF.
+      # (In-process coverage of the same path lives in smoke_test.go.)
+      - name: Smoke — MCP handshake over stdio
         run: |
           BIN="$PWD/atlassian-mcp"
-          TMP="$(mktemp -d)"
-          git -C "$TMP" init -q
-          git -C "$TMP" remote add origin git@github.com:stubbedev/atlassian-mcp.git
-          OUT="$(cd "$TMP" && printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
-            | ATLASSIAN_MCP_CONFIG=/nonexistent JIRA_URL=https://github.com JIRA_ACCESS_TOKEN=smoke BITBUCKET_URL=https://github.com BITBUCKET_ACCESS_TOKEN=smoke "$BIN")"
-          echo "$OUT" | node -e '
-            let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>{
-              const r=JSON.parse(d.trim());
-              if(r.error)throw new Error("server error: "+r.error.message);
-              const t=r.result?.tools;
-              if(!Array.isArray(t)||!t.length)throw new Error("no tools in response");
-              const bad=t.filter(x=>!x.name||!x.inputSchema);
-              if(bad.length)throw new Error("malformed tools: "+bad.map(x=>x.name??"(unnamed)").join(", "));
-              console.log("smoke OK — "+t.length+" tool(s): "+t.map(x=>x.name).join(", "));
-            });'
+          OUT="$({ printf '%s\n' \
+            '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci-smoke","version":"0"}}}' \
+            '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+            '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'; sleep 2; } \
+            | JIRA_URL=https://example.com JIRA_ACCESS_TOKEN=smoke BITBUCKET_URL=https://example.com BITBUCKET_ACCESS_TOKEN=smoke "$BIN")"
+          echo "$OUT"
+          for tool in git_get_context get_dev_context jira_search bitbucket_get_pr complete_work; do
+            echo "$OUT" | grep -q "\"name\":\"$tool\"" || { echo "smoke FAILED: missing tool $tool"; exit 1; }
+          done
+          echo "smoke OK"
