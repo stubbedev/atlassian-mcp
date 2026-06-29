@@ -91,6 +91,10 @@ func (c *BitbucketClient) addPrComment(args map[string]any, repoRoot string) (to
 	if sev := argString(args, "severity"); sev != "" {
 		body["severity"] = sev
 	}
+	isPending := argBool(args, "pending")
+	if isPending {
+		body["state"] = "PENDING" // unpublished draft-review comment; user publishes it from the Bitbucket UI
+	}
 	if hasReply {
 		body["parent"] = map[string]any{"id": replyToCommentID}
 	}
@@ -212,11 +216,15 @@ func (c *BitbucketClient) addPrComment(args map[string]any, repoRoot string) (to
 		}
 	}
 
+	pendingNote := ""
+	if isPending {
+		pendingNote = " (pending — not yet published; publish the review from the Bitbucket UI to send it to the author)"
+	}
 	if created == nil {
-		return textResult(fmt.Sprintf("Comment added to PR #%d.", prID)), nil
+		return textResult(fmt.Sprintf("Comment added to PR #%d%s.", prID, pendingNote)), nil
 	}
 	if hasReply {
-		return textResult(fmt.Sprintf("Reply #%d added to comment #%d on PR #%d.", created.ID, replyToCommentID, prID)), nil
+		return textResult(fmt.Sprintf("Reply #%d added to comment #%d on PR #%d%s.", created.ID, replyToCommentID, prID, pendingNote)), nil
 	}
 	location := ""
 	if has(args, "filePath") && has(args, "line") {
@@ -233,7 +241,7 @@ func (c *BitbucketClient) addPrComment(args map[string]any, repoRoot string) (to
 	if len(warnings) > 0 {
 		warnSuffix = "\n\nNote: " + strings.Join(warnings, " ")
 	}
-	return textResult(fmt.Sprintf("Comment #%d added to PR #%d%s.%s", created.ID, prID, location, warnSuffix)), nil
+	return textResult(fmt.Sprintf("Comment #%d added to PR #%d%s%s.%s", created.ID, prID, location, pendingNote, warnSuffix)), nil
 }
 
 func mapHas(m map[string]any, k string) (any, bool) {
