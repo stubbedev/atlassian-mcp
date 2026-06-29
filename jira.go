@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -1316,6 +1317,14 @@ func (c *JiraClient) mutateIssue(args map[string]any, repoRoot string) (toolResu
 		actions = append(actions, "added comment")
 	}
 
+	if paths := argStrSlice(args, "attachments"); len(paths) > 0 {
+		names, err := c.uploadAttachments(issueKey, paths)
+		if err != nil {
+			return toolResult{}, err
+		}
+		actions = append(actions, "attached "+strings.Join(names, ", "))
+	}
+
 	var warnings []string
 	if link := argMap(args, "link"); link != nil {
 		enabled, err := c.getIssueLinkingEnabled()
@@ -1382,19 +1391,31 @@ func (c *JiraClient) comment(args map[string]any) (toolResult, error) {
 	case "delete":
 		return c.deleteComment(issueKey, argString(args, "commentId"))
 	default:
-		return c.addComment(issueKey, argString(args, "body"))
+		return c.addComment(issueKey, argString(args, "body"), argStrSlice(args, "attachments"))
 	}
 }
 
-func (c *JiraClient) addComment(issueKey, body string) (toolResult, error) {
-	v, err := validateCommentBody(body)
-	if err != nil {
-		return toolResult{}, err
+func (c *JiraClient) addComment(issueKey, body string, attachments []string) (toolResult, error) {
+	var actions []string
+	// Body is optional when only attaching files; required otherwise.
+	if strings.TrimSpace(body) != "" || len(attachments) == 0 {
+		v, err := validateCommentBody(body)
+		if err != nil {
+			return toolResult{}, err
+		}
+		if _, err := c.api("POST", "/issue/"+url.PathEscape(issueKey)+"/comment", map[string]any{"body": v}); err != nil {
+			return toolResult{}, err
+		}
+		actions = append(actions, "comment added")
 	}
-	if _, err := c.api("POST", "/issue/"+url.PathEscape(issueKey)+"/comment", map[string]any{"body": v}); err != nil {
-		return toolResult{}, err
+	if len(attachments) > 0 {
+		names, err := c.uploadAttachments(issueKey, attachments)
+		if err != nil {
+			return toolResult{}, err
+		}
+		actions = append(actions, "attached "+strings.Join(names, ", "))
 	}
-	return textResult("Comment added to " + issueKey + "."), nil
+	return textResult(fmt.Sprintf("%s on %s.", strings.Join(actions, ", "), issueKey)), nil
 }
 
 func (c *JiraClient) editComment(issueKey, commentID, body string) (toolResult, error) {
@@ -1670,6 +1691,58 @@ func (c *JiraClient) mutateVersion(args map[string]any, repoRoot string) (toolRe
 		return textResult("Archived version " + label + "."), nil
 	}
 	return textResult("Updated version " + label + "."), nil
+}
+
+// uploadAttachments POSTs one or more local files to an issue's attachments
+// endpoint as multipart/form-data. Jira requires the X-Atlassian-Token header
+// and the "file" form field; multiple files ride one request. Returns the
+// uploaded base filenames.
+func (c *JiraClient) uploadAttachments(issueKey string, paths []string) ([]string, error) {
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	var names []string
+	for _, p := range paths {
+		abs, _ := filepath.Abs(p)
+		f, err := os.Open(abs)
+		if err != nil {
+			return nil, fmt.Errorf("cannot open attachment %s: %w", p, err)
+		}
+		part, err := w.CreateFormFile("file", filepath.Base(abs))
+		if err != nil {
+			f.Close()
+			return nil, err
+		}
+		if _, err := io.Copy(part, f); err != nil {
+			f.Close()
+			return nil, err
+		}
+		f.Close()
+		names = append(names, filepath.Base(abs))
+	}
+	if err := w.Close(); err != nil {
+		return nil, err
+	}
+
+	reqURL := c.baseURL + "/rest/api/2/issue/" + url.PathEscape(issueKey) + "/attachments"
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "POST", reqURL, &buf)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	req.Header.Set("X-Atlassian-Token", "no-check") // Jira XSRF guard for multipart uploads
+	res, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	raw, _ := io.ReadAll(res.Body)
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return nil, fmt.Errorf("%s", formatJiraError(res.StatusCode, "POST", "/issue/"+issueKey+"/attachments", parseJiraErrorDetails(string(raw))))
+	}
+	return names, nil
 }
 
 // getAttachment fetches metadata then streams or buffers the content.

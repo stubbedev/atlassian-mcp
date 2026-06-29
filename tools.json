@@ -136,6 +136,7 @@
           "transitionId": { "type": "string", "description": "Transition ID (optional if transitionName provided)" },
           "transitionName": { "type": "string", "description": "Transition name, e.g. \"In Progress\" (optional if transitionId provided)" },
           "comment": { "type": "string", "description": "Comment to add after other mutations (optional). Use Jira wiki markup (Atlassian renderer syntax), not GitHub/CommonMark markdown." },
+          "attachments": { "type": "array", "items": { "type": "string" }, "description": "Local file paths to upload as attachments on the issue (works for both newly-created and existing issues)." },
           "link": {
             "type": "object",
             "description": "Create an issue link, e.g. \"FOO-123 blocks BAR-456\"",
@@ -187,7 +188,8 @@
           "action": { "type": "string", "enum": ["add", "update", "delete"], "description": "Operation (default: add)" },
           "issueKey": { "type": "string", "description": "Jira issue key, e.g. FOO-123" },
           "commentId": { "type": "string", "description": "Comment ID (required for update/delete)" },
-          "body": { "type": "string", "description": "Comment text. Use Jira wiki markup (Atlassian renderer syntax), not GitHub/CommonMark markdown. Required for add/update." }
+          "body": { "type": "string", "description": "Comment text. Use Jira wiki markup (Atlassian renderer syntax), not GitHub/CommonMark markdown. Required for add/update unless attachments are provided." },
+          "attachments": { "type": "array", "items": { "type": "string" }, "description": "Local file paths to upload as attachments on the issue (add action). Body is optional when attaching files." }
         },
         "required": ["issueKey"]
       }
