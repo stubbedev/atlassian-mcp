@@ -196,7 +196,7 @@ func buildInstructions(config Config) string {
 	w("- Tools that need a repo (git_*, get_dev_context, start_work, complete_work, and Bitbucket project/repo auto-detection) resolve it from your MCP workspace roots, or from an explicit `repoPath` argument. Pass `repoPath` (or `projectKey`+`repoSlug` for Bitbucket) when working outside a single known workspace.")
 	w("")
 	w("## Use these tools — do NOT shell out")
-	w("- \"What am I working on / what's the status / show me the context\" → call `get_dev_context` first. It returns branch state, linked Jira tickets, the open PR, and reviewer status in one shot.")
+	w("- \"What am I working on / what's the status / show me the context\" → call `get_dev_context` first. It returns branch state, linked Jira tickets, the open PR, and reviewer status in one shot. The same report is also the `dev-context://current` resource — re-read it for fresh state instead of re-calling the tool.")
 	w("- Looking up a person's username (for reviewers, assignees, mentions) → ALWAYS use `bitbucket_search resource=users` or `jira_search resource=users`. NEVER use `git log`/`git shortlog`/`gh api`/`bb`/any bitbucket CLI to discover who someone is — those return commit-author strings, not Bitbucket/Jira usernames, and the wrong identifier breaks reviewer assignment.")
 	w("- Reading a Jira ticket → `jira_get` (single) or `jira_search` (many). Mutating → `jira_mutate`.")
 	w("- Reading a PR → `bitbucket_get_pr`. Creating/updating/merging → `bitbucket_mutate`. Commenting → `bitbucket_comment`.")

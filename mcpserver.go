@@ -72,7 +72,38 @@ func buildServer(instructions string) *mcp.Server {
 		}
 		srv.AddTool(&t, toolHandler)
 	}
+	// dev-context as a resource: same live report as the get_dev_context tool,
+	// but a resource the client can pull on demand and re-read for freshness
+	// without accreting a tool call in the conversation each time. Repo is
+	// resolved per read from the caller's session (roots/headers/cwd), so the
+	// static URI serves whatever repo the client is in.
+	srv.AddResource(&mcp.Resource{
+		URI:         "dev-context://current",
+		Name:        "dev-context",
+		Title:       "Current dev context",
+		Description: "Live branch state, linked Jira tickets, and the open PR for the current repo/branch. Re-read any time for fresh state — same content as the get_dev_context tool.",
+		MIMEType:    "text/markdown",
+	}, devContextResourceHandler)
 	return srv
+}
+
+// devContextResourceHandler serves the dev-context resource: it resolves the
+// caller's repo the same way the tools do and returns getDevContext's report.
+func devContextResourceHandler(_ context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+	repo := resolveRepoRoot(sessionFor(req.Session, req.Extra), nil)
+	res, err := getDevContext(repo)
+	if err != nil {
+		return nil, err
+	}
+	text := ""
+	if len(res.Content) > 0 {
+		text = res.Content[0].Text
+	}
+	return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{{
+		URI:      req.Params.URI,
+		MIMEType: "text/markdown",
+		Text:     text,
+	}}}, nil
 }
 
 // toolHandler bridges an SDK tools/call to runTool, building the per-client
@@ -84,7 +115,7 @@ func toolHandler(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResu
 			return errResult("invalid arguments: " + err.Error()), nil
 		}
 	}
-	res, err := runTool(sessionFor(req), req.Params.Name, args)
+	res, err := runTool(sessionFor(req.Session, req.Extra), req.Params.Name, args)
 	if err != nil {
 		var re *rpcError
 		switch {
@@ -101,9 +132,10 @@ func toolHandler(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResu
 
 // sessionFor returns the sessionState for the calling client, creating it on
 // first use. Header-provided roots (proxy/harness injection) are refreshed each
-// call — they are authoritative and may change.
-func sessionFor(req *mcp.CallToolRequest) *sessionState {
-	ss := req.Session
+// call — they are authoritative and may change. Shared by the tool and resource
+// handlers, so it takes the session + request extra rather than a specific
+// request type.
+func sessionFor(ss *mcp.ServerSession, extra *mcp.RequestExtra) *sessionState {
 	id := ss.ID()
 
 	sessMu.Lock()
@@ -118,8 +150,8 @@ func sessionFor(req *mcp.CallToolRequest) *sessionState {
 	}
 	sessMu.Unlock()
 
-	if req.Extra != nil {
-		if roots := rootsFromHeaders(req.Extra.Header); len(roots) > 0 {
+	if extra != nil {
+		if roots := rootsFromHeaders(extra.Header); len(roots) > 0 {
 			st.setHeaderRoots(roots)
 		}
 	}

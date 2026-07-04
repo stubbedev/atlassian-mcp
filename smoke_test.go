@@ -53,4 +53,27 @@ func TestSDKServerSmoke(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("call git_get_context: %v", err)
 	}
+
+	// The dev-context resource is advertised and reads back. Repo resolves from
+	// the stdio cwd fallback (this repo), so the report is non-empty.
+	resList, err := cs.ListResources(ctx, nil)
+	if err != nil {
+		t.Fatalf("list resources: %v", err)
+	}
+	var devCtxURI string
+	for _, r := range resList.Resources {
+		if r.Name == "dev-context" {
+			devCtxURI = r.URI
+		}
+	}
+	if devCtxURI == "" {
+		t.Fatalf("resources/list missing dev-context; got %v", resList.Resources)
+	}
+	rr, err := cs.ReadResource(ctx, &mcp.ReadResourceParams{URI: devCtxURI})
+	if err != nil {
+		t.Fatalf("read dev-context: %v", err)
+	}
+	if len(rr.Contents) == 0 || rr.Contents[0].Text == "" {
+		t.Fatalf("dev-context resource empty: %+v", rr.Contents)
+	}
 }
