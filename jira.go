@@ -32,6 +32,10 @@ type jiraIssueFields struct {
 	Assignee    *struct {
 		DisplayName string `json:"displayName"`
 	} `json:"assignee"`
+	Reporter *struct {
+		DisplayName string `json:"displayName"`
+	} `json:"reporter"`
+	DueDate    string      `json:"duedate"`
 	Labels     []string    `json:"labels"`
 	Components []jiraNamed `json:"components"`
 	Parent     *struct {
@@ -45,6 +49,13 @@ type jiraIssueFields struct {
 		ID   string `json:"id"`
 		Name string `json:"name"`
 	} `json:"fixVersions"`
+	Versions     []jiraNamed `json:"versions"`
+	Environment  string      `json:"environment"`
+	TimeTracking *struct {
+		OriginalEstimate  string `json:"originalEstimate"`
+		RemainingEstimate string `json:"remainingEstimate"`
+		TimeSpent         string `json:"timeSpent"`
+	} `json:"timetracking"`
 	IssueLinks []jiraIssueLink `json:"issuelinks"`
 	Subtasks   []struct {
 		Key    string `json:"key"`
@@ -619,6 +630,73 @@ func (c *JiraClient) resolveTransitionID(issueKey, transitionID, transitionName 
 	return "", fmt.Errorf("Transition %q not found for %s. Available: %s", requested, issueKey, avail)
 }
 
+// namedList maps names to Jira's [{"name": n}] shape. Returns non-nil empty
+// slice so an empty input clears the field (marshals to [], not null).
+func namedList(names []string) []map[string]any {
+	out := make([]map[string]any, 0, len(names))
+	for _, n := range names {
+		out = append(out, map[string]any{"name": n})
+	}
+	return out
+}
+
+// buildTimeTracking assembles Jira's timetracking object from estimate args.
+// Returns nil when neither estimate is provided.
+func buildTimeTracking(m map[string]any) map[string]any {
+	oe := argString(m, "originalEstimate")
+	re := argString(m, "remainingEstimate")
+	if oe == "" && re == "" {
+		return nil
+	}
+	tt := map[string]any{}
+	if oe != "" {
+		tt["originalEstimate"] = oe
+	}
+	if re != "" {
+		tt["remainingEstimate"] = re
+	}
+	return tt
+}
+
+// projectKeyOf extracts the project key from an issue key (KON-123 → KON).
+func projectKeyOf(issueKey string) string {
+	if i := strings.LastIndex(issueKey, "-"); i > 0 {
+		return issueKey[:i]
+	}
+	return ""
+}
+
+// componentNames returns the project's component names (nil on error/empty).
+func (c *JiraClient) componentNames(pk string) []string {
+	data, err := jiraGet[[]struct {
+		Name string `json:"name"`
+	}](c, "/rest/api/2", "GET", "/project/"+url.PathEscape(pk)+"/components", nil)
+	if err != nil || data == nil {
+		return nil
+	}
+	var out []string
+	for _, x := range *data {
+		out = append(out, x.Name)
+	}
+	return out
+}
+
+// enrichFieldError appends valid component names when Jira rejects a component
+// value, turning "Component name 'X' is not valid" into an actionable message.
+// Versions are intentionally not enriched — projects can have hundreds.
+func (c *JiraClient) enrichFieldError(err error, pk string) error {
+	if err == nil || pk == "" {
+		return err
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "components:") {
+		if names := c.componentNames(pk); len(names) > 0 {
+			return fmt.Errorf("%s | Valid components in %s: %s", msg, pk, strings.Join(names, ", "))
+		}
+	}
+	return err
+}
+
 func (c *JiraClient) createIssueInternal(create map[string]any, repoRoot string) (*jiraCreatedIssue, error) {
 	projectKey, err := c.resolveProjectKey(argString(create, "projectKey"), repoRoot)
 	if err != nil {
@@ -635,14 +713,34 @@ func (c *JiraClient) createIssueInternal(create map[string]any, repoRoot string)
 	if a := argString(create, "assignee"); a != "" {
 		fields["assignee"] = map[string]any{"name": a}
 	}
+	if r := argString(create, "reporter"); r != "" {
+		fields["reporter"] = map[string]any{"name": r}
+	}
 	if p := argString(create, "priority"); p != "" {
 		fields["priority"] = map[string]any{"name": p}
+	}
+	if dd := argString(create, "dueDate"); dd != "" {
+		fields["duedate"] = dd
 	}
 	if labels := argStrSlice(create, "labels"); len(labels) > 0 {
 		fields["labels"] = labels
 	}
-	if fv := argString(create, "fixVersion"); fv != "" {
-		fields["fixVersions"] = []map[string]any{{"name": fv}}
+	if comps := argStrSlice(create, "components"); len(comps) > 0 {
+		fields["components"] = namedList(comps)
+	}
+	if fvs := argStrSlice(create, "fixVersions"); len(fvs) > 0 {
+		fields["fixVersions"] = namedList(fvs)
+	} else if fv := argString(create, "fixVersion"); fv != "" {
+		fields["fixVersions"] = namedList([]string{fv})
+	}
+	if vers := argStrSlice(create, "versions"); len(vers) > 0 {
+		fields["versions"] = namedList(vers)
+	}
+	if env := argString(create, "environment"); env != "" {
+		fields["environment"] = env
+	}
+	if tt := buildTimeTracking(create); tt != nil {
+		fields["timetracking"] = tt
 	}
 	epicTarget := strings.TrimSpace(argString(create, "epicLink"))
 	if parent := argString(create, "parent"); parent != "" {
@@ -668,7 +766,8 @@ func (c *JiraClient) createIssueInternal(create map[string]any, repoRoot string)
 		}
 		fields[epicFieldID] = epicTarget
 	}
-	return jiraGet[jiraCreatedIssue](c, "/rest/api/2", "POST", "/issue", map[string]any{"fields": fields})
+	created, err := jiraGet[jiraCreatedIssue](c, "/rest/api/2", "POST", "/issue", map[string]any{"fields": fields})
+	return created, c.enrichFieldError(err, projectKey)
 }
 
 // updateIssueFieldsInternal applies the update.* fields. has* flags signal an
@@ -688,18 +787,46 @@ func (c *JiraClient) updateIssueFieldsInternal(issueKey string, update map[strin
 			fields["assignee"] = nil
 		}
 	}
+	if has(update, "reporter") {
+		fields["reporter"] = map[string]any{"name": argString(update, "reporter")}
+	}
 	if has(update, "priority") {
 		fields["priority"] = map[string]any{"name": argString(update, "priority")}
+	}
+	if has(update, "dueDate") {
+		if dd := argString(update, "dueDate"); dd != "" {
+			fields["duedate"] = dd
+		} else {
+			fields["duedate"] = nil
+		}
 	}
 	if has(update, "labels") {
 		fields["labels"] = argStrSlice(update, "labels")
 	}
-	if has(update, "fixVersion") {
+	if has(update, "components") {
+		fields["components"] = namedList(argStrSlice(update, "components"))
+	}
+	if has(update, "fixVersions") {
+		fields["fixVersions"] = namedList(argStrSlice(update, "fixVersions"))
+	} else if has(update, "fixVersion") {
 		if fv := argString(update, "fixVersion"); fv != "" {
-			fields["fixVersions"] = []map[string]any{{"name": fv}}
+			fields["fixVersions"] = namedList([]string{fv})
 		} else {
 			fields["fixVersions"] = []any{}
 		}
+	}
+	if has(update, "versions") {
+		fields["versions"] = namedList(argStrSlice(update, "versions"))
+	}
+	if has(update, "environment") {
+		if env := argString(update, "environment"); env != "" {
+			fields["environment"] = env
+		} else {
+			fields["environment"] = nil
+		}
+	}
+	if tt := buildTimeTracking(update); tt != nil {
+		fields["timetracking"] = tt
 	}
 	if has(update, "epicLink") {
 		epicFieldID, err := c.getEpicLinkFieldID()
@@ -719,7 +846,7 @@ func (c *JiraClient) updateIssueFieldsInternal(issueKey string, update map[strin
 		return false, nil
 	}
 	if _, err := c.api("PUT", "/issue/"+url.PathEscape(issueKey), map[string]any{"fields": fields}); err != nil {
-		return false, err
+		return false, c.enrichFieldError(err, projectKeyOf(issueKey))
 	}
 	return true, nil
 }
@@ -745,6 +872,8 @@ func (c *JiraClient) search(args map[string]any, repoRoot string) (toolResult, e
 		return c.boardOverview(args)
 	case "versions":
 		return c.listVersions(argString(args, "projectKey"), argString(args, "query"), argIntPtr(args, "maxResults"), repoRoot)
+	case "components":
+		return c.listComponents(argString(args, "projectKey"), argString(args, "query"), repoRoot)
 	case "users":
 		return c.searchUsers(argString(args, "query"), argIntDefault(args, "maxResults", 10))
 	default:
@@ -952,7 +1081,7 @@ func issueOverviewOptsFromArgs(args map[string]any) issueOverviewOpts {
 }
 
 func (c *JiraClient) issueOverview(o issueOverviewOpts) (toolResult, error) {
-	baseFields := "summary,description,status,assignee,priority,issuetype,labels,components,parent,fixVersions,issuelinks,subtasks,attachment"
+	baseFields := "summary,description,status,assignee,reporter,priority,duedate,issuetype,labels,components,parent,fixVersions,versions,environment,timetracking,issuelinks,subtasks,attachment"
 	epicFieldID, err := c.getEpicLinkFieldID()
 	if err != nil {
 		return toolResult{}, err
@@ -998,6 +1127,10 @@ func (c *JiraClient) issueOverview(o issueOverviewOpts) (toolResult, error) {
 	if f.Assignee != nil {
 		assignee = f.Assignee.DisplayName
 	}
+	reporter := "None"
+	if f.Reporter != nil {
+		reporter = f.Reporter.DisplayName
+	}
 	lines := []string{
 		fmt.Sprintf("Issue: %s — %s", issue.Key, f.Summary),
 		"URL:        " + c.issueURL(issue.Key),
@@ -1005,6 +1138,8 @@ func (c *JiraClient) issueOverview(o issueOverviewOpts) (toolResult, error) {
 		"Type:       " + f.IssueType.Name,
 		"Priority:   " + priority,
 		"Assignee:   " + assignee,
+		"Reporter:   " + reporter,
+		"Due Date:   " + orNone(f.DueDate),
 		"Labels:     " + orNone(strings.Join(f.Labels, ", ")),
 		"Components: " + orNone(joinNamed(f.Components, ", ")),
 	}
@@ -1020,6 +1155,27 @@ func (c *JiraClient) issueOverview(o issueOverviewOpts) (toolResult, error) {
 			names = append(names, v.Name)
 		}
 		lines = append(lines, "Fix Vers:   "+strings.Join(names, ", "))
+	}
+	if len(f.Versions) > 0 {
+		lines = append(lines, "Affects:    "+joinNamed(f.Versions, ", "))
+	}
+	if f.TimeTracking != nil {
+		var parts []string
+		if f.TimeTracking.OriginalEstimate != "" {
+			parts = append(parts, "estimate "+f.TimeTracking.OriginalEstimate)
+		}
+		if f.TimeTracking.RemainingEstimate != "" {
+			parts = append(parts, "remaining "+f.TimeTracking.RemainingEstimate)
+		}
+		if f.TimeTracking.TimeSpent != "" {
+			parts = append(parts, "spent "+f.TimeTracking.TimeSpent)
+		}
+		if len(parts) > 0 {
+			lines = append(lines, "Time:       "+strings.Join(parts, ", "))
+		}
+	}
+	if f.Environment != "" {
+		lines = append(lines, "Environ:    "+f.Environment)
 	}
 	if len(f.Subtasks) > 0 {
 		var parts []string
@@ -1493,6 +1649,39 @@ func (c *JiraClient) getBoards(projectKey string, maxResults, startAt int) (tool
 		page = fmt.Sprintf(" (use startAt=%d for next page)", startAt+len(data.Values))
 	}
 	return textResult(fmt.Sprintf("%d board(s)%s:\n%s", len(data.Values), page, strings.Join(lines, "\n"))), nil
+}
+
+func (c *JiraClient) listComponents(projectKey, query string, repoRoot string) (toolResult, error) {
+	pk, err := c.resolveProjectKey(projectKey, repoRoot)
+	if err != nil {
+		return toolResult{}, err
+	}
+	data, err := jiraGet[[]struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+	}](c, "/rest/api/2", "GET", "/project/"+url.PathEscape(pk)+"/components", nil)
+	if err != nil {
+		return toolResult{}, err
+	}
+	if data == nil || len(*data) == 0 {
+		return textResult(fmt.Sprintf("No components in %s.", pk)), nil
+	}
+	ql := strings.ToLower(strings.TrimSpace(query))
+	var lines []string
+	for _, comp := range *data {
+		if ql != "" && !strings.Contains(strings.ToLower(comp.Name), ql) {
+			continue
+		}
+		line := comp.Name
+		if comp.Description != "" {
+			line += " — " + comp.Description
+		}
+		lines = append(lines, line)
+	}
+	if len(lines) == 0 {
+		return textResult(fmt.Sprintf("No component matching %q in %s.", query, pk)), nil
+	}
+	return textResult(fmt.Sprintf("Components in %s:\n%s", pk, strings.Join(lines, "\n"))), nil
 }
 
 func (c *JiraClient) listVersions(projectKey, query string, maxResults *int, repoRoot string) (toolResult, error) {

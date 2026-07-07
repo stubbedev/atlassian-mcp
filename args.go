@@ -92,6 +92,14 @@ func argFloatPtr(m map[string]any, k string) *float64 {
 }
 
 func argStrSlice(m map[string]any, k string) []string {
+	// Coerce a lone string to a single-element slice so components:"Frontend"
+	// behaves like components:["Frontend"] instead of silently dropping/clearing.
+	if s, ok := m[k].(string); ok {
+		if s == "" {
+			return []string{} // clear, not a one-element [""]
+		}
+		return []string{s}
+	}
 	arr, ok := m[k].([]any)
 	if !ok {
 		return nil

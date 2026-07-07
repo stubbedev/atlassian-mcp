@@ -319,3 +319,54 @@ func TestToolListGating(t *testing.T) {
 	}
 	jira, bitbucket = nil, nil
 }
+
+func TestNamedList(t *testing.T) {
+	// non-empty → [{"name":n}]
+	if b, _ := json.Marshal(namedList([]string{"Frontend", "Backend"})); string(b) != `[{"name":"Frontend"},{"name":"Backend"}]` {
+		t.Errorf("got %s", b)
+	}
+	// empty → [] not null, so update clears the field
+	if b, _ := json.Marshal(namedList(nil)); string(b) != "[]" {
+		t.Errorf("empty should marshal to [], got %s", b)
+	}
+}
+
+func TestArgStrSliceStringCoercion(t *testing.T) {
+	// lone string → single-element slice (not silently dropped)
+	if got := argStrSlice(map[string]any{"c": "Frontend"}, "c"); len(got) != 1 || got[0] != "Frontend" {
+		t.Errorf("string coercion: got %v", got)
+	}
+	// empty string → empty slice (clear), never [""]
+	if got := argStrSlice(map[string]any{"c": ""}, "c"); len(got) != 0 {
+		t.Errorf("empty string should clear, got %v", got)
+	}
+	// real array still works
+	if got := argStrSlice(map[string]any{"c": []any{"a", "b"}}, "c"); len(got) != 2 {
+		t.Errorf("array: got %v", got)
+	}
+	// absent → nil (skip)
+	if got := argStrSlice(map[string]any{}, "c"); got != nil {
+		t.Errorf("absent should be nil, got %v", got)
+	}
+}
+
+func TestBuildTimeTracking(t *testing.T) {
+	if buildTimeTracking(map[string]any{}) != nil {
+		t.Error("no estimates should yield nil")
+	}
+	tt := buildTimeTracking(map[string]any{"originalEstimate": "3d", "remainingEstimate": "1d"})
+	if tt["originalEstimate"] != "3d" || tt["remainingEstimate"] != "1d" {
+		t.Errorf("got %v", tt)
+	}
+	if b, _ := json.Marshal(buildTimeTracking(map[string]any{"originalEstimate": "2h"})); string(b) != `{"originalEstimate":"2h"}` {
+		t.Errorf("partial: got %s", b)
+	}
+}
+
+func TestProjectKeyOf(t *testing.T) {
+	for in, want := range map[string]string{"KON-12887": "KON", "ABC-1": "ABC", "nodash": "", "": ""} {
+		if got := projectKeyOf(in); got != want {
+			t.Errorf("projectKeyOf(%q)=%q want %q", in, got, want)
+		}
+	}
+}
