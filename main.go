@@ -199,6 +199,7 @@ func buildInstructions(config Config) string {
 	w("- \"What am I working on / what's the status / show me the context\" → call `get_dev_context` first. It returns branch state, linked Jira tickets, the open PR, and reviewer status in one shot. The same report is also the `dev-context://current` resource — re-read it for fresh state instead of re-calling the tool.")
 	w("- Looking up a person's username (for reviewers, assignees, mentions) → ALWAYS use `bitbucket_search resource=users` or `jira_search resource=users`. NEVER use `git log`/`git shortlog`/`gh api`/`bb`/any bitbucket CLI to discover who someone is — those return commit-author strings, not Bitbucket/Jira usernames, and the wrong identifier breaks reviewer assignment.")
 	w("- Reading a Jira ticket → `jira_get` (single) or `jira_search` (many). Mutating → `jira_mutate`.")
+	w("- A Jira field with no dedicated argument (Epic Name, Story Points, any custom field) → `jira_mutate` `create.customFields` / `update.customFields`, keyed by field name. To learn a screen's fields, required ones, and allowed values → `jira_search resource=fields` with project+issueType or issueKey. Never tell the user to set a field in the Jira UI before trying this.")
 	w("- Reading a PR → `bitbucket_get_pr`. Creating/updating/merging → `bitbucket_mutate`. Commenting → `bitbucket_comment`.")
 	b.WriteString("- Starting work on a ticket (branch + status transition + README) → `start_work`. Closing it (merge + transition) → `complete_work`.")
 

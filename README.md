@@ -70,7 +70,8 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 - "create a task under epic FOO-100" → `jira_mutate` with `create.issueType=Task`, `create.parent=FOO-100` (auto-detects Epic and sets Epic Link)
 - "move FOO-123 under epic FOO-100" → `jira_mutate` with `update.epicLink=FOO-100`
 - "create an epic" → `jira_mutate` with `create.issueType=Epic` (Epic Name defaults to the summary)
-- "set story points to 5" → `jira_mutate` with `update.customFields={"Story Points": 5}`; list the fields with `jira_search resource=fields`
+- "set story points to 5" → `jira_mutate` with `update.customFields={"Story Points": 5}` — values are plain (option label, username, date, array of labels); the server wraps them per the field schema
+- "what can I set on this ticket / on an Epic?" → `jira_search resource=fields` with `issueKey=FOO-123` (edit screen) or `project=FOO`+`issueType=Epic` (create screen): required and optional fields, value shapes, allowed values
 
 ---
 

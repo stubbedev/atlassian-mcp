@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -416,5 +418,70 @@ func TestApplyCustomFieldsAndErrorNaming(t *testing.T) {
 	got := c.nameCustomFields("Field 'customfield_10005' is required.")
 	if got != "Field 'customfield_10005 (Epic Name)' is required." {
 		t.Errorf("nameCustomFields = %q", got)
+	}
+}
+
+func TestCoerceFieldValue(t *testing.T) {
+	opt := jiraFieldSchema{Type: "option"}
+	multi := jiraFieldSchema{Type: "array", Items: "option"}
+	labels := jiraFieldSchema{Type: "array", Items: "string"}
+
+	if got := coerceFieldValue(opt, "A"); !reflect.DeepEqual(got, map[string]any{"value": "A"}) {
+		t.Errorf("option scalar = %#v", got)
+	}
+	if got := coerceFieldValue(jiraFieldSchema{Type: "user"}, "jdoe"); !reflect.DeepEqual(got, map[string]any{"name": "jdoe"}) {
+		t.Errorf("user scalar = %#v", got)
+	}
+	if got := coerceFieldValue(multi, []any{"A", "B"}); !reflect.DeepEqual(got, []any{map[string]any{"value": "A"}, map[string]any{"value": "B"}}) {
+		t.Errorf("multi option = %#v", got)
+	}
+	// A single value for a multi-value field is wrapped into a list.
+	if got := coerceFieldValue(multi, "A"); !reflect.DeepEqual(got, []any{map[string]any{"value": "A"}}) {
+		t.Errorf("scalar into array field = %#v", got)
+	}
+	if got := coerceFieldValue(labels, []any{"a"}); !reflect.DeepEqual(got, []any{"a"}) {
+		t.Errorf("string array = %#v", got)
+	}
+	// Raw Jira shapes and clears pass through untouched.
+	raw := map[string]any{"id": "10401"}
+	if got := coerceFieldValue(opt, raw); !reflect.DeepEqual(got, raw) {
+		t.Errorf("raw object rewritten: %#v", got)
+	}
+	if got := coerceFieldValue(opt, nil); got != nil {
+		t.Errorf("nil clear = %#v", got)
+	}
+	if got := coerceFieldValue(jiraFieldSchema{Type: "string"}, "x"); got != "x" {
+		t.Errorf("string = %#v", got)
+	}
+	if got := coerceFieldValue(jiraFieldSchema{Type: "number"}, 5.0); got != 5.0 {
+		t.Errorf("number = %#v", got)
+	}
+}
+
+func TestSendHintAndAllowedHint(t *testing.T) {
+	for _, tc := range []struct {
+		schema jiraFieldSchema
+		want   string
+	}{
+		{jiraFieldSchema{Type: "string"}, `"text"`},
+		{jiraFieldSchema{Type: "number"}, "5"},
+		{jiraFieldSchema{Type: "date"}, `"2026-01-31"`},
+		{jiraFieldSchema{Type: "user"}, `"username"`},
+		{jiraFieldSchema{Type: "array", Items: "option"}, `["<allowed value>"]`},
+	} {
+		if got := sendHint(tc.schema); got != tc.want {
+			t.Errorf("sendHint(%+v) = %s, want %s", tc.schema, got, tc.want)
+		}
+	}
+	if got := allowedHint(nil); got != "" {
+		t.Errorf("no allowed values should render nothing, got %q", got)
+	}
+	many := make([]string, 25)
+	for i := range many {
+		many[i] = fmt.Sprintf("v%d", i)
+	}
+	got := allowedHint(many)
+	if !strings.Contains(got, "...and 5 more") || strings.Contains(got, "v20") {
+		t.Errorf("allowedHint should cap at 20: %q", got)
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -23,15 +24,45 @@ type jiraNamed struct {
 	Name string `json:"name"`
 }
 
+type jiraFieldSchema struct {
+	Type   string `json:"type"`
+	Items  string `json:"items"`
+	Custom string `json:"custom"`
+}
+
 type jiraField struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Custom bool   `json:"custom"`
-	Schema struct {
-		Type   string `json:"type"`
-		Items  string `json:"items"`
-		Custom string `json:"custom"`
-	} `json:"schema"`
+	ID     string          `json:"id"`
+	Name   string          `json:"name"`
+	Custom bool            `json:"custom"`
+	Schema jiraFieldSchema `json:"schema"`
+}
+
+// jiraFieldMeta is one entry of createmeta/editmeta: what this screen accepts
+// for the field, including whether it is mandatory and its allowed values.
+type jiraFieldMeta struct {
+	FieldID       string          `json:"fieldId"`
+	Name          string          `json:"name"`
+	Required      bool            `json:"required"`
+	Schema        jiraFieldSchema `json:"schema"`
+	AllowedValues []struct {
+		ID    string `json:"id"`
+		Value string `json:"value"`
+		Name  string `json:"name"`
+	} `json:"allowedValues"`
+}
+
+// label is what jira_mutate customFields wants for this allowed value.
+func (m jiraFieldMeta) labels() []string {
+	var out []string
+	for _, av := range m.AllowedValues {
+		switch {
+		case av.Value != "":
+			out = append(out, av.Value)
+		case av.Name != "":
+			out = append(out, av.Name)
+		}
+	}
+	return out
 }
 
 type jiraIssueFields struct {
@@ -552,45 +583,254 @@ func (c *JiraClient) resolveFieldID(nameOrID string) (string, error) {
 	return "", fmt.Errorf("Unknown Jira field %q. Custom fields on this instance: %s", key, strings.Join(names, ", "))
 }
 
-// applyCustomFields resolves each key to a field id and copies the value in
-// untouched, so callers pass Jira's own shape: "text", 5, {"value":"A"},
-// [{"value":"A"}], {"name":"user"}.
+// coerceFieldValue turns the plain value a caller passes ("Bug fix", 5,
+// ["a","b"], "jdoe") into the shape Jira's field payload wants, using the
+// field's own schema. Objects and object arrays pass through untouched, so a
+// caller that already knows Jira's wire format keeps full control.
+func coerceFieldValue(schema jiraFieldSchema, v any) any {
+	switch tv := v.(type) {
+	case nil:
+		return nil
+	case map[string]any:
+		return tv
+	case []any:
+		if schema.Type != "array" {
+			return tv
+		}
+		out := make([]any, 0, len(tv))
+		for _, item := range tv {
+			out = append(out, wrapScalar(schema.Items, item))
+		}
+		return out
+	}
+	if schema.Type == "array" {
+		return []any{wrapScalar(schema.Items, v)} // single value for a multi-value field
+	}
+	return wrapScalar(schema.Type, v)
+}
+
+// wrapScalar wraps one scalar according to a field (or item) type. Jira names
+// select options by "value", and users/versions/components/groups by "name".
+func wrapScalar(typ string, v any) any {
+	s, isStr := v.(string)
+	if !isStr {
+		return v // numbers, bools: Jira takes them raw
+	}
+	switch typ {
+	case "option", "option-with-child":
+		return map[string]any{"value": s}
+	case "user", "version", "component", "group", "project", "priority", "resolution", "issuetype", "status":
+		return map[string]any{"name": s}
+	default:
+		return s // string, number, date, datetime, any, sd-*
+	}
+}
+
+// allowedHint renders a field's allowed values, capped — some projects have
+// hundreds of versions and the full list would bury the answer.
+func allowedHint(labels []string) string {
+	if len(labels) == 0 {
+		return ""
+	}
+	const cap = 20
+	if len(labels) <= cap {
+		return " — allowed: " + strings.Join(labels, " | ")
+	}
+	return fmt.Sprintf(" — allowed: %s | ...and %d more", strings.Join(labels[:cap], " | "), len(labels)-cap)
+}
+
+// sendHint is the example value to put in customFields for a schema.
+func sendHint(schema jiraFieldSchema) string {
+	one := func(typ string) string {
+		switch typ {
+		case "number":
+			return "5"
+		case "date":
+			return `"2026-01-31"`
+		case "datetime":
+			return `"2026-01-31T09:00:00.000+0000"`
+		case "option", "option-with-child":
+			return `"<allowed value>"`
+		case "user":
+			return `"username"`
+		case "version", "component", "group", "priority", "resolution":
+			return `"<name>"`
+		default:
+			return `"text"`
+		}
+	}
+	if schema.Type == "array" {
+		return "[" + one(schema.Items) + "]"
+	}
+	return one(schema.Type)
+}
+
+// applyCustomFields resolves each key to a field id and coerces the value with
+// that field's schema.
 func (c *JiraClient) applyCustomFields(target, custom map[string]any) error {
+	fields, err := c.fieldList()
+	if err != nil {
+		return err
+	}
 	for k, v := range custom {
 		id, err := c.resolveFieldID(k)
 		if err != nil {
 			return err
 		}
-		target[id] = v
+		schema := jiraFieldSchema{Type: "any"}
+		for _, f := range fields {
+			if f.ID == id {
+				schema = f.Schema
+				break
+			}
+		}
+		target[id] = coerceFieldValue(schema, v)
 	}
 	return nil
 }
 
-// listFields renders the field catalog for jira_search resource=fields.
-func (c *JiraClient) listFields(query string) (toolResult, error) {
+// createMeta returns the fields the create screen for one project+issue type
+// accepts, keyed by field id.
+// ponytail: Jira 9's paginated createmeta only — the pre-9 flat
+// /issue/createmeta?projectKeys= shape is gone here (404 on 9.12); add it back
+// if this ever has to talk to an older Server.
+func (c *JiraClient) createMeta(projectKey, issueType string) (map[string]jiraFieldMeta, error) {
+	if projectKey == "" || issueType == "" {
+		return nil, nil
+	}
+	types, err := jiraGet[struct {
+		Values []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"values"`
+	}](c, "/rest/api/2", "GET", "/issue/createmeta/"+url.PathEscape(projectKey)+"/issuetypes?maxResults=200", nil)
+	if err != nil || types == nil {
+		return nil, err
+	}
+	typeID := ""
+	var names []string
+	for _, t := range types.Values {
+		names = append(names, t.Name)
+		if strings.EqualFold(t.Name, issueType) {
+			typeID = t.ID
+		}
+	}
+	if typeID == "" {
+		return nil, fmt.Errorf("Issue type %q not available in %s. Types: %s", issueType, projectKey, strings.Join(names, ", "))
+	}
+	page, err := jiraGet[struct {
+		Values []jiraFieldMeta `json:"values"`
+	}](c, "/rest/api/2", "GET", "/issue/createmeta/"+url.PathEscape(projectKey)+"/issuetypes/"+url.PathEscape(typeID)+"?maxResults=200", nil)
+	if err != nil || page == nil {
+		return nil, err
+	}
+	meta := map[string]jiraFieldMeta{}
+	for _, f := range page.Values {
+		if f.FieldID != "" {
+			meta[f.FieldID] = f
+		}
+	}
+	return meta, nil
+}
+
+// editMeta returns the fields an existing issue's edit screen accepts.
+func (c *JiraClient) editMeta(issueKey string) (map[string]jiraFieldMeta, error) {
+	data, err := jiraGet[struct {
+		Fields map[string]jiraFieldMeta `json:"fields"`
+	}](c, "/rest/api/2", "GET", "/issue/"+url.PathEscape(issueKey)+"/editmeta", nil)
+	if err != nil || data == nil {
+		return nil, err
+	}
+	return data.Fields, nil
+}
+
+// listFields renders the field catalog for jira_search resource=fields. With a
+// project (and optionally issueType) or an issueKey it reports the real screen:
+// which fields exist there, which are required, and the allowed values. Without
+// either it can only list the instance-wide custom fields.
+func (c *JiraClient) listFields(args map[string]any, repoRoot string) (toolResult, error) {
+	query := strings.ToLower(strings.TrimSpace(argString(args, "query")))
+	issueKey := strings.TrimSpace(argString(args, "issueKey"))
+	issueType := strings.TrimSpace(argString(args, "issueType"))
+	projectKey := strings.TrimSpace(argString(args, "projectKey"))
+	if projectKey == "" {
+		projectKey = strings.TrimSpace(argString(args, "project"))
+	}
+
+	var (
+		meta  map[string]jiraFieldMeta
+		scope string
+		err   error
+	)
+	switch {
+	case issueKey != "":
+		meta, err = c.editMeta(issueKey)
+		scope = "settable on " + issueKey + " (jira_mutate update.customFields)"
+	case projectKey != "" || issueType != "":
+		pk, perr := c.resolveProjectKey(projectKey, repoRoot)
+		if perr != nil {
+			return toolResult{}, perr
+		}
+		if issueType == "" {
+			return toolResult{}, fmt.Errorf("Pass issueType together with project (create screens are per issue type), or pass issueKey for an existing issue.")
+		}
+		meta, err = c.createMeta(pk, issueType)
+		scope = fmt.Sprintf("on the %s create screen in %s (jira_mutate create.customFields)", issueType, pk)
+	}
+	if err != nil {
+		return toolResult{}, err
+	}
+
+	matches := func(name, id string) bool {
+		return query == "" || strings.Contains(strings.ToLower(name), query) || strings.Contains(strings.ToLower(id), query)
+	}
+
+	if meta != nil {
+		var req, opt []string
+		for id, m := range meta {
+			if !matches(m.Name, id) {
+				continue
+			}
+			line := fmt.Sprintf("- %s [%s] send %s%s", m.Name, id, sendHint(m.Schema), allowedHint(m.labels()))
+			if m.Required {
+				req = append(req, line)
+			} else {
+				opt = append(opt, line)
+			}
+		}
+		sort.Strings(req)
+		sort.Strings(opt)
+		if len(req)+len(opt) == 0 {
+			return textResult("No matching fields " + scope + "."), nil
+		}
+		out := []string{fmt.Sprintf("Fields %s.", scope), "Keys accept the field name or its id; values are the plain form shown (an object or array of objects passes to Jira unchanged)."}
+		if len(req) > 0 {
+			out = append(out, "", "Required:", strings.Join(req, "\n"))
+		}
+		if len(opt) > 0 {
+			out = append(out, "", "Optional:", strings.Join(opt, "\n"))
+		}
+		return textResult(strings.Join(out, "\n")), nil
+	}
+
 	fields, err := c.fieldList()
 	if err != nil {
 		return toolResult{}, err
 	}
-	ql := strings.ToLower(strings.TrimSpace(query))
 	var lines []string
 	for _, f := range fields {
-		if !f.Custom && ql == "" {
-			continue // built-ins have dedicated args; only show them on an explicit query
+		if !f.Custom && query == "" {
+			continue // built-ins have dedicated args; show them only on an explicit query
 		}
-		if ql != "" && !strings.Contains(strings.ToLower(f.Name), ql) && !strings.Contains(strings.ToLower(f.ID), ql) {
+		if !matches(f.Name, f.ID) {
 			continue
 		}
-		typ := f.Schema.Type
-		if f.Schema.Items != "" {
-			typ += " of " + f.Schema.Items
-		}
-		lines = append(lines, fmt.Sprintf("- %s [%s] %s", f.Name, f.ID, typ))
+		lines = append(lines, fmt.Sprintf("- %s [%s] send %s", f.Name, f.ID, sendHint(f.Schema)))
 	}
 	if len(lines) == 0 {
 		return textResult("No matching fields."), nil
 	}
-	return textResult(fmt.Sprintf("%d field(s) — pass by name or id in jira_mutate create/update customFields:\n%s", len(lines), strings.Join(lines, "\n"))), nil
+	return textResult(fmt.Sprintf("%d custom field(s) on this instance — pass the name or id as a jira_mutate customFields key:\n%s\n\nThis list is instance-wide: it does not say which fields a given screen has, which are required, or what a select field allows. For that, pass project+issueType (create) or issueKey (existing issue).", len(lines), strings.Join(lines, "\n"))), nil
 }
 
 func (c *JiraClient) getIssueType(issueKey string) (string, error) {
@@ -795,7 +1035,7 @@ func (c *JiraClient) enrichFieldError(err error, pk string) error {
 var customFieldIDRe = regexp.MustCompile(`customfield_\d+`)
 
 // nameCustomFields rewrites bare custom field ids in a Jira error into
-// "customfield_10005 (Epic Name)" so the caller knows what to pass.
+// "customfield_10005 (Epic Name)" so the caller knows what it is being told about.
 func (c *JiraClient) nameCustomFields(msg string) string {
 	if !customFieldIDRe.MatchString(msg) {
 		return msg
@@ -814,6 +1054,49 @@ func (c *JiraClient) nameCustomFields(msg string) string {
 		}
 		return id
 	})
+}
+
+// fieldHelp turns a rejected create/update into instructions: for every field
+// the error names, what that screen wants (value shape, allowed values), plus
+// the screen's required fields — so the caller can fix the call without a trip
+// to the Jira UI. metaFn is only invoked when there is something to explain.
+func (c *JiraClient) fieldHelp(err error, metaFn func() (map[string]jiraFieldMeta, error)) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "cannot be set") && !strings.Contains(msg, "is required") && !strings.Contains(msg, "not valid") && !customFieldIDRe.MatchString(msg) {
+		return err
+	}
+	meta, mErr := metaFn()
+	if mErr != nil || len(meta) == 0 {
+		return err
+	}
+	lower := strings.ToLower(msg)
+	var named, required []string
+	for id, m := range meta {
+		line := fmt.Sprintf("%s [%s]: send %s%s", m.Name, id, sendHint(m.Schema), allowedHint(m.labels()))
+		if strings.Contains(msg, id) || (m.Name != "" && strings.Contains(lower, strings.ToLower(m.Name))) {
+			named = append(named, line)
+		}
+		if m.Required {
+			required = append(required, m.Name+" ["+id+"]")
+		}
+	}
+	sort.Strings(named)
+	sort.Strings(required)
+	parts := []string{msg}
+	if len(named) > 0 {
+		parts = append(parts, "This screen wants: "+strings.Join(named, "; "))
+	}
+	if len(required) > 0 {
+		parts = append(parts, "Required on this screen: "+strings.Join(required, ", "))
+	}
+	if len(parts) == 1 {
+		return err
+	}
+	parts = append(parts, "Set them via customFields, keyed by name or id. Full screen: jira_search resource=fields.")
+	return fmt.Errorf("%s", strings.Join(parts, " | "))
 }
 
 func (c *JiraClient) createIssueInternal(create map[string]any, repoRoot string) (*jiraCreatedIssue, error) {
@@ -900,7 +1183,12 @@ func (c *JiraClient) createIssueInternal(create map[string]any, repoRoot string)
 		}
 	}
 	created, err := jiraGet[jiraCreatedIssue](c, "/rest/api/2", "POST", "/issue", map[string]any{"fields": fields})
-	return created, c.enrichFieldError(err, projectKey)
+	if err != nil {
+		err = c.enrichFieldError(err, projectKey)
+		issueType := argString(create, "issueType")
+		return nil, c.fieldHelp(err, func() (map[string]jiraFieldMeta, error) { return c.createMeta(projectKey, issueType) })
+	}
+	return created, nil
 }
 
 // updateIssueFieldsInternal applies the update.* fields. has* flags signal an
@@ -986,8 +1274,24 @@ func (c *JiraClient) updateIssueFieldsInternal(issueKey string, update map[strin
 	if len(fields) == 0 {
 		return false, nil
 	}
-	if _, err := c.api("PUT", "/issue/"+url.PathEscape(issueKey), map[string]any{"fields": fields}); err != nil {
-		return false, c.enrichFieldError(err, projectKeyOf(issueKey))
+	put := func(payload map[string]any) error {
+		if _, err := c.api("PUT", "/issue/"+url.PathEscape(issueKey), map[string]any{"fields": payload}); err != nil {
+			err = c.enrichFieldError(err, projectKeyOf(issueKey))
+			return c.fieldHelp(err, func() (map[string]jiraFieldMeta, error) { return c.editMeta(issueKey) })
+		}
+		return nil
+	}
+	// Jira validates a PUT against the issue's *current* edit screen, so a type
+	// change plus a field only the new type has (Epic Name) is rejected as one
+	// call. Change the type first, then set the rest against the new screen.
+	if it, ok := fields["issuetype"]; ok && len(fields) > 1 {
+		delete(fields, "issuetype")
+		if err := put(map[string]any{"issuetype": it}); err != nil {
+			return false, err
+		}
+	}
+	if err := put(fields); err != nil {
+		return false, err
 	}
 	return true, nil
 }
@@ -1014,7 +1318,7 @@ func (c *JiraClient) search(args map[string]any, repoRoot string) (toolResult, e
 	case "versions":
 		return c.listVersions(argString(args, "projectKey"), argString(args, "query"), argIntPtr(args, "maxResults"), repoRoot)
 	case "fields":
-		return c.listFields(argString(args, "query"))
+		return c.listFields(args, repoRoot)
 	case "components":
 		return c.listComponents(argString(args, "projectKey"), argString(args, "query"), repoRoot)
 	case "users":
