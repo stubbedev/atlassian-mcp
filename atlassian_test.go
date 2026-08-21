@@ -370,3 +370,51 @@ func TestProjectKeyOf(t *testing.T) {
 		}
 	}
 }
+
+// fieldCacheClient returns a client with its /field cache pre-seeded so the
+// resolution helpers can be tested without HTTP.
+func fieldCacheClient() *JiraClient {
+	c := NewJiraClient("https://jira.example", "t")
+	epicName := jiraField{ID: "customfield_10005", Name: "Epic Name", Custom: true}
+	epicName.Schema.Custom = "com.pyxis.greenhopper.jira:gh-epic-label"
+	points := jiraField{ID: "customfield_10002", Name: "Story Points", Custom: true}
+	c.fields = []jiraField{epicName, points, {ID: "summary", Name: "Summary"}}
+	c.fieldsCached = true
+	return c
+}
+
+func TestResolveFieldID(t *testing.T) {
+	c := fieldCacheClient()
+	for arg, want := range map[string]string{
+		"Epic Name":         "customfield_10005",
+		"story points":      "customfield_10002",
+		"customfield_10002": "customfield_10002",
+		"summary":           "summary",
+	} {
+		got, err := c.resolveFieldID(arg)
+		if err != nil || got != want {
+			t.Errorf("resolveFieldID(%q) = %q, %v; want %q", arg, got, err, want)
+		}
+	}
+	if _, err := c.resolveFieldID("Nope"); err == nil {
+		t.Error("unknown field should error")
+	}
+	if id, _ := c.getEpicNameFieldID(); id != "customfield_10005" {
+		t.Errorf("getEpicNameFieldID = %q", id)
+	}
+}
+
+func TestApplyCustomFieldsAndErrorNaming(t *testing.T) {
+	c := fieldCacheClient()
+	fields := map[string]any{}
+	if err := c.applyCustomFields(fields, map[string]any{"Story Points": 5.0}); err != nil {
+		t.Fatal(err)
+	}
+	if fields["customfield_10002"] != 5.0 {
+		t.Errorf("value not passed through: %+v", fields)
+	}
+	got := c.nameCustomFields("Field 'customfield_10005' is required.")
+	if got != "Field 'customfield_10005 (Epic Name)' is required." {
+		t.Errorf("nameCustomFields = %q", got)
+	}
+}

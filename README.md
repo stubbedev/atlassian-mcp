@@ -27,7 +27,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 
 | Tool | Description |
 |---|---|
-| `jira_search` | Discover resources: `issues`, `projects`, `issue_types`, `boards`, `sprints`, `board_overview`, `versions`, or `users` via `resource` param |
+| `jira_search` | Discover resources: `issues`, `projects`, `issue_types`, `boards`, `sprints`, `board_overview`, `versions`, `components`, `fields`, or `users` via `resource` param |
 | `jira_get` | Full details for one issue: summary, description, status, sprint, transitions, comments, and attachment list |
 | `jira_get_attachment` | Fetch a Jira attachment by ID. Images, videos, animated images (GIF/APNG/animated WebP), audio, and PDFs are all decoded inline so the model can see/hear them. Text/JSON inline. Oversized or non-renderable attachments are auto-saved to a temp file and the path is returned. `saveTo=/absolute/path` streams the original to disk |
 | `jira_mutate` | Create, update, transition, comment, link, add to sprint, or log work — all in one call |
@@ -69,6 +69,8 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 - "set fix version 9.1.0 on FOO-123" → `jira_mutate` with `update.fixVersion=9.1.0`
 - "create a task under epic FOO-100" → `jira_mutate` with `create.issueType=Task`, `create.parent=FOO-100` (auto-detects Epic and sets Epic Link)
 - "move FOO-123 under epic FOO-100" → `jira_mutate` with `update.epicLink=FOO-100`
+- "create an epic" → `jira_mutate` with `create.issueType=Epic` (Epic Name defaults to the summary)
+- "set story points to 5" → `jira_mutate` with `update.customFields={"Story Points": 5}`; list the fields with `jira_search resource=fields`
 
 ---
 

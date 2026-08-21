@@ -23,6 +23,17 @@ type jiraNamed struct {
 	Name string `json:"name"`
 }
 
+type jiraField struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Custom bool   `json:"custom"`
+	Schema struct {
+		Type   string `json:"type"`
+		Items  string `json:"items"`
+		Custom string `json:"custom"`
+	} `json:"schema"`
+}
+
 type jiraIssueFields struct {
 	Summary     string     `json:"summary"`
 	Description string     `json:"description"`
@@ -353,8 +364,8 @@ type JiraClient struct {
 	projectsCached     bool
 	issueLinking       bool
 	issueLinkingCached bool
-	epicLinkFieldID    string
-	epicLinkCached     bool
+	fields             []jiraField
+	fieldsCached       bool
 	issueTypeCache     map[string]string
 }
 
@@ -474,31 +485,112 @@ func (c *JiraClient) getIssueLinkingEnabled() (bool, error) {
 	return c.issueLinking, nil
 }
 
-func (c *JiraClient) getEpicLinkFieldID() (string, error) {
+// fieldList returns /field once per process, cached.
+func (c *JiraClient) fieldList() ([]jiraField, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.epicLinkCached {
-		return c.epicLinkFieldID, nil
+	if c.fieldsCached {
+		return c.fields, nil
 	}
-	fields, err := jiraGet[[]struct {
-		ID     string `json:"id"`
-		Schema struct {
-			Custom string `json:"custom"`
-		} `json:"schema"`
-	}](c, "/rest/api/2", "GET", "/field", nil)
-	c.epicLinkCached = true
+	data, err := jiraGet[[]jiraField](c, "/rest/api/2", "GET", "/field", nil)
+	c.fieldsCached = true
+	if err != nil {
+		return nil, err
+	}
+	if data != nil {
+		c.fields = *data
+	}
+	return c.fields, nil
+}
+
+// fieldIDBySchema finds a custom field by its Jira schema key, e.g.
+// "com.pyxis.greenhopper.jira:gh-epic-link". Empty string when absent.
+func (c *JiraClient) fieldIDBySchema(schemaKey string) (string, error) {
+	fields, err := c.fieldList()
 	if err != nil {
 		return "", err
 	}
-	if fields != nil {
-		for _, f := range *fields {
-			if f.Schema.Custom == "com.pyxis.greenhopper.jira:gh-epic-link" {
-				c.epicLinkFieldID = f.ID
-				break
-			}
+	for _, f := range fields {
+		if f.Schema.Custom == schemaKey {
+			return f.ID, nil
 		}
 	}
-	return c.epicLinkFieldID, nil
+	return "", nil
+}
+
+func (c *JiraClient) getEpicLinkFieldID() (string, error) {
+	return c.fieldIDBySchema("com.pyxis.greenhopper.jira:gh-epic-link")
+}
+
+func (c *JiraClient) getEpicNameFieldID() (string, error) {
+	return c.fieldIDBySchema("com.pyxis.greenhopper.jira:gh-epic-label")
+}
+
+// resolveFieldID maps a field name ("Epic Name", "Story Points") or a raw id
+// ("customfield_10005", "duedate") to the id Jira's field payload wants.
+func (c *JiraClient) resolveFieldID(nameOrID string) (string, error) {
+	key := strings.TrimSpace(nameOrID)
+	if key == "" {
+		return "", fmt.Errorf("customFields keys must be a field name or id.")
+	}
+	fields, err := c.fieldList()
+	if err != nil {
+		return "", err
+	}
+	var names []string
+	for _, f := range fields {
+		if f.ID == key {
+			return f.ID, nil
+		}
+		if strings.EqualFold(f.Name, key) {
+			return f.ID, nil
+		}
+		if f.Custom {
+			names = append(names, f.Name)
+		}
+	}
+	return "", fmt.Errorf("Unknown Jira field %q. Custom fields on this instance: %s", key, strings.Join(names, ", "))
+}
+
+// applyCustomFields resolves each key to a field id and copies the value in
+// untouched, so callers pass Jira's own shape: "text", 5, {"value":"A"},
+// [{"value":"A"}], {"name":"user"}.
+func (c *JiraClient) applyCustomFields(target, custom map[string]any) error {
+	for k, v := range custom {
+		id, err := c.resolveFieldID(k)
+		if err != nil {
+			return err
+		}
+		target[id] = v
+	}
+	return nil
+}
+
+// listFields renders the field catalog for jira_search resource=fields.
+func (c *JiraClient) listFields(query string) (toolResult, error) {
+	fields, err := c.fieldList()
+	if err != nil {
+		return toolResult{}, err
+	}
+	ql := strings.ToLower(strings.TrimSpace(query))
+	var lines []string
+	for _, f := range fields {
+		if !f.Custom && ql == "" {
+			continue // built-ins have dedicated args; only show them on an explicit query
+		}
+		if ql != "" && !strings.Contains(strings.ToLower(f.Name), ql) && !strings.Contains(strings.ToLower(f.ID), ql) {
+			continue
+		}
+		typ := f.Schema.Type
+		if f.Schema.Items != "" {
+			typ += " of " + f.Schema.Items
+		}
+		lines = append(lines, fmt.Sprintf("- %s [%s] %s", f.Name, f.ID, typ))
+	}
+	if len(lines) == 0 {
+		return textResult("No matching fields."), nil
+	}
+	return textResult(fmt.Sprintf("%d field(s) — pass by name or id in jira_mutate create/update customFields:\n%s", len(lines), strings.Join(lines, "\n"))), nil
 }
 
 func (c *JiraClient) getIssueType(issueKey string) (string, error) {
@@ -688,13 +780,40 @@ func (c *JiraClient) enrichFieldError(err error, pk string) error {
 	if err == nil || pk == "" {
 		return err
 	}
-	msg := err.Error()
+	msg := c.nameCustomFields(err.Error())
 	if strings.Contains(msg, "components:") {
 		if names := c.componentNames(pk); len(names) > 0 {
 			return fmt.Errorf("%s | Valid components in %s: %s", msg, pk, strings.Join(names, ", "))
 		}
 	}
+	if msg != err.Error() {
+		return fmt.Errorf("%s", msg)
+	}
 	return err
+}
+
+var customFieldIDRe = regexp.MustCompile(`customfield_\d+`)
+
+// nameCustomFields rewrites bare custom field ids in a Jira error into
+// "customfield_10005 (Epic Name)" so the caller knows what to pass.
+func (c *JiraClient) nameCustomFields(msg string) string {
+	if !customFieldIDRe.MatchString(msg) {
+		return msg
+	}
+	fields, err := c.fieldList()
+	if err != nil {
+		return msg
+	}
+	byID := map[string]string{}
+	for _, f := range fields {
+		byID[f.ID] = f.Name
+	}
+	return customFieldIDRe.ReplaceAllStringFunc(msg, func(id string) string {
+		if name := byID[id]; name != "" {
+			return id + " (" + name + ")"
+		}
+		return id
+	})
 }
 
 func (c *JiraClient) createIssueInternal(create map[string]any, repoRoot string) (*jiraCreatedIssue, error) {
@@ -766,6 +885,20 @@ func (c *JiraClient) createIssueInternal(create map[string]any, repoRoot string)
 		}
 		fields[epicFieldID] = epicTarget
 	}
+	if cf := argMap(create, "customFields"); cf != nil {
+		if err := c.applyCustomFields(fields, cf); err != nil {
+			return nil, err
+		}
+	}
+	// Epic create screens require Epic Name; default it to the summary so an
+	// epic can be created without a UI round trip.
+	if strings.EqualFold(strings.TrimSpace(argString(create, "issueType")), "epic") {
+		if id, err := c.getEpicNameFieldID(); err == nil && id != "" {
+			if _, set := fields[id]; !set {
+				fields[id] = argString(create, "summary")
+			}
+		}
+	}
 	created, err := jiraGet[jiraCreatedIssue](c, "/rest/api/2", "POST", "/issue", map[string]any{"fields": fields})
 	return created, c.enrichFieldError(err, projectKey)
 }
@@ -774,6 +907,9 @@ func (c *JiraClient) createIssueInternal(create map[string]any, repoRoot string)
 // explicitly-provided key so empty strings/arrays act as clears like the TS.
 func (c *JiraClient) updateIssueFieldsInternal(issueKey string, update map[string]any) (bool, error) {
 	fields := map[string]any{}
+	if has(update, "issueType") {
+		fields["issuetype"] = map[string]any{"name": argString(update, "issueType")}
+	}
 	if has(update, "summary") {
 		fields["summary"] = argString(update, "summary")
 	}
@@ -842,6 +978,11 @@ func (c *JiraClient) updateIssueFieldsInternal(issueKey string, update map[strin
 			fields[epicFieldID] = nil
 		}
 	}
+	if cf := argMap(update, "customFields"); cf != nil {
+		if err := c.applyCustomFields(fields, cf); err != nil {
+			return false, err
+		}
+	}
 	if len(fields) == 0 {
 		return false, nil
 	}
@@ -872,6 +1013,8 @@ func (c *JiraClient) search(args map[string]any, repoRoot string) (toolResult, e
 		return c.boardOverview(args)
 	case "versions":
 		return c.listVersions(argString(args, "projectKey"), argString(args, "query"), argIntPtr(args, "maxResults"), repoRoot)
+	case "fields":
+		return c.listFields(argString(args, "query"))
 	case "components":
 		return c.listComponents(argString(args, "projectKey"), argString(args, "query"), repoRoot)
 	case "users":
