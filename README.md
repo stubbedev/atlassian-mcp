@@ -13,7 +13,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 | Tool | Description |
 |---|---|
 | `get_dev_context` | Master entry point: git state + linked Jira ticket + open PR with reviewer/blocker status and next-step hints |
-| `start_work` | Start a Jira ticket: fetches it, creates a local branch (`feature/FOO-123-slug`) off the repository default branch, and optionally transitions the ticket |
+| `start_work` | Start a Jira ticket: resolves it by key or free-text `query` (with a picker when several match), creates a local branch (`feature/FOO-123-slug`) off the repository default branch, fetches the project README from Bitbucket so commit/PR conventions are in context, and optionally transitions the ticket |
 | `complete_work` | Close out finished work: merges the open PR and transitions the Jira ticket to Done. Refuses to merge while reviewers have not approved or a build failed (`force=true` overrides) |
 
 ### Git
@@ -28,16 +28,16 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 |---|---|
 | `jira_search` | Discover resources: `issues`, `projects`, `issue_types`, `boards`, `sprints`, `board_overview`, `versions`, `components`, `fields`, or `users` via `resource` param |
 | `jira_get` | Full details for one issue: summary, description, status, sprint, transitions, comments, and attachment list |
-| `jira_mutate` | Create, update, transition, comment (`commentAction`: `add` / `update` / `delete`), attach, link, add to sprint, log work, or manage a fix version (`version.action`: `create` / `update` / `release` / `archive` / `delete`) — several in one call. Markdown in any text field is converted to Jira wiki markup |
+| `jira_mutate` | Create, update, transition, comment (`commentAction`: `add` / `update` / `delete`), upload local files as attachments, link, add to sprint, log work, change issue type, set any custom field by name (`create.customFields` / `update.customFields`), or manage a fix version (`version.action`: `create` / `update` / `release` / `archive` / `delete`) — several in one call. Markdown in any text field is converted to Jira wiki markup |
 
 ### Bitbucket
 
 | Tool | Description |
 |---|---|
-| `bitbucket_search` | Discover resources: `pull_requests` (default), `repos`, `branches`, or `users` via `resource` param; `mine=true` for your inbox |
+| `bitbucket_search` | Discover resources: `pull_requests` (default), `repos`, `branches`, or `users` via `resource` param; `mine=true` for your inbox, narrowed with `role=author` / `reviewer` / `participant` |
 | `bitbucket_get_pr` | Full PR details: metadata, commits, comments, blockers, build status, optional diff, and any attachments referenced from the description or comments |
 | `bitbucket_mutate` | Create/update a PR, or perform lifecycle actions: `approve`, `unapprove`, `needs_work`, `merge`, `decline`. Reviewer names are verified against Bitbucket, and an update that would drop existing reviewers needs `update.replaceReviewers=true` |
-| `bitbucket_comment` | Add, update, or delete a PR comment; for code changes use `suggestion` so Bitbucket shows Apply suggestion. Enforced here: one reply per thread, no new top-level comment on your own PR (`asAuthor=true` to override), `#123` references rewritten as links |
+| `bitbucket_comment` | Add, update, or delete a PR comment; for code changes use `suggestion` so Bitbucket shows Apply suggestion. Enforced here: one reply per thread, no new top-level comment on your own PR (`asAuthor=true` to override), `#123` references rewritten as links. `pending=true` posts an unpublished draft-review comment |
 | `bitbucket_get_file` | Raw file content at a branch, tag, or commit — or pass `prId` to read the PR source branch. Every response names the path and ref it came from, and pages via `maxChars`/`charOffset` |
 | `bitbucket_pr_tasks` | Manage PR tasks (checklist items): `list`, `create`, `resolve`, `reopen`, `delete` |
 
@@ -46,6 +46,12 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 | Tool | Description |
 |---|---|
 | `get_attachment` | Fetch an attachment by ID from Jira (`source=jira`, IDs from `jira_get`) or Bitbucket (`source=bitbucket`, IDs from `bitbucket_get_pr`). Images, videos, animated images (GIF/APNG/animated WebP), audio, and PDFs are decoded inline so the model can see/hear them; text/JSON inline. Oversized or non-renderable attachments are auto-saved to a temp file and the path is returned. `saveTo=/absolute/path` streams the original to disk |
+
+### Resources
+
+| URI | Description |
+|---|---|
+| `dev-context://current` | The same live report as `get_dev_context` — branch state, linked Jira tickets, open PR — as an MCP resource. Re-read it for fresh state instead of spending another tool call. The repo is resolved per read from the caller's session, so the static URI serves whatever workspace the client is in |
 
 ### Natural language examples
 
@@ -137,7 +143,7 @@ The `$schema` field is optional but enables editor autocomplete and validation.
   - Jira: `project` (alias of `projectKey`)
   - Bitbucket: `project` and `repo` (aliases of `projectKey` and `repoSlug`)
 - For Bitbucket tools, `projectKey` and `repoSlug` are usually auto-detected from your local `origin` remote.
-- `bitbucket_create_pull_request` also auto-detects `fromBranch` from your current branch and returns the existing open PR if one already exists for that branch.
+- `bitbucket_mutate` with `create` auto-detects `fromBranch` from your current branch and returns the existing open PR if one already exists for that branch. Other Bitbucket tools auto-target that PR when `prId` is omitted.
 - Jira project-scoped calls accept `projectKey` and work best when provided.
 - If `projectKey` is omitted for Jira issue creation/type lookup, the server tries to infer it from your current branch ticket key, falls back to auto-select when only one project is visible, and otherwise returns a numbered project list to pick from.
 
@@ -307,12 +313,13 @@ ATLASSIAN_MCP_HTTP=1 atlassian-mcp   # same, via env
   `initialize` mints a session and returns an `Mcp-Session-Id` header, which the client
   **must** echo on every subsequent request and on the SSE stream. Requests with a
   missing/unknown/expired session id get **HTTP 404** so the client re-initializes
-  (standard MCP-client behaviour). Each connected client/worktree is an isolated session.
+  (standard MCP-client behaviour). Each connected client/worktree is an isolated session;
+  per-session state (cached roots, PR review anchors) is dropped once the session ends.
 - **Auth:** on a loopback bind no token is needed. Binding a non-loopback address
   **requires** `ATLASSIAN_MCP_HTTP_TOKEN` (sent by clients as `Authorization: Bearer …`);
   the server refuses to start otherwise. Terminate TLS at your proxy.
 - **`GET /healthz`** is an unauthenticated liveness probe (returns `ok`) for proxies/load
-  balancers. Idle sessions are evicted after 1h.
+  balancers.
 
 **Repo context comes from the client, not the server's working directory.** Tools that
 need a repo (`git_get_context`, `get_dev_context`, `start_work`, `complete_work`, and
@@ -333,12 +340,19 @@ round-trip (and working even when the client never advertised the `roots` capabi
 Send a `file://` URI or absolute path (comma-separated for multiple; first git repo wins):
 
 ```
+X-Repo-Root: /srv/myrepo
 X-Mcp-Root: file:///srv/myrepo
 X-Mcp-Roots: /srv/a, /srv/b
 ```
 
-Accepted header names: `X-Mcp-Roots`, `X-Mcp-Root`, `Mcp-Roots`, `Mcp-Root`. A header value
-is authoritative — it takes precedence over `roots/list` and survives `list_changed`.
+Accepted header names, in precedence order: `X-Repo-Root`, `X-Mcp-Roots`, `X-Mcp-Root`,
+`Mcp-Roots`, `Mcp-Root`. A header value is authoritative — it takes precedence over
+`roots/list` and survives `list_changed`.
+
+> **Protocol note:** MCP revision **2026-07-28** (SEP-2322/2575) forbids server-initiated
+> JSON-RPC requests, so `roots/list` is unavailable on that revision — the server says so
+> explicitly instead of hanging. On 2026-07-28 clients, a root **header** (or an explicit
+> `repoPath` / `projectKey`+`repoSlug`) is the only way to give the server repo context.
 
 Client config for an already-running HTTP server (Claude Code example):
 
@@ -398,16 +412,20 @@ On a pushed `v*` tag, `.github/workflows/publish.yml` cross-compiles the Go bina
 OS/arch targets, attaches them to a GitHub release, and publishes the npm wrapper (which
 downloads the matching binary on install).
 
-Release flow:
+Release flow (`just` drives it; it refuses to run on a dirty tree):
 
 ```bash
-# choose one: patch | minor | major (also: npm run release:patch / :minor / :major)
-npm version patch          # bumps package.json, commits, tags vX.Y.Z
-git push origin HEAD --follow-tags
+just release-preview       # show the next patch/minor/major versions
+just release-patch         # or release-minor / release-major
 ```
 
-`flake.nix` reads its version from `package.json`, so the Nix package tracks the same bump
-automatically. GitHub Actions builds + publishes from the pushed tag.
+`just release-<level>` bumps the version in `package.json`, re-syncs the Nix `vendorHash`
+(`just sync-flake`), runs the gates (`just check`), commits `release: vX.Y.Z`, tags, and
+pushes both the branch and the tag. The tag push triggers `publish.yml`.
+
+`package.json` is the single source of truth for the version: the binary embeds it via
+`go:embed` (no `-ldflags`) and `flake.nix` reads it, so one bump moves everything.
+The equivalent npm scripts (`npm run release:patch` / `:minor` / `:major`) still work.
 
 - The workflow is configured for npm Trusted Publisher (OIDC), so no `NPM_TOKEN` secret is required
 
@@ -457,20 +475,24 @@ Paste the token as the `token` value under `bitbucket` in your config file.
 
 The server is a single Go module at the repo root (no `src/` tree).
 
+Tasks live in the `justfile` and mirror the CI gates, so a green `just check` predicts
+green CI:
+
 ```bash
-# Build the binary
+just            # list tasks
+just check      # vet + test + build (what ci.yml runs)
+just fmt        # gofmt -w .
+just sync-flake # recompute the Nix vendorHash after a dependency change
+
+# Or the raw commands
 go build -o atlassian-mcp .
-
-# Run it
 ./atlassian-mcp --config /path/to/config.json
+go vet ./... && go test ./...
 
-# Vet + unit tests
-go vet ./...
-go test ./...
-
-# Test the tool list
-echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | ./atlassian-mcp
-
-# Quick release smoke check (build + tools/list validation)
+# Quick release smoke check (build + tools/list validation; CI also does a full stdio handshake)
 npm run smoke
 ```
+
+Tool schemas live in `tools.json` (embedded into the binary) and the MCP protocol layer is
+the official [`modelcontextprotocol/go-sdk`](https://github.com/modelcontextprotocol/go-sdk);
+the Go files at the repo root hold the tool logic.
