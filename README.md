@@ -13,15 +13,14 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 | Tool | Description |
 |---|---|
 | `get_dev_context` | Master entry point: git state + linked Jira ticket + open PR with reviewer/blocker status and next-step hints |
-| `start_work` | Start a Jira ticket: fetches it, creates a local branch (`feature/FOO-123-slug`), and optionally transitions the ticket |
-| `complete_work` | Close out finished work: merges the open PR and transitions the Jira ticket to Done |
+| `start_work` | Start a Jira ticket: fetches it, creates a local branch (`feature/FOO-123-slug`) off the repository default branch, and optionally transitions the ticket |
+| `complete_work` | Close out finished work: merges the open PR and transitions the Jira ticket to Done. Refuses to merge while reviewers have not approved or a build failed (`force=true` overrides) |
 
 ### Git
 
 | Tool | Description |
 |---|---|
-| `git_get_context` | Branch, upstream state, remote URL, recent commits, working tree status, diff stat, and Jira keys in branch name |
-| `git_get_diff` | Diff of uncommitted changes or between two refs; supports paging via `charOffset` |
+| `git_get_context` | Branch, upstream state, remote URL, recent commits, working tree status, diff stat, and Jira keys in branch name. Pass `fromRef`/`toRef` for a diff between refs instead, paged via `charOffset` |
 
 ### Jira
 
@@ -29,10 +28,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 |---|---|
 | `jira_search` | Discover resources: `issues`, `projects`, `issue_types`, `boards`, `sprints`, `board_overview`, `versions`, `components`, `fields`, or `users` via `resource` param |
 | `jira_get` | Full details for one issue: summary, description, status, sprint, transitions, comments, and attachment list |
-| `jira_get_attachment` | Fetch a Jira attachment by ID. Images, videos, animated images (GIF/APNG/animated WebP), audio, and PDFs are all decoded inline so the model can see/hear them. Text/JSON inline. Oversized or non-renderable attachments are auto-saved to a temp file and the path is returned. `saveTo=/absolute/path` streams the original to disk |
-| `jira_mutate` | Create, update, transition, comment, link, add to sprint, or log work — all in one call |
-| `jira_comment` | Add, update, or delete a comment on an issue (`action`: `add` / `update` / `delete`) |
-| `jira_version` | Manage fix versions/releases (`action`: `create` / `update` / `release` / `archive` / `delete`) |
+| `jira_mutate` | Create, update, transition, comment (`commentAction`: `add` / `update` / `delete`), attach, link, add to sprint, log work, or manage a fix version (`version.action`: `create` / `update` / `release` / `archive` / `delete`) — several in one call. Markdown in any text field is converted to Jira wiki markup |
 
 ### Bitbucket
 
@@ -40,11 +36,16 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 |---|---|
 | `bitbucket_search` | Discover resources: `pull_requests` (default), `repos`, `branches`, or `users` via `resource` param; `mine=true` for your inbox |
 | `bitbucket_get_pr` | Full PR details: metadata, commits, comments, blockers, build status, optional diff, and any attachments referenced from the description or comments |
-| `bitbucket_get_attachment` | Fetch a repo attachment by ID. Same decoding pipeline as `jira_get_attachment` (images, videos, animated images, audio, PDFs). Oversized or non-renderable attachments are auto-saved to a temp file and the path is returned; `saveTo` streams the original to disk |
-| `bitbucket_mutate` | Create/update a PR, or perform lifecycle actions: `approve`, `unapprove`, `needs_work`, `merge`, `decline` |
-| `bitbucket_comment` | Add, update, or delete a PR comment; for code changes use `suggestion` so Bitbucket shows Apply suggestion (no trailing text after a suggestion block) |
-| `bitbucket_get_file` | Raw file content from Bitbucket at a branch, tag, or commit |
+| `bitbucket_mutate` | Create/update a PR, or perform lifecycle actions: `approve`, `unapprove`, `needs_work`, `merge`, `decline`. Reviewer names are verified against Bitbucket, and an update that would drop existing reviewers needs `update.replaceReviewers=true` |
+| `bitbucket_comment` | Add, update, or delete a PR comment; for code changes use `suggestion` so Bitbucket shows Apply suggestion. Enforced here: one reply per thread, no new top-level comment on your own PR (`asAuthor=true` to override), `#123` references rewritten as links |
+| `bitbucket_get_file` | Raw file content at a branch, tag, or commit — or pass `prId` to read the PR source branch. Every response names the path and ref it came from, and pages via `maxChars`/`charOffset` |
 | `bitbucket_pr_tasks` | Manage PR tasks (checklist items): `list`, `create`, `resolve`, `reopen`, `delete` |
+
+### Shared
+
+| Tool | Description |
+|---|---|
+| `get_attachment` | Fetch an attachment by ID from Jira (`source=jira`, IDs from `jira_get`) or Bitbucket (`source=bitbucket`, IDs from `bitbucket_get_pr`). Images, videos, animated images (GIF/APNG/animated WebP), audio, and PDFs are decoded inline so the model can see/hear them; text/JSON inline. Oversized or non-renderable attachments are auto-saved to a temp file and the path is returned. `saveTo=/absolute/path` streams the original to disk |
 
 ### Natural language examples
 
@@ -63,9 +64,9 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 - "what's in the current sprint?" → `jira_search` with `resource=board_overview`
 - "move FOO-123 to In Progress" → `jira_mutate` with `transitionName="In Progress"`
 - "log 2h on FOO-123" → `jira_mutate` with `worklog`
-- "create version 9.1.0 in PAY" → `jira_version` with `action=create`, `projectKey=PAY`, `name=9.1.0`
+- "create version 9.1.0 in PAY" → `jira_mutate` with `version.action=create`, `version.projectKey=PAY`, `version.name=9.1.0`
 - "list releases for PAY" → `jira_search` with `resource=versions`, `project=PAY`
-- "release version 12345" → `jira_version` with `action=release`, `id=12345`
+- "release version 12345" → `jira_mutate` with `version.action=release`, `version.id=12345`
 - "set fix version 9.1.0 on FOO-123" → `jira_mutate` with `update.fixVersion=9.1.0`
 - "create a task under epic FOO-100" → `jira_mutate` with `create.issueType=Task`, `create.parent=FOO-100` (auto-detects Epic and sets Epic Link)
 - "move FOO-123 under epic FOO-100" → `jira_mutate` with `update.epicLink=FOO-100`
@@ -74,6 +75,38 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 - "what can I set on this ticket / on an Epic?" → `jira_search resource=fields` with `issueKey=FOO-123` (edit screen) or `project=FOO`+`issueType=Epic` (create screen): required and optional fields, value shapes, allowed values
 
 ---
+
+## What the server enforces
+
+These are guarantees in the code, not advice in a tool description — a client
+cannot get them wrong, and they need no prompting:
+
+- **Arguments are validated before a call runs.** Enum values and required
+  fields are checked against each tool's schema, with case and `-`/`_`
+  differences normalised. An unknown `action`/`resource` is an error, never a
+  silent fallback to some default branch of the handler.
+- **Names are resolved before anything is written.** Jira `assignee`/`reporter`,
+  components and fix versions, and Bitbucket reviewers are checked first; a bad
+  one comes back with the valid options instead of an opaque 400.
+- **Markdown is converted to Jira wiki markup** on every Jira write (comments,
+  descriptions, worklogs). Text that is already wiki markup is left alone.
+- **PR comment hygiene:** one reply per thread per author, no duplicate of a
+  comment you already posted, no new top-level comment on a PR you authored
+  (`asAuthor=true` to override), no tasks via `severity`, no emoji, and bare
+  `#123` references are rewritten as links to that comment.
+- **Inline comments anchor to what was reviewed.** Reading a PR records the
+  commit pair for that session; inline comments bind to it and are remapped onto
+  current head when the branch has moved, so a comment never lands on unrelated
+  code.
+- **Reviewers are never dropped by accident** — an update that would remove one
+  needs `update.replaceReviewers=true`.
+- **`complete_work` will not merge** while reviewers have not approved or a build
+  on the PR head has failed, unless `force=true`.
+- **Truncated output always says how to continue**, naming the argument that
+  fetches the rest. `bitbucket_get_file` also states the path and ref it read,
+  so reading the wrong branch is visible rather than silent.
+- **Tool annotations** (`readOnlyHint`, `destructiveHint`, `idempotentHint`) are
+  published for every tool, so hosts can gate confirmation on metadata.
 
 ## Setup
 
@@ -282,7 +315,7 @@ ATLASSIAN_MCP_HTTP=1 atlassian-mcp   # same, via env
   balancers. Idle sessions are evicted after 1h.
 
 **Repo context comes from the client, not the server's working directory.** Tools that
-need a repo (the `git_*` tools, `get_dev_context`, `start_work`, `complete_work`, and
+need a repo (`git_get_context`, `get_dev_context`, `start_work`, `complete_work`, and
 Bitbucket project/repo auto-detection) resolve it in this order: an explicit `repoPath`
 argument → a **root pinned via request header** (see below) → the client's **MCP workspace
 roots** (the server asks via `roots/list`, caches per session, and refreshes on
@@ -315,7 +348,7 @@ claude mcp add --transport http atlassian http://127.0.0.1:7337/mcp
 
 ### Attachment decoding pipeline
 
-The attachment tools (`jira_get_attachment`, `bitbucket_get_attachment`) decode binary attachments into model-readable content before returning them:
+The `get_attachment` tool decodes binary attachments into model-readable content before returning them:
 
 | Input | What gets returned | How |
 | --- | --- | --- |

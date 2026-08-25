@@ -430,7 +430,7 @@ func pageHintPaged(isLast bool, nextStart int) string {
 	return fmt.Sprintf(" (use start=%d for next page)", nextStart)
 }
 
-func formatDiff(data *bbDiff, maxChars int) string {
+func formatDiff(data *bbDiff, maxChars, charOffset int) string {
 	var parts []string
 	if data.FromHash != "" && data.ToHash != "" {
 		parts = append(parts, fmt.Sprintf("# fromHash=%s toHash=%s", data.FromHash, data.ToHash))
@@ -466,10 +466,7 @@ func formatDiff(data *bbDiff, maxChars int) string {
 	if result == "" {
 		return "(no diff)"
 	}
-	if len(result) > maxChars {
-		return result[:maxChars] + fmt.Sprintf("\n\n... (truncated, %d more chars)", len(result)-maxChars)
-	}
-	return result
+	return pageText(result, charOffset, maxChars, "diffCharOffset", "diffMaxChars")
 }
 
 func parseBitbucketErrorDetails(errText string) string {
@@ -702,6 +699,25 @@ func (c *BitbucketClient) rp(projectKey, repoSlug string) string {
 	return "/projects/" + url.PathEscape(projectKey) + "/repos/" + url.PathEscape(repoSlug)
 }
 
+// viewerRole says how the caller relates to this PR. bitbucket_comment enforces
+// the author case; surfacing it here means a review flow knows which hat it is
+// wearing before it starts writing comments.
+func (c *BitbucketClient) viewerRole(pr *bbPullRequest) string {
+	me, err := c.getCurrentUsername()
+	if err != nil || me == "" || pr == nil {
+		return ""
+	}
+	if pr.Author.User.Name == me {
+		return "you are the author"
+	}
+	for _, r := range pr.Reviewers {
+		if r.User.Name == me {
+			return "you are a reviewer"
+		}
+	}
+	return "you are neither author nor reviewer"
+}
+
 func (c *BitbucketClient) pullRequestURL(projectKey, repoSlug string, prID int, pr *bbPullRequest) string {
 	if pr != nil && pr.Links != nil && len(pr.Links.Self) > 0 {
 		if h := strings.TrimSpace(pr.Links.Self[0].Href); h != "" {
@@ -797,6 +813,19 @@ func (c *BitbucketClient) findOpenPrByBranchFilter(projectKey, repoSlug, filterT
 	return nil, nil
 }
 
+// defaultBranchName is the server's answer for this repository, or "" when it
+// does not answer. Callers that need a usable value fall back themselves —
+// guessing inside here hides "unknown" behind a plausible branch name.
+func (c *BitbucketClient) defaultBranchName(projectKey, repoSlug string) string {
+	data, err := bbDecode[struct {
+		DisplayID string `json:"displayId"`
+	}](c, "GET", c.rp(projectKey, repoSlug)+"/default-branch", nil)
+	if err != nil || data == nil {
+		return ""
+	}
+	return data.DisplayID
+}
+
 func (c *BitbucketClient) getDefaultBranchRef(projectKey, repoSlug, repoRoot string) (string, error) {
 	data, err := bbDecode[struct {
 		DisplayID string `json:"displayId"`
@@ -828,11 +857,13 @@ func (c *BitbucketClient) search(args map[string]any, repoRoot string) (toolResu
 		return c.getBranches(argString(args, "projectKey"), argString(args, "repoSlug"), repoRoot, argString(args, "filter"), argIntDefault(args, "limit", 25), argInt(args, "start"))
 	case "users":
 		return c.searchUsers(argString(args, "projectKey"), argString(args, "repoSlug"), argString(args, "query"), argIntDefault(args, "limit", 25), argInt(args, "start"))
-	default:
+	case "pull_requests":
 		if argBool(args, "mine") {
 			return c.myPrs(argIntDefault(args, "limit", 25), argInt(args, "start"), argString(args, "role"))
 		}
 		return c.listPullRequests(argString(args, "projectKey"), argString(args, "repoSlug"), repoRoot, argString(args, "state"), argString(args, "fromBranch"), argString(args, "text"), argIntDefault(args, "limit", 25), argInt(args, "start"))
+	default:
+		return toolResult{}, fmt.Errorf("Unknown resource %q. Use one of: pull_requests, repos, branches, users.", resource)
 	}
 }
 
@@ -1023,7 +1054,7 @@ func joinReviewers(reviewers []bbReviewer) string {
 	return strings.Join(parts, ", ")
 }
 
-func (c *BitbucketClient) getPrOverview(args map[string]any, repoRoot string) (toolResult, error) {
+func (c *BitbucketClient) getPrOverview(session *sessionState, args map[string]any, repoRoot string) (toolResult, error) {
 	pk, rs, err := c.resolveProjectAndRepo(argString(args, "projectKey"), argString(args, "repoSlug"), repoRoot)
 	if err != nil {
 		return toolResult{}, err
@@ -1090,7 +1121,10 @@ func (c *BitbucketClient) getPrOverview(args map[string]any, repoRoot string) (t
 	toHash := pr.FromRef.LatestCommit
 	commitsLine := ""
 	if fromHash != "" && toHash != "" {
-		commitsLine = fmt.Sprintf("Commits:   fromHash=%s toHash=%s (pass to bitbucket_comment to anchor inline comments to this exact state)", fromHash, toHash)
+		// Remembered per session: bitbucket_comment then anchors inline comments
+		// to this pair by default, so nobody has to carry the hashes by hand.
+		session.rememberReviewed(reviewKey(pk, rs, prID), fromHash, toHash)
+		commitsLine = fmt.Sprintf("Commits:   fromHash=%s toHash=%s (inline comments anchor here automatically)", fromHash, toHash)
 	}
 	desc := pr.Description
 	if desc == "" {
@@ -1103,6 +1137,9 @@ func (c *BitbucketClient) getPrOverview(args map[string]any, repoRoot string) (t
 		"State:     " + pr.State,
 		"Author:    " + pr.Author.User.DisplayName,
 		fmt.Sprintf("Branch:    %s → %s", pr.FromRef.DisplayID, pr.ToRef.DisplayID),
+	}
+	if role := c.viewerRole(pr); role != "" {
+		headerLines = append(headerLines, "Viewing as: "+role)
 	}
 	if commitsLine != "" {
 		headerLines = append(headerLines, commitsLine)
@@ -1239,7 +1276,7 @@ func (c *BitbucketClient) getPrOverview(args map[string]any, repoRoot string) (t
 			ref := attachmentRefs[id]
 			lines = append(lines, fmt.Sprintf("  #%s %s — in %s", ref.id, ref.filename, ref.source))
 		}
-		lines = append(lines, "Use bitbucket_get_attachment with attachmentId to view contents.")
+		lines = append(lines, "Use get_attachment source=bitbucket with attachmentId to view contents.")
 		sections = append(sections, strings.Join(lines, "\n"))
 	}
 
@@ -1250,7 +1287,7 @@ func (c *BitbucketClient) getPrOverview(args map[string]any, repoRoot string) (t
 		}
 		diffText := "(no diff found)"
 		if data != nil {
-			diffText = formatDiff(data, argIntDefault(args, "diffMaxChars", 8000))
+			diffText = formatDiff(data, argIntDefault(args, "diffMaxChars", 8000), argInt(args, "diffCharOffset"))
 		}
 		sections = append(sections, "Diff:\n"+diffText)
 	}
@@ -1314,19 +1351,40 @@ func (c *BitbucketClient) getFile(args map[string]any, repoRoot string) (toolRes
 	if err != nil {
 		return toolResult{}, err
 	}
-	qs := ""
-	if ref := argString(args, "ref"); ref != "" {
-		qs = "?at=" + url.QueryEscape(ref)
+	path := argString(args, "path")
+	ref := argString(args, "ref")
+	// Reading the wrong branch is the failure mode here, and it looks exactly
+	// like success. prId resolves the ref from the PR itself so a review never
+	// has to remember the source branch, and the ref is echoed either way.
+	origin := ""
+	if ref == "" && has(args, "prId") {
+		prID := argInt(args, "prId")
+		pr, perr := bbDecode[bbPullRequest](c, "GET", fmt.Sprintf("%s/pull-requests/%d", c.rp(pk, rs), prID), nil)
+		if perr != nil {
+			return toolResult{}, perr
+		}
+		if pr == nil {
+			return toolResult{}, fmt.Errorf("PR #%d not found.", prID)
+		}
+		ref = pr.FromRef.DisplayID
+		origin = fmt.Sprintf(" (source branch of PR #%d)", prID)
 	}
-	content, err := c.requestText(c.rp(pk, rs) + "/raw/" + encodePath(argString(args, "path")) + qs)
+	qs := ""
+	if ref != "" {
+		qs = "?at=" + url.QueryEscape(ref)
+	} else {
+		defaultRef, derr := c.getDefaultBranchRef(pk, rs, repoRoot)
+		if derr == nil {
+			ref = strings.TrimPrefix(defaultRef, "refs/heads/")
+		}
+		origin = " (repository default branch — pass ref or prId to read the branch under review)"
+	}
+	content, err := c.requestText(c.rp(pk, rs) + "/raw/" + encodePath(path) + qs)
 	if err != nil {
 		return toolResult{}, err
 	}
-	const maxChars = 10000
-	if len(content) > maxChars {
-		return textResult(content[:maxChars] + fmt.Sprintf("\n\n... (truncated, %d more chars)", len(content)-maxChars)), nil
-	}
-	return textResult(content), nil
+	header := fmt.Sprintf("%s @ %s%s\n\n", path, orValue(ref, "(unknown ref)"), origin)
+	return textResult(header + pageText(content, argInt(args, "charOffset"), argIntDefault(args, "maxChars", 10000), "charOffset", "maxChars")), nil
 }
 
 func encodePath(p string) string {

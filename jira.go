@@ -372,15 +372,28 @@ func formatJiraError(status int, method, path, details string) string {
 	return prefix
 }
 
-func validateCommentBody(body string) (string, error) {
+// validateCommentBody is the single gate every Jira comment write passes
+// through: emoji are rejected, and markdown is converted to wiki markup so a
+// comment renders as intended regardless of what the caller sent.
+func validateCommentBody(body string) (string, bool, error) {
 	trimmed := strings.TrimSpace(body)
 	if trimmed == "" {
-		return "", fmt.Errorf("Jira comment body must not be empty.")
+		return "", false, fmt.Errorf("Jira comment body must not be empty.")
 	}
 	if emojiRe.MatchString(trimmed) {
-		return "", fmt.Errorf("Jira comments must not include emoji. Use concise Jira wiki markup or plain text only.")
+		return "", false, fmt.Errorf("Jira comments must not include emoji. Use concise Jira wiki markup or plain text only.")
 	}
-	return trimmed, nil
+	wiki, converted := markdownToJiraWiki(trimmed)
+	return wiki, converted, nil
+}
+
+// wikiNote labels a conversion in the tool result so the caller can see its
+// markdown was rewritten rather than posted literally.
+func wikiNote(converted bool) string {
+	if converted {
+		return " (markdown converted to wiki markup)"
+	}
+	return ""
 }
 
 // ── Client ───────────────────────────────────────────────────────────────────
@@ -1099,9 +1112,127 @@ func (c *JiraClient) fieldHelp(err error, metaFn func() (map[string]jiraFieldMet
 	return fmt.Errorf("%s", strings.Join(parts, " | "))
 }
 
+// ── Value resolution ────────────────────────────────────────────────────────
+// Jira accepts a username, component or version by name and answers a bad one
+// with a generic 400 that names neither the field nor the valid values. These
+// resolve the caller's strings first, so a typo comes back as "did you mean",
+// and nothing is half-written before the error.
+
+func (c *JiraClient) resolveUsername(field, value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	q := url.Values{}
+	q.Set("username", value)
+	q.Set("maxResults", "10")
+	data, err := jiraGet[[]jiraUser](c, "/rest/api/2", "GET", "/user/search?"+q.Encode(), nil)
+	if err != nil || data == nil {
+		// A lookup that cannot run must not block the write; Jira still validates.
+		if err != nil {
+			logf("%s lookup for %q failed, using it as given: %v", field, value, err)
+		}
+		return value, nil
+	}
+	var candidates []string
+	for _, u := range *data {
+		if strings.EqualFold(u.Name, value) {
+			return u.Name, nil
+		}
+		if u.Active {
+			candidates = append(candidates, fmt.Sprintf("%s (%s)", u.Name, u.DisplayName))
+		}
+	}
+	if len(candidates) == 0 {
+		// No candidates at all can mean the instance restricts user search
+		// rather than that the name is wrong — let Jira be the judge.
+		return value, nil
+	}
+	return "", fmt.Errorf("%s %q is not a Jira username. Did you mean: %s? Usernames come from jira_search resource=users.", field, value, strings.Join(candidates, ", "))
+}
+
+// checkProjectNames verifies component/version names against what the project
+// has. An unknown name is an error listing the real ones; a lookup that returns
+// nothing is treated as "cannot tell" and left to Jira.
+func checkProjectNames(field, projectKey string, wanted []string, available []string) error {
+	if len(wanted) == 0 || len(available) == 0 {
+		return nil
+	}
+	var unknown []string
+	for _, w := range wanted {
+		found := false
+		for _, a := range available {
+			if strings.EqualFold(strings.TrimSpace(w), a) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			unknown = append(unknown, w)
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s %s do not exist in %s. Available: %s.", field, strings.Join(unknown, ", "), projectKey, strings.Join(available, ", "))
+}
+
+func (c *JiraClient) versionNames(pk string) []string {
+	data, err := jiraGet[[]jiraVersion](c, "/rest/api/2", "GET", "/project/"+url.PathEscape(pk)+"/versions", nil)
+	if err != nil || data == nil {
+		return nil
+	}
+	var out []string
+	for _, v := range *data {
+		out = append(out, v.Name)
+	}
+	return out
+}
+
+// checkIssueValues resolves the user fields and validates component/version
+// names for one create or update payload, rewriting the map in place.
+func (c *JiraClient) checkIssueValues(pk string, payload map[string]any) error {
+	for _, field := range []string{"assignee", "reporter"} {
+		if v := argString(payload, field); v != "" {
+			resolved, err := c.resolveUsername(field, v)
+			if err != nil {
+				return err
+			}
+			payload[field] = resolved
+		}
+	}
+	if pk == "" {
+		return nil
+	}
+	if comps := argStrSlice(payload, "components"); len(comps) > 0 {
+		if err := checkProjectNames("Component(s)", pk, comps, c.componentNames(pk)); err != nil {
+			return err
+		}
+	}
+	var versions []string
+	for _, key := range []string{"fixVersions", "versions"} {
+		versions = append(versions, argStrSlice(payload, key)...)
+	}
+	for _, key := range []string{"fixVersion"} {
+		if v := argString(payload, key); v != "" {
+			versions = append(versions, v)
+		}
+	}
+	if len(versions) > 0 {
+		names := c.versionNames(pk)
+		if err := checkProjectNames("Version(s)", pk, versions, names); err != nil {
+			return fmt.Errorf("%w Create one with jira_mutate version.action=create.", err)
+		}
+	}
+	return nil
+}
+
 func (c *JiraClient) createIssueInternal(create map[string]any, repoRoot string) (*jiraCreatedIssue, error) {
 	projectKey, err := c.resolveProjectKey(argString(create, "projectKey"), repoRoot)
 	if err != nil {
+		return nil, err
+	}
+	if err := c.checkIssueValues(projectKey, create); err != nil {
 		return nil, err
 	}
 	fields := map[string]any{
@@ -1110,7 +1241,8 @@ func (c *JiraClient) createIssueInternal(create map[string]any, repoRoot string)
 		"summary":   argString(create, "summary"),
 	}
 	if d := argString(create, "description"); d != "" {
-		fields["description"] = d
+		wiki, _ := markdownToJiraWiki(d)
+		fields["description"] = wiki
 	}
 	if a := argString(create, "assignee"); a != "" {
 		fields["assignee"] = map[string]any{"name": a}
@@ -1194,6 +1326,9 @@ func (c *JiraClient) createIssueInternal(create map[string]any, repoRoot string)
 // updateIssueFieldsInternal applies the update.* fields. has* flags signal an
 // explicitly-provided key so empty strings/arrays act as clears like the TS.
 func (c *JiraClient) updateIssueFieldsInternal(issueKey string, update map[string]any) (bool, error) {
+	if err := c.checkIssueValues(projectKeyOf(issueKey), update); err != nil {
+		return false, err
+	}
 	fields := map[string]any{}
 	if has(update, "issueType") {
 		fields["issuetype"] = map[string]any{"name": argString(update, "issueType")}
@@ -1202,7 +1337,8 @@ func (c *JiraClient) updateIssueFieldsInternal(issueKey string, update map[strin
 		fields["summary"] = argString(update, "summary")
 	}
 	if has(update, "description") {
-		fields["description"] = argString(update, "description")
+		wiki, _ := markdownToJiraWiki(argString(update, "description"))
+		fields["description"] = wiki
 	}
 	if has(update, "assignee") {
 		if a := argString(update, "assignee"); a != "" {
@@ -1304,6 +1440,17 @@ func (c *JiraClient) search(args map[string]any, repoRoot string) (toolResult, e
 	if resource == "" {
 		resource = "issues"
 	}
+	// Board-scoped resources take a boardId; when only a project is known, look
+	// the board up rather than making the caller run the two-step by hand.
+	if resource == "sprints" || resource == "board_overview" {
+		if argInt(args, "boardId") <= 0 {
+			boardID, err := c.resolveBoardID(argString(args, "projectKey"), repoRoot)
+			if err != nil {
+				return toolResult{}, err
+			}
+			args["boardId"] = float64(boardID)
+		}
+	}
 	switch resource {
 	case "projects":
 		return c.getProjects(args)
@@ -1323,7 +1470,7 @@ func (c *JiraClient) search(args map[string]any, repoRoot string) (toolResult, e
 		return c.listComponents(argString(args, "projectKey"), argString(args, "query"), repoRoot)
 	case "users":
 		return c.searchUsers(argString(args, "query"), argIntDefault(args, "maxResults", 10))
-	default:
+	case "issues":
 		if argBool(args, "mine") {
 			return c.searchIssues("", "assignee = currentUser() ORDER BY updated DESC", "", "", "", "", argIntDefault(args, "maxResults", 20), argInt(args, "startAt"))
 		}
@@ -1331,6 +1478,8 @@ func (c *JiraClient) search(args map[string]any, repoRoot string) (toolResult, e
 			argString(args, "query"), argString(args, "jql"), argString(args, "project"),
 			argString(args, "status"), argString(args, "assignee"), argString(args, "issueType"),
 			argIntDefault(args, "maxResults", 20), argInt(args, "startAt"))
+	default:
+		return toolResult{}, fmt.Errorf("Unknown resource %q. Use one of: issues, projects, issue_types, boards, sprints, board_overview, versions, components, fields, users.", resource)
 	}
 }
 
@@ -1713,7 +1862,7 @@ func (c *JiraClient) issueOverview(o issueOverviewOpts) (toolResult, error) {
 			}
 			lines = append(lines, fmt.Sprintf("  #%s %s (%s, %s)", att.ID, att.Filename, mt, formatBytes(att.Size)))
 		}
-		lines = append(lines, "Use jira_get_attachment with attachmentId to view contents.")
+		lines = append(lines, "Use get_attachment source=jira with attachmentId to view contents.")
 	}
 
 	if o.includeComments {
@@ -1856,6 +2005,27 @@ func (c *JiraClient) boardOverview(args map[string]any) (toolResult, error) {
 func (c *JiraClient) mutateIssue(args map[string]any, repoRoot string) (toolResult, error) {
 	issueKey := strings.TrimSpace(argString(args, "issueKey"))
 	var actions []string
+	var extras []string
+
+	// Fix versions are project-scoped, not issue-scoped: handled before the
+	// issueKey requirement and on their own.
+	if version := argMap(args, "version"); version != nil {
+		// Version work and issue work in one call would mean half the arguments
+		// silently doing nothing, so they are kept apart.
+		for _, k := range []string{"create", "update", "sprintId", "removeFromSprint", "transitionId", "transitionName", "comment", "commentAction", "commentId", "attachments", "link", "worklog"} {
+			if has(args, k) {
+				return toolResult{}, fmt.Errorf("version cannot be combined with %s — call jira_mutate twice: once for the version, once for the issue.", k)
+			}
+		}
+		if _, ok := version["projectKey"].(string); !ok {
+			if pk := argString(args, "projectKey"); pk != "" {
+				version["projectKey"] = pk
+			} else if issueKey != "" {
+				version["projectKey"] = projectKeyOf(issueKey)
+			}
+		}
+		return c.mutateVersion(version, repoRoot)
+	}
 
 	if create := argMap(args, "create"); create != nil {
 		created, err := c.createIssueInternal(create, repoRoot)
@@ -1909,15 +2079,24 @@ func (c *JiraClient) mutateIssue(args map[string]any, repoRoot string) (toolResu
 		actions = append(actions, "transitioned via "+transitionID)
 	}
 
-	if has(args, "comment") {
-		body, err := validateCommentBody(argString(args, "comment"))
+	if has(args, "comment") || has(args, "commentId") || argString(args, "commentAction") != "" {
+		action := argString(args, "commentAction")
+		if action == "" {
+			action = "add"
+		}
+		res, err := c.comment(map[string]any{
+			"issueKey":  issueKey,
+			"action":    action,
+			"commentId": argString(args, "commentId"),
+			"body":      argString(args, "comment"),
+		})
 		if err != nil {
 			return toolResult{}, err
 		}
-		if _, err := c.api("POST", "/issue/"+url.PathEscape(issueKey)+"/comment", map[string]any{"body": body}); err != nil {
-			return toolResult{}, err
+		if len(res.Content) > 0 && res.Content[0].Text != "" {
+			extras = append(extras, res.Content[0].Text)
 		}
-		actions = append(actions, "added comment")
+		actions = append(actions, map[string]string{"add": "added comment", "update": "updated comment", "delete": "deleted comment"}[action])
 	}
 
 	if paths := argStrSlice(args, "attachments"); len(paths) > 0 {
@@ -1960,7 +2139,7 @@ func (c *JiraClient) mutateIssue(args map[string]any, repoRoot string) (toolResu
 	if worklog := argMap(args, "worklog"); worklog != nil {
 		wBody := map[string]any{"timeSpent": argString(worklog, "timeSpent")}
 		if cmt := argString(worklog, "comment"); cmt != "" {
-			wBody["comment"] = cmt
+			wBody["comment"], _ = markdownToJiraWiki(cmt)
 		}
 		if started := argString(worklog, "started"); started != "" {
 			wBody["started"] = started
@@ -1975,13 +2154,14 @@ func (c *JiraClient) mutateIssue(args map[string]any, repoRoot string) (toolResu
 		return textResult("Nothing to mutate."), nil
 	}
 	parts := []string{fmt.Sprintf("Mutated %s: %s.", issueKey, strings.Join(actions, ", ")), c.issueURL(issueKey)}
+	parts = append(parts, extras...)
 	if len(warnings) > 0 {
 		parts = append(parts, "Warnings: "+strings.Join(warnings, "; "))
 	}
 	return textResult(strings.Join(parts, "\n")), nil
 }
 
-// comment dispatches jira_comment add/update/delete.
+// comment dispatches the jira_mutate comment actions (add/update/delete).
 func (c *JiraClient) comment(args map[string]any) (toolResult, error) {
 	action := argString(args, "action")
 	if action == "" {
@@ -1993,8 +2173,10 @@ func (c *JiraClient) comment(args map[string]any) (toolResult, error) {
 		return c.editComment(issueKey, argString(args, "commentId"), argString(args, "body"))
 	case "delete":
 		return c.deleteComment(issueKey, argString(args, "commentId"))
-	default:
+	case "add":
 		return c.addComment(issueKey, argString(args, "body"), argStrSlice(args, "attachments"))
+	default:
+		return toolResult{}, fmt.Errorf("Unknown comment action %q. Use add, update, or delete.", action)
 	}
 }
 
@@ -2002,14 +2184,14 @@ func (c *JiraClient) addComment(issueKey, body string, attachments []string) (to
 	var actions []string
 	// Body is optional when only attaching files; required otherwise.
 	if strings.TrimSpace(body) != "" || len(attachments) == 0 {
-		v, err := validateCommentBody(body)
+		v, converted, err := validateCommentBody(body)
 		if err != nil {
 			return toolResult{}, err
 		}
 		if _, err := c.api("POST", "/issue/"+url.PathEscape(issueKey)+"/comment", map[string]any{"body": v}); err != nil {
 			return toolResult{}, err
 		}
-		actions = append(actions, "comment added")
+		actions = append(actions, "comment added"+wikiNote(converted))
 	}
 	if len(attachments) > 0 {
 		names, err := c.uploadAttachments(issueKey, attachments)
@@ -2037,14 +2219,14 @@ func (c *JiraClient) editComment(issueKey, commentID, body string) (toolResult, 
 	if err := c.assertOwnComment(current); err != nil {
 		return toolResult{}, err
 	}
-	v, err := validateCommentBody(body)
+	v, converted, err := validateCommentBody(body)
 	if err != nil {
 		return toolResult{}, err
 	}
 	if _, err := c.api("PUT", path, map[string]any{"body": v}); err != nil {
 		return toolResult{}, err
 	}
-	return textResult(fmt.Sprintf("Comment %s updated on %s.", commentID, issueKey)), nil
+	return textResult(fmt.Sprintf("Comment %s updated on %s%s.", commentID, issueKey, wikiNote(converted))), nil
 }
 
 func (c *JiraClient) deleteComment(issueKey, commentID string) (toolResult, error) {
@@ -2067,6 +2249,34 @@ func (c *JiraClient) deleteComment(issueKey, commentID string) (toolResult, erro
 		return toolResult{}, err
 	}
 	return textResult(fmt.Sprintf("Comment %s deleted from %s.", commentID, issueKey)), nil
+}
+
+// resolveBoardID finds the board to use when the caller gave a project instead
+// of a boardId. One board for the project is unambiguous; several is a question
+// only the caller can answer, so the error lists them with their ids.
+func (c *JiraClient) resolveBoardID(projectKey, repoRoot string) (int, error) {
+	pk, err := c.resolveProjectKey(projectKey, repoRoot)
+	if err != nil {
+		return 0, fmt.Errorf("boardId is required, or pass project so the board can be resolved. Find boards with jira_search resource=boards.")
+	}
+	q := url.Values{}
+	q.Set("maxResults", "50")
+	q.Set("projectKeyOrId", pk)
+	data, err := jiraGet[jiraPageBoards](c, "/rest/agile/1.0", "GET", "/board?"+q.Encode(), nil)
+	if err != nil {
+		return 0, err
+	}
+	if data == nil || len(data.Values) == 0 {
+		return 0, fmt.Errorf("No boards found for project %s. Pass boardId explicitly.", pk)
+	}
+	if len(data.Values) == 1 {
+		return data.Values[0].ID, nil
+	}
+	var options []string
+	for _, b := range data.Values {
+		options = append(options, fmt.Sprintf("%d (%s)", b.ID, b.Name))
+	}
+	return 0, fmt.Errorf("Project %s has %d boards — pass boardId: %s.", pk, len(data.Values), strings.Join(options, ", "))
 }
 
 func (c *JiraClient) getBoards(projectKey string, maxResults, startAt int) (toolResult, error) {
@@ -2142,7 +2352,7 @@ func (c *JiraClient) listVersions(projectKey, query string, maxResults *int, rep
 	}
 	query = strings.TrimSpace(query)
 	createHint := func(name string) string {
-		return fmt.Sprintf(`Create it with: jira_version action=create projectKey=%s name="%s"`, pk, name)
+		return fmt.Sprintf(`Create it with: jira_mutate version.action=create version.projectKey=%s version.name=%q`, pk, name)
 	}
 	if data == nil || len(*data) == 0 {
 		if query != "" {
@@ -2235,6 +2445,11 @@ func (c *JiraClient) mutateVersion(args map[string]any, repoRoot string) (toolRe
 	action := argString(args, "action")
 	if action == "" {
 		action = "create"
+	}
+	switch action {
+	case "create", "update", "release", "archive", "delete":
+	default:
+		return toolResult{}, fmt.Errorf("Unknown version action %q. Use create, update, release, archive, or delete.", action)
 	}
 	if action == "create" {
 		pk, err := c.resolveProjectKey(argString(args, "projectKey"), repoRoot)

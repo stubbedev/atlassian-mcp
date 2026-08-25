@@ -46,6 +46,45 @@ type sessionState struct {
 	rootsDone   bool
 	headerRoots bool // roots pinned via request header — authoritative
 	roots       []rootEntry
+	// reviewed records the commit pair last shown to this client for a PR, so an
+	// inline comment anchors to the state that was actually reviewed instead of
+	// whatever the PR head has become. Keyed by project/repo/PR.
+	reviewed map[string]reviewedState
+}
+
+// reviewedState is the diff a client was last shown for one PR.
+type reviewedState struct {
+	fromHash string
+	toHash   string
+}
+
+// rememberReviewed stores the commit pair a client has just been shown.
+func (s *sessionState) rememberReviewed(key, fromHash, toHash string) {
+	if s == nil || key == "" || fromHash == "" || toHash == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.reviewed == nil {
+		s.reviewed = map[string]reviewedState{}
+	}
+	s.reviewed[key] = reviewedState{fromHash: fromHash, toHash: toHash}
+}
+
+// lastReviewed returns the commit pair this client was last shown for a PR.
+func (s *sessionState) lastReviewed(key string) (string, string, bool) {
+	if s == nil {
+		return "", "", false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st, ok := s.reviewed[key]
+	return st.fromHash, st.toHash, ok
+}
+
+// reviewKey scopes remembered state to one PR in one repository.
+func reviewKey(projectKey, repoSlug string, prID int) string {
+	return fmt.Sprintf("%s/%s#%d", projectKey, repoSlug, prID)
 }
 
 // rootEntry is one client workspace root (a worktree).

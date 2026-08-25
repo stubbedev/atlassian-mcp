@@ -108,6 +108,11 @@ func validateRef(ref, label string) error {
 
 // gitGetContext implements git_get_context.
 func gitGetContext(args map[string]any, repoPath string) toolResult {
+	// fromRef/toRef switch the tool into diff mode:
+	// same repo resolution, different question.
+	if argString(args, "fromRef") != "" || argString(args, "toRef") != "" {
+		return gitGetDiffPaged(args, repoPath)
+	}
 	if repoPath == "" {
 		return textResult("Error reading git context: no repo path — pass repoPath, or connect a client that provides workspace roots.")
 	}
@@ -184,7 +189,7 @@ func gitGetContext(args map[string]any, repoPath string) toolResult {
 			const max = 6000
 			body := diff
 			if len(diff) > max {
-				body = diff[:max] + fmt.Sprintf("\n\n... (truncated, %d more chars)", len(diff)-max)
+				body = diff[:max] + fmt.Sprintf("\n\n... (truncated, %d more chars — re-call with fromRef=HEAD and maxChars/charOffset to page through it)", len(diff)-max)
 			}
 			lines = append(lines, "", "── Uncommitted diff ──", body)
 		}
@@ -193,7 +198,7 @@ func gitGetContext(args map[string]any, repoPath string) toolResult {
 	return textResult(strings.Join(lines, "\n"))
 }
 
-// getDiff implements the core of git_get_diff (before paging).
+// getDiff implements diff mode (before paging).
 func getDiff(args map[string]any, repoPath string) toolResult {
 	if repoPath == "" {
 		return textResult("Error reading diff: no repo path — pass repoPath, or connect a client that provides workspace roots.")
@@ -203,6 +208,9 @@ func getDiff(args map[string]any, repoPath string) toolResult {
 	}
 	fromRef := argString(args, "fromRef")
 	toRef := argString(args, "toRef")
+	if fromRef == "" && toRef != "" {
+		return textResult("Error reading diff: toRef needs fromRef — pass both to diff a range, or fromRef alone to diff it against the working tree.")
+	}
 	var gitArgs []string
 	switch {
 	case fromRef != "" && toRef != "":
@@ -228,29 +236,10 @@ func getDiff(args map[string]any, repoPath string) toolResult {
 	return textResult(diff)
 }
 
-// gitGetDiffPaged applies the maxChars/charOffset paging from src/index.ts.
+// gitGetDiffPaged applies maxChars/charOffset paging to diff mode.
 func gitGetDiffPaged(args map[string]any, repoPath string) toolResult {
 	result := getDiff(args, repoPath)
-	raw := result.Content[0].Text
-	offset := argInt(args, "charOffset")
-	limit := argIntDefault(args, "maxChars", 8000)
-	if offset == 0 && len(raw) <= limit {
-		return result
-	}
-	if offset > len(raw) {
-		offset = len(raw)
-	}
-	end := offset + limit
-	if end > len(raw) {
-		end = len(raw)
-	}
-	chunk := raw[offset:end]
-	remaining := len(raw) - offset - len(chunk)
-	suffix := ""
-	if remaining > 0 {
-		suffix = fmt.Sprintf("\n\n... (%d more chars, use charOffset=%d)", remaining, offset+len(chunk))
-	}
-	return textResult(chunk + suffix)
+	return textResult(pageText(result.Content[0].Text, argInt(args, "charOffset"), argIntDefault(args, "maxChars", 8000), "charOffset", "maxChars"))
 }
 
 type remoteBranchInfo struct {
@@ -298,13 +287,25 @@ func checkRemoteBranch(branchName, repoPath string) (remoteBranchInfo, error) {
 	return info, nil
 }
 
+// getDefaultBranch resolves the branch a new branch should fork from, without
+// assuming any naming convention: git's own origin/HEAD first, then the server's
+// answer for this repository, and only then a guess.
 func getDefaultBranch(repoPath string) string {
 	head := safeGit(repoPath, "", "rev-parse", "--abbrev-ref", "origin/HEAD")
 	if strings.HasPrefix(head, "origin/") {
 		return strings.TrimPrefix(head, "origin/")
 	}
-	if safeGit(repoPath, "", "rev-parse", "--verify", "origin/main") != "" {
-		return "main"
+	if bitbucket != nil {
+		if parsed := parseBitbucketRemote(safeGit(repoPath, "", "remote", "get-url", "origin")); parsed != nil {
+			if name := bitbucket.defaultBranchName(parsed.projectKey, parsed.repoSlug); name != "" {
+				return name
+			}
+		}
+	}
+	for _, guess := range []string{"main", "master"} {
+		if safeGit(repoPath, "", "rev-parse", "--verify", "origin/"+guess) != "" {
+			return guess
+		}
 	}
 	return "master"
 }

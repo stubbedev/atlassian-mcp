@@ -262,6 +262,15 @@ func completeWork(args map[string]any, repoRoot string) (toolResult, error) {
 		}
 	}
 
+	if !argBool(args, "force") {
+		pk, rs, rerr := bitbucket.resolveProjectAndRepo(argString(args, "projectKey"), argString(args, "repoSlug"), repoRoot)
+		if rerr == nil {
+			if blockers := bitbucket.mergeBlockers(pk, rs, resolvedPrID); len(blockers) > 0 {
+				return toolResult{}, fmt.Errorf("PR #%d is not ready to merge: %s. Resolve these first, or pass force=true if the user wants it merged anyway.", resolvedPrID, strings.Join(blockers, "; "))
+			}
+		}
+	}
+
 	mergeResult, err := bitbucket.mergePr(argString(args, "projectKey"), argString(args, "repoSlug"), repoRoot, resolvedPrID, argString(args, "mergeStrategy"), argString(args, "mergeMessage"))
 	if err != nil {
 		return toolResult{}, err

@@ -2,29 +2,20 @@
   "git": [
     {
       "name": "git_get_context",
-      "description": "Start here for any coding or review task: current branch, upstream ahead/behind, remote URL, recent commits, working tree status, diff stat summary, and Jira keys detected in the branch name. Pass includeDiff=true to also include the full uncommitted diff.",
+      "description": "Start here for any coding or review task: current branch, upstream ahead/behind, remote URL, recent commits, working tree status, diff stat summary, and Jira keys detected in the branch name. Pass includeDiff=true to also include the full uncommitted diff. Pass fromRef (and optionally toRef) instead to get a diff between two refs or commits, paged with maxChars/charOffset.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "repoPath": { "type": "string", "description": "Path to the git repository (defaults to cwd)" },
           "commitLimit": { "type": "number", "description": "Number of recent commits to show (default 10)", "default": 10 },
-          "includeDiff": { "type": "boolean", "description": "Include full uncommitted diff (default false)", "default": false }
+          "includeDiff": { "type": "boolean", "description": "Include full uncommitted diff (default false)", "default": false },
+          "fromRef": { "type": "string", "description": "Base ref or commit — switches the tool to diff mode (branch vs main, a commit range)" },
+          "toRef": { "type": "string", "description": "Target ref or commit for diff mode (defaults to the working tree)" },
+          "maxChars": { "type": "number", "description": "Diff mode: max characters to return (default 8000). Increase for large diffs.", "default": 8000 },
+          "charOffset": { "type": "number", "description": "Diff mode: skip this many characters from the start (for paging large diffs)", "default": 0 }
         }
-      }
-    },
-    {
-      "name": "git_get_diff",
-      "description": "Get a diff between two git refs or commits. Use when you need to compare a feature branch to main, inspect a specific commit range, or review changes between two refs. For large diffs, increase maxChars or use charOffset to page through them.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "repoPath": { "type": "string", "description": "Path to the git repository (defaults to cwd)" },
-          "fromRef": { "type": "string", "description": "Base ref or commit" },
-          "toRef": { "type": "string", "description": "Target ref or commit (requires fromRef)" },
-          "maxChars": { "type": "number", "description": "Max characters to return (default 8000). Increase for large diffs.", "default": 8000 },
-          "charOffset": { "type": "number", "description": "Skip this many characters from the start (for paging large diffs)", "default": 0 }
-        }
-      }
+      },
+      "annotations": { "title": "Git context / diff", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": true }
     }
   ],
   "context": [
@@ -36,7 +27,34 @@
         "properties": {
           "repoPath": { "type": "string", "description": "Local path to the git repo (defaults to cwd)" }
         }
-      }
+      },
+      "annotations": { "title": "Dev context", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": true }
+    },
+    {
+      "name": "get_attachment",
+      "description": "Fetch an attachment by ID and return its contents inline. source=jira for a Jira issue attachment (IDs come from jira_get), source=bitbucket for a repo attachment referenced from a PR description or comment as attachment:<id> (IDs come from bitbucket_get_pr). Images are auto-resized + re-encoded; text/JSON/XML return as text; videos and animated images (GIF/APNG/animated WebP) are decoded with ffmpeg into sampled frames (re-call with start/end/frames or mode=scenes to refine); audio returns as an audio block; PDFs return extracted text. Oversized/non-renderable files are saved to a temp file and the path returned.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "source": { "type": "string", "enum": ["jira", "bitbucket"], "description": "Where the attachment lives. Optional when only one of Jira/Bitbucket is configured." },
+          "attachmentId": { "type": "string", "description": "Numeric attachment ID" },
+          "saveTo": { "type": "string", "description": "Optional absolute path to save the original (un-resized) file to disk instead of returning inline" },
+          "projectKey": { "type": "string", "description": "Bitbucket project code (source=bitbucket; usually auto-detected)" },
+          "project": { "type": "string", "description": "Alias for projectKey" },
+          "repoSlug": { "type": "string", "description": "Repository slug (source=bitbucket; usually auto-detected)" },
+          "repo": { "type": "string", "description": "Alias for repoSlug" },
+          "repoPath": { "type": "string", "description": "Local path of the repo to auto-detect project/repo from (source=bitbucket; overrides workspace roots)" },
+          "maxDimension": { "type": "number", "description": "Max long-edge size in pixels for inline images (default 1568 for images, 768 for video frames)." },
+          "quality": { "type": "number", "description": "JPEG quality for re-encoded inline images (1-100, default 85 for images, 65 for video frames). Ignored for images with alpha (encoded as PNG)." },
+          "frames": { "type": "number", "description": "Video/animated-image only: number of frames to sample (default 6, range 1-60). Higher = more detail + more context." },
+          "start": { "type": "number", "description": "Video/animated-image only: start of sample window in seconds (default 0). Use with end/frames to zoom into a moment of interest after a coarse first pass." },
+          "end": { "type": "number", "description": "Video/animated-image only: end of sample window in seconds (default full duration). Must be greater than start." },
+          "mode": { "type": "string", "enum": ["uniform", "scenes"], "description": "Video/animated-image only: \"uniform\" samples N frames evenly (default); \"scenes\" uses ffmpeg scene-change detection, better for screencasts/narrative content." },
+          "sceneThreshold": { "type": "number", "description": "Video/animated-image only: scene-change sensitivity in 0-1 (default 0.3). Only used when mode=scenes. Lower = more frames, higher = fewer." }
+        },
+        "required": ["attachmentId"]
+      },
+      "annotations": { "title": "Fetch attachment", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": true }
     }
   ],
   "jira": [
@@ -49,16 +67,17 @@
           "issueKey": { "type": "string", "description": "Jira issue key, e.g. FOO-123 (provide this OR query)" },
           "query": { "type": "string", "description": "Free-text search when issueKey is unknown — shows a picker if multiple tickets match" },
           "repoPath": { "type": "string", "description": "Local repo path (defaults to cwd)" },
-          "baseBranch": { "type": "string", "description": "Branch to base off (default: master)" },
+          "baseBranch": { "type": "string", "description": "Branch to base off. Defaults to the repository default branch, resolved from origin/HEAD or, failing that, from Bitbucket. The branch actually used is named in the result." },
           "branchName": { "type": "string", "description": "Override the generated branch name" },
           "transitionName": { "type": "string", "description": "Jira transition to apply, e.g. \"In Progress\" (optional)" },
           "push": { "type": "boolean", "description": "Push branch to remote after creation (default false)", "default": false }
         }
-      }
+      },
+      "annotations": { "title": "Start work on ticket", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true }
     },
     {
       "name": "jira_search",
-      "description": "Discover Jira resources (tickets, projects, boards, sprints, versions, users). Set resource:\n• \"issues\" (default) — search by text, JQL, project, status, assignee, issue type, or mine=true for your queue\n• \"projects\" — list all projects and their keys\n• \"issue_types\" — valid types and statuses for a project\n• \"boards\" — list boards (pass project to filter by project key); use this to find the boardId before fetching sprints or board_overview\n• \"sprints\" — sprints for a board (pass boardId); if you don't know the boardId, first use resource=boards\n• \"board_overview\" — active/future sprints with their issues for a board (pass boardId); use when asked \"what's in the sprint\", \"show me the board\", or \"what's everyone working on\"\n• \"versions\" — list fix versions/releases for a project (pass project; optionally pass query to filter by name substring). If the version you need does not exist, create it yourself with `jira_version action=create` — do NOT ask the user to make it in the Jira UI.\n• \"components\" — list component names for a project (pass project; optionally query to filter). Use this to find valid component names before setting jira_mutate create/update.components.\n• \"fields\" — what jira_mutate customFields can set. Pass project + issueType for a create screen, or issueKey for an existing issue: returns that screen's required and optional fields, each with the value to send and, for selects, the allowed values. With neither, only the instance-wide custom field list. Use this instead of guessing a field id or telling the user to set it in the Jira UI.\n• \"users\" — find users by name/email (pass query)",
+      "description": "Discover Jira resources (tickets, projects, boards, sprints, versions, users). Set resource:\n• \"issues\" (default) — search by text, JQL, project, status, assignee, issue type, or mine=true for your queue\n• \"projects\" — list all projects and their keys\n• \"issue_types\" — valid types and statuses for a project\n• \"boards\" — list boards (pass project to filter by project key); use this to find the boardId before fetching sprints or board_overview\n• \"sprints\" — sprints for a board (pass boardId, or project to have the board resolved when it is unambiguous)\n• \"board_overview\" — active/future sprints with their issues for a board (pass boardId, or project to have the board resolved); use when asked \"what's in the sprint\", \"show me the board\", or \"what's everyone working on\"\n• \"versions\" — list fix versions/releases for a project (pass project; optionally pass query to filter by name substring). If the version you need does not exist, create it yourself with `jira_mutate version.action=create version.name=9.1.0` — do NOT ask the user to make it in the Jira UI.\n• \"components\" — list component names for a project (pass project; optionally query to filter). Use this to find valid component names before setting jira_mutate create/update.components.\n• \"fields\" — what jira_mutate customFields can set. Pass project + issueType for a create screen, or issueKey for an existing issue: returns that screen's required and optional fields, each with the value to send and, for selects, the allowed values. With neither, only the instance-wide custom field list. Use this instead of guessing a field id or telling the user to set it in the Jira UI.\n• \"users\" — find users by name/email (pass query)",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -71,17 +90,18 @@
           "assignee": { "type": "string", "description": "Assignee username filter (issues only, or board_overview to filter issues by assignee)" },
           "issueType": { "type": "string", "description": "Issue type filter (issues only), or the create screen to inspect with resource=fields (pass project too)" },
           "issueKey": { "type": "string", "description": "Issue whose edit screen to inspect (resource=fields)" },
-          "boardId": { "type": "number", "description": "Board ID (required for resource=sprints or board_overview)" },
+          "boardId": { "type": "number", "description": "Board ID for resource=sprints or board_overview. Omit it and pass project instead: the board is resolved when the project has exactly one, otherwise the error lists the choices." },
           "sprintState": { "type": "string", "description": "Sprint state filter: active, future, closed (sprints and board_overview)" },
           "includeIssues": { "type": "boolean", "description": "Include issues per sprint in board_overview (default true)", "default": true },
           "maxResults": { "type": "number", "description": "Max results (default 20)", "default": 20 },
           "startAt": { "type": "number", "description": "Pagination offset (default 0)", "default": 0 }
         }
-      }
+      },
+      "annotations": { "title": "Search Jira", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": true }
     },
     {
       "name": "jira_get",
-      "description": "Full details for one Jira issue: summary, description, status, assignee, sprint, available transitions, recent comments, and a list of attachments (filename, size, mime type, attachment ID). To view an attachment's contents (e.g. an image), call jira_get_attachment with the attachment ID surfaced here.",
+      "description": "Full details for one Jira issue: summary, description, status, assignee, sprint, available transitions, recent comments, and a list of attachments (filename, size, mime type, attachment ID). To view an attachment's contents (e.g. an image), call get_attachment with source=jira and the attachment ID surfaced here.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -94,11 +114,12 @@
           "fullDescription": { "type": "boolean", "description": "Return the full description even when long (default false — descriptions over ~2000 chars are truncated to save context)", "default": false }
         },
         "required": ["issueKey"]
-      }
+      },
+      "annotations": { "title": "Get Jira issue", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": true }
     },
     {
       "name": "jira_mutate",
-      "description": "Create/update a ticket, transition status, assign, comment, link issues, or log work — bundles create/update/transition/comment/link/worklog in one call. Use Jira wiki markup (Atlassian renderer syntax), not GitHub/CommonMark markdown.",
+      "description": "One write path for Jira: create/update a ticket, transition status, assign, sprint, comment (add/update/delete via commentAction), attach files, link issues, log work, or manage a fix version — several of them in one call. Text fields take Jira wiki markup; markdown is converted for you, so a ``` fence or **bold** still renders correctly.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -115,17 +136,36 @@
               "reporter": { "type": "string", "description": "Reporter username (optional, defaults to the caller)" },
               "priority": { "type": "string", "description": "Priority name (optional)" },
               "dueDate": { "type": "string", "description": "Due date, yyyy-mm-dd (optional)" },
-              "labels": { "type": "array", "items": { "type": "string" }, "description": "Labels to apply (optional)" },
-              "components": { "type": "array", "items": { "type": "string" }, "description": "Component names to apply (optional). Must already exist on the project — discover via jira_search resource=components." },
+              "labels": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Labels to apply (optional)"
+              },
+              "components": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Component names to apply (optional). Must already exist on the project — discover via jira_search resource=components."
+              },
               "fixVersion": { "type": "string", "description": "Single fix version name (optional). For multiple, use fixVersions." },
-              "fixVersions": { "type": "array", "items": { "type": "string" }, "description": "Fix version names (optional). Overrides fixVersion when both given." },
-              "versions": { "type": "array", "items": { "type": "string" }, "description": "Affects version/s names (optional)." },
+              "fixVersions": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Fix version names (optional). Overrides fixVersion when both given."
+              },
+              "versions": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Affects version/s names (optional)."
+              },
               "environment": { "type": "string", "description": "Environment field (optional)." },
               "originalEstimate": { "type": "string", "description": "Original time estimate, e.g. \"3d 4h\" (optional)." },
               "remainingEstimate": { "type": "string", "description": "Remaining time estimate, e.g. \"2h\" (optional)." },
               "parent": { "type": "string", "description": "Parent issue key. For Sub-task issue types this sets the Jira parent. If the key points to an Epic, the Epic Link custom field is set automatically instead (Jira Server epic membership)." },
               "epicLink": { "type": "string", "description": "Epic issue key to attach the new issue to as an epic child (Jira Server Epic Link). Overrides parent if both are passed." },
-              "customFields": { "type": "object", "description": "Fields with no dedicated argument above, including every custom field. Keys are the field name (\"Epic Name\", \"Story Points\") or its id (\"customfield_10005\"). Values are plain: \"text\" for text, 5 for numeric, \"2026-01-31\" for a date, the option label for a select, the username for a user picker, and an array of labels for a multi-value field — the server wraps them into Jira's shape from the field schema. Pass an object or an array of objects to send a raw Jira value unchanged. Before creating with an unfamiliar issue type, call jira_search resource=fields project=<KEY> issueType=<TYPE>: it lists that create screen's required and optional fields with their allowed values. Epic Name defaults to summary when issueType=Epic. A rejected call answers with what the screen wants, so retry from the error rather than asking the user to use the Jira UI." }
+              "customFields": {
+                "type": "object",
+                "description": "Fields with no dedicated argument above, including every custom field. Keys are the field name (\"Epic Name\", \"Story Points\") or its id (\"customfield_10005\"). Values are plain: \"text\" for text, 5 for numeric, \"2026-01-31\" for a date, the option label for a select, the username for a user picker, and an array of labels for a multi-value field — the server wraps them into Jira's shape from the field schema. Pass an object or an array of objects to send a raw Jira value unchanged. Before creating with an unfamiliar issue type, call jira_search resource=fields project=<KEY> issueType=<TYPE>: it lists that create screen's required and optional fields with their allowed values. Epic Name defaults to summary when issueType=Epic. A rejected call answers with what the screen wants, so retry from the error rather than asking the user to use the Jira UI."
+              }
             },
             "required": ["issueType", "summary"]
           },
@@ -139,24 +179,49 @@
               "reporter": { "type": "string", "description": "New reporter username (optional)" },
               "priority": { "type": "string", "description": "New priority name (optional)" },
               "dueDate": { "type": "string", "description": "Due date yyyy-mm-dd, or empty string to clear (optional)" },
-              "labels": { "type": "array", "items": { "type": "string" }, "description": "Replace label set (pass [] to clear)" },
-              "components": { "type": "array", "items": { "type": "string" }, "description": "Replace component set by name (pass [] to clear). Names must already exist — discover via jira_search resource=components." },
+              "labels": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Replace label set (pass [] to clear)"
+              },
+              "components": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Replace component set by name (pass [] to clear). Names must already exist — discover via jira_search resource=components."
+              },
               "fixVersion": { "type": "string", "description": "Single fix version name, or empty string to clear (optional). For multiple, use fixVersions." },
-              "fixVersions": { "type": "array", "items": { "type": "string" }, "description": "Replace fix version set by name (pass [] to clear). Overrides fixVersion when both given." },
-              "versions": { "type": "array", "items": { "type": "string" }, "description": "Replace affects version/s set by name (pass [] to clear)." },
+              "fixVersions": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Replace fix version set by name (pass [] to clear). Overrides fixVersion when both given."
+              },
+              "versions": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Replace affects version/s set by name (pass [] to clear)."
+              },
               "environment": { "type": "string", "description": "Environment field, or empty string to clear (optional)." },
               "originalEstimate": { "type": "string", "description": "Original time estimate, e.g. \"3d 4h\" (optional)." },
               "remainingEstimate": { "type": "string", "description": "Remaining time estimate, e.g. \"2h\" (optional)." },
               "epicLink": { "type": "string", "description": "Epic issue key to set as parent epic (Jira Server Epic Link), or empty string to clear." },
-              "customFields": { "type": "object", "description": "Fields with no dedicated argument above, including every custom field. Keys are the field name (\"Epic Name\", \"Story Points\") or its id (\"customfield_10005\"); null clears a field. Values are plain: \"text\", 5, \"2026-01-31\", the option label for a select, the username for a user picker, an array of labels for a multi-value field — the server wraps them into Jira's shape from the field schema. Pass an object or array of objects to send a raw Jira value unchanged. Call jira_search resource=fields issueKey=<KEY> for the fields this issue's edit screen accepts, which are required, and what each select allows. A rejected call answers with what the screen wants, so retry from the error rather than asking the user to use the Jira UI." }
+              "customFields": {
+                "type": "object",
+                "description": "Fields with no dedicated argument above, including every custom field. Keys are the field name (\"Epic Name\", \"Story Points\") or its id (\"customfield_10005\"); null clears a field. Values are plain: \"text\", 5, \"2026-01-31\", the option label for a select, the username for a user picker, an array of labels for a multi-value field — the server wraps them into Jira's shape from the field schema. Pass an object or array of objects to send a raw Jira value unchanged. Call jira_search resource=fields issueKey=<KEY> for the fields this issue's edit screen accepts, which are required, and what each select allows. A rejected call answers with what the screen wants, so retry from the error rather than asking the user to use the Jira UI."
+              }
             }
           },
           "sprintId": { "type": "number", "description": "Sprint ID to add the issue into (optional)" },
           "removeFromSprint": { "type": "boolean", "description": "Move the issue to the backlog (remove from any sprint)" },
           "transitionId": { "type": "string", "description": "Transition ID (optional if transitionName provided)" },
           "transitionName": { "type": "string", "description": "Transition name, e.g. \"In Progress\" (optional if transitionId provided)" },
-          "comment": { "type": "string", "description": "Comment to add after other mutations (optional). Use Jira wiki markup (Atlassian renderer syntax), not GitHub/CommonMark markdown." },
-          "attachments": { "type": "array", "items": { "type": "string" }, "description": "Local file paths to upload as attachments on the issue (works for both newly-created and existing issues)." },
+          "comment": { "type": "string", "description": "Comment body (optional). Added after the other mutations; with commentAction=update it is the replacement text. Markdown is converted to Jira wiki markup automatically." },
+          "commentAction": { "type": "string", "enum": ["add", "update", "delete"], "description": "What to do with the comment (default: add). update/delete need commentId and only work on your own comments." },
+          "commentId": { "type": "string", "description": "Comment ID (required for commentAction=update or delete)" },
+          "attachments": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Local file paths to upload as attachments on the issue (works for both newly-created and existing issues)."
+          },
           "link": {
             "type": "object",
             "description": "Create an issue link, e.g. \"FOO-123 blocks BAR-456\"",
@@ -176,68 +241,31 @@
               "started": { "type": "string", "description": "ISO 8601 datetime when work started (defaults to now)" }
             },
             "required": ["timeSpent"]
+          },
+          "version": {
+            "type": "object",
+            "description": "Manage a fix version (release) on the project instead of an issue: create, update, release, archive, delete. Independent of issueKey. Find existing versions with jira_search resource=versions; set one on a ticket with update.fixVersion.",
+            "properties": {
+              "action": { "type": "string", "enum": ["create", "update", "release", "archive", "delete"], "description": "Operation (default: create)" },
+              "projectKey": { "type": "string", "description": "Jira project code (create only; inherited from the top-level projectKey or the repo when omitted)" },
+              "id": { "type": "string", "description": "Version id (required for update/release/archive/delete; from jira_search resource=versions)" },
+              "name": { "type": "string", "description": "Version name, e.g. \"9.1.0\" (required for create; optional rename for update)" },
+              "description": { "type": "string", "description": "Version description (optional)" },
+              "startDate": { "type": "string", "description": "Start date in YYYY-MM-DD (optional)" },
+              "releaseDate": { "type": "string", "description": "Release date in YYYY-MM-DD (optional; defaults to today on action=release)" },
+              "released": { "type": "boolean", "description": "Released flag (optional; action=release forces true)" },
+              "archived": { "type": "boolean", "description": "Archived flag (optional; action=archive forces true)" }
+            }
           }
         }
-      }
-    },
-    {
-      "name": "jira_get_attachment",
-      "description": "Fetch a Jira attachment by ID and return its contents inline. Images are auto-resized + re-encoded; text/JSON/XML return as text; videos and animated images (GIF/APNG/animated WebP) are decoded with ffmpeg into sampled frames (re-call with start/end/frames or mode=scenes to refine); audio returns as an audio block; PDFs return extracted text. Oversized/non-renderable files are saved to a temp file and the path returned. Use jira_get first to discover attachment IDs.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "attachmentId": { "type": "string", "description": "Numeric attachment ID from jira_get output" },
-          "saveTo": { "type": "string", "description": "Optional absolute path to save the original (un-resized) file to disk instead of returning inline" },
-          "maxDimension": { "type": "number", "description": "Max long-edge size in pixels for inline images (default 1568 for images, 768 for video frames)." },
-          "quality": { "type": "number", "description": "JPEG quality for re-encoded inline images (1-100, default 85 for images, 65 for video frames). Ignored for images with alpha (encoded as PNG)." },
-          "frames": { "type": "number", "description": "Video/animated-image only: number of frames to sample (default 6, range 1-60). Higher = more detail + more context." },
-          "start": { "type": "number", "description": "Video/animated-image only: start of sample window in seconds (default 0). Use with end/frames to zoom into a moment of interest after a coarse first pass." },
-          "end": { "type": "number", "description": "Video/animated-image only: end of sample window in seconds (default full duration). Must be greater than start." },
-          "mode": { "type": "string", "enum": ["uniform", "scenes"], "description": "Video/animated-image only: \"uniform\" samples N frames evenly (default); \"scenes\" uses ffmpeg scene-change detection, better for screencasts/narrative content." },
-          "sceneThreshold": { "type": "number", "description": "Video/animated-image only: scene-change sensitivity in 0-1 (default 0.3). Only used when mode=scenes. Lower = more frames, higher = fewer." }
-        },
-        "required": ["attachmentId"]
-      }
-    },
-    {
-      "name": "jira_comment",
-      "description": "Add, update, or delete a comment on a Jira issue. action defaults to \"add\". Can only edit/delete your own comments. Use Jira wiki markup (Atlassian renderer syntax), not GitHub/CommonMark markdown.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "action": { "type": "string", "enum": ["add", "update", "delete"], "description": "Operation (default: add)" },
-          "issueKey": { "type": "string", "description": "Jira issue key, e.g. FOO-123" },
-          "commentId": { "type": "string", "description": "Comment ID (required for update/delete)" },
-          "body": { "type": "string", "description": "Comment text. Use Jira wiki markup (Atlassian renderer syntax), not GitHub/CommonMark markdown. Required for add/update unless attachments are provided." },
-          "attachments": { "type": "array", "items": { "type": "string" }, "description": "Local file paths to upload as attachments on the issue (add action). Body is optional when attaching files." }
-        },
-        "required": ["issueKey"]
-      }
-    },
-    {
-      "name": "jira_version",
-      "description": "Manage Jira fix versions (releases): create, update, release, archive, delete. action defaults to \"create\". For create pass projectKey + name. For update/release/archive/delete pass id (look it up via jira_search resource=versions). \"release\" sets released=true and defaults releaseDate to today. Once a version exists you can set it on tickets via jira_mutate update.fixVersion.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "action": { "type": "string", "enum": ["create", "update", "release", "archive", "delete"], "description": "Operation (default: create)" },
-          "projectKey": { "type": "string", "description": "Jira project code (required for create when not auto-resolvable)" },
-          "project": { "type": "string", "description": "Alias for projectKey" },
-          "id": { "type": "string", "description": "Version id (required for update/release/archive/delete; look up via jira_search resource=versions)" },
-          "name": { "type": "string", "description": "Version name, e.g. \"9.1.0\" (required for create; optional rename for update)" },
-          "description": { "type": "string", "description": "Version description (optional)" },
-          "startDate": { "type": "string", "description": "Start date in YYYY-MM-DD (optional)" },
-          "releaseDate": { "type": "string", "description": "Release date in YYYY-MM-DD (optional; defaults to today on action=release)" },
-          "released": { "type": "boolean", "description": "Released flag (optional; action=release forces true)" },
-          "archived": { "type": "boolean", "description": "Archived flag (optional; action=archive forces true)" }
-        }
-      }
+      },
+      "annotations": { "title": "Write to Jira", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true }
     }
   ],
   "bitbucket": [
     {
       "name": "bitbucket_search",
-      "description": "Discover Bitbucket resources (PRs, repos, branches, users). Set resource:\n• \"pull_requests\" (default) — list PRs by state/branch/text; mine=true for your inbox\n• \"repos\" — list repositories in a project\n• \"branches\" — list or filter branches in a repo\n• \"users\" — find users by name/email (pass query); add projectKey+repoSlug to restrict to users with repo access. ALWAYS use this to look up valid usernames before adding reviewers to a PR.",
+      "description": "Discover Bitbucket resources (PRs, repos, branches, users). Set resource:\n• \"pull_requests\" (default) — list PRs by state/branch/text; mine=true for your inbox\n• \"repos\" — list repositories in a project\n• \"branches\" — list or filter branches in a repo\n• \"users\" — find users by name/email (pass query); add projectKey+repoSlug to restrict to users with repo access. Use it to resolve a person to a username before assigning them.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -257,11 +285,12 @@
           "limit": { "type": "number", "description": "Max results per page (default 25)", "default": 25 },
           "start": { "type": "number", "description": "Pagination offset (default 0)", "default": 0 }
         }
-      }
+      },
+      "annotations": { "title": "Search Bitbucket", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": true }
     },
     {
       "name": "bitbucket_get_pr",
-      "description": "Full details for one PR: metadata, commits, open comments, blockers, optional diff, and any attachments referenced from the description or comments (with attachment ID + filename). IMPORTANT: The PR branch is often not the locally checked-out branch. Do NOT read files with local tools (Read, git_get_diff, etc.) for PR context — use bitbucket_get_file with the PR's source branch instead. To view an attachment's contents, call bitbucket_get_attachment with the surfaced attachment ID. The response includes a \"Viewing as\" line — if it says \"you are the author\", do NOT add review comments or a summary unless explicitly asked; just answer questions about the PR. If it says \"you are a reviewer\", default to posting inline comments for suggested changes and a final summary comment.",
+      "description": "Full details for one PR: metadata, commits, open comments, blockers, optional diff, and any attachments referenced from the description or comments (with attachment ID + filename). IMPORTANT: The PR branch is often not the locally checked-out branch. Do NOT read files with local tools (Read, git_get_context, etc.) for PR context — use bitbucket_get_file with the PR's source branch instead. To view an attachment's contents, call get_attachment with source=bitbucket and the surfaced attachment ID. The response includes a \"Viewing as\" line. As the author, bitbucket_comment refuses new top-level comments (replies still work) — just answer questions about the PR. As a reviewer, default to inline comments for suggested changes plus a final summary comment.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -282,9 +311,11 @@
           "commentsStart": { "type": "number", "description": "Comment pagination offset (default 0)", "default": 0 },
           "commitsLimit": { "type": "number", "description": "Max commits (default 25)", "default": 25 },
           "diffMaxChars": { "type": "number", "description": "Max diff chars when includeDiff=true (default 8000)", "default": 8000 },
+          "diffCharOffset": { "type": "number", "description": "Skip this many diff characters (for paging through a large diff)", "default": 0 },
           "fullDescription": { "type": "boolean", "description": "Return the full PR description even when long (default false — descriptions over ~2000 chars are truncated to save context)", "default": false }
         }
-      }
+      },
+      "annotations": { "title": "Get pull request", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": true }
     },
     {
       "name": "bitbucket_mutate",
@@ -298,7 +329,7 @@
           "repo": { "type": "string", "description": "Alias for repoSlug" },
           "repoPath": { "type": "string", "description": "Local path of the repo to auto-detect project/repo from (overrides workspace roots). Usually unnecessary if projectKey+repoSlug are given." },
           "prId": { "type": "number", "description": "Target PR number (optional, auto-resolved from branch)" },
-          "action": { "type": "string", "enum": ["approve", "unapprove", "needs_work", "decline", "merge"], "description": "Lifecycle action to perform (optional). needs_work = mark your reviewer status as \"Needs work\" (changes requested)." },
+          "action": { "type": "string", "enum": ["create", "update", "approve", "unapprove", "needs_work", "decline", "merge"], "description": "Action to perform (optional — create/update are implied by a create/update object). needs_work = mark your reviewer status as \"Needs work\" (changes requested)." },
           "mergeStrategy": { "type": "string", "enum": ["MERGE_COMMIT", "SQUASH", "FAST_FORWARD"], "description": "Merge strategy (action=merge only)" },
           "mergeMessage": { "type": "string", "description": "Custom merge commit message (action=merge only)" },
           "declineMessage": { "type": "string", "description": "Decline message (action=decline only)" },
@@ -308,8 +339,12 @@
               "title": { "type": "string", "description": "PR title" },
               "description": { "type": "string", "description": "PR description (optional)" },
               "fromBranch": { "type": "string", "description": "Source branch (defaults to current branch)" },
-              "toBranch": { "type": "string", "description": "Target branch (default: master)" },
-              "reviewers": { "type": "array", "items": { "type": "string" }, "description": "Reviewer usernames. Use bitbucket_search resource=users to look up valid usernames before setting this." },
+              "toBranch": { "type": "string", "description": "Target branch (defaults to the repository default branch as Bitbucket reports it)" },
+              "reviewers": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Reviewer usernames (not display names). Each is verified against Bitbucket and the call is rejected with candidates if one does not resolve."
+              },
               "pickReviewers": { "type": "boolean", "description": "Show an interactive reviewer picker before creating the PR (lists users with repo access)" }
             },
             "required": ["title"]
@@ -320,15 +355,21 @@
               "title": { "type": "string", "description": "Updated PR title (optional)" },
               "description": { "type": "string", "description": "Updated description, or empty string to clear (optional)" },
               "toBranch": { "type": "string", "description": "Updated target branch (optional)" },
-              "reviewers": { "type": "array", "items": { "type": "string" }, "description": "Updated reviewer usernames. Empty array clears reviewers. Use bitbucket_search resource=users to look up valid usernames before setting this." }
+              "reviewers": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Reviewer usernames. This replaces the reviewer set, so include everyone who should stay — dropping or clearing existing reviewers is rejected unless replaceReviewers=true."
+              },
+              "replaceReviewers": { "type": "boolean", "description": "Allow update.reviewers to remove reviewers who are currently on the PR. Only set this when the user asked for a reviewer to be removed." }
             }
           }
         }
-      }
+      },
+      "annotations": { "title": "Write to pull request", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true }
     },
     {
       "name": "bitbucket_comment",
-      "description": "Add, update, or delete a PR comment. action defaults to \"add\". This tool posts COMMENTS, never tasks — never set severity=BLOCKER to create a task. severity=BLOCKER is rejected on add and only ever valid on update to escalate an already-blocking comment. To create a task, use bitbucket_pr_tasks (action=create), and only when the user explicitly asks for a task. For code changes, ALWAYS use inline comments with suggestion when exact replacement code is available. Keep any explanatory text before the suggestion block only (never after), or Bitbucket may hide Apply suggestion. Replies MUST use commentId. Only one reply per thread per author: if you already replied to a comment, update your existing reply (action=update commentId=<your-reply-id>) instead of posting a second one. The server enforces this and will reject the second add. Keep comments concise, no emojis. Only call proactively (without being asked) when you are a reviewer on the PR (i.e. \"Viewing as\" says \"you are a reviewer\") — never post unsolicited comments on PRs you authored. For inline comments: ALWAYS pass fromHash + toHash matching the commit you actually reviewed (read from bitbucket_pr_diff or bitbucket_get_pr output). Without them the anchor falls back to current PR head, and if the branch advanced between review and post the line number will point at unrelated code. When the comment body references another comment by id, render it as a markdown hyperlink `[#<id>](<baseUrl>/projects/<PROJECT>/repos/<REPO>/pull-requests/<prId>/overview?commentId=<id>)` — never a bare `#<id>`, which is unclickable in Bitbucket's renderer.",
+      "description": "Add, update, or delete a PR comment. action defaults to \"add\"; a reply is action=add with commentId. Posts COMMENTS, never tasks: severity=BLOCKER is rejected on add — use bitbucket_pr_tasks (action=create) for a task, and only when the user explicitly asks. For code changes use an inline comment with suggestion whenever exact replacement code exists. Keep comments concise, no emojis (rejected). Enforced server-side, so you do not have to track it: one reply per thread per author (update your existing reply instead), no duplicate of a comment you already posted, no new top-level comment on a PR you authored (pass asAuthor=true only if the user asked for one), explanatory text only before a suggestion block, and bare \"#123\" references rewritten into clickable comment links. Inline comments anchor to the commits bitbucket_get_pr last showed you for that PR — remembered per session, remapped onto current head if the branch advanced — so fromHash/toHash are only needed to override that.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -348,20 +389,22 @@
           "fileType": { "type": "string", "enum": ["TO", "FROM"], "description": "Diff side: TO (new, default) or FROM (old)" },
           "multilineStartLine": { "type": "number", "description": "First line of multiline anchor (pair with line as last line)" },
           "multilineStartLineType": { "type": "string", "enum": ["ADDED", "REMOVED", "CONTEXT"], "description": "Line type for multilineStartLine" },
-          "fromHash": { "type": "string", "description": "Base/target commit of the diff you reviewed (from bitbucket_pr_diff or bitbucket_get_pr). Pair with toHash so the anchor binds to the exact commit, not whatever the PR head happens to be at post time." },
-          "toHash": { "type": "string", "description": "Source/feature commit of the diff you reviewed (from bitbucket_pr_diff or bitbucket_get_pr). Pair with fromHash. If the PR has advanced since, Bitbucket will mark the comment outdated — that is the correct behaviour." },
+          "fromHash": { "type": "string", "description": "Override the remembered base/target commit for the anchor. Normally unnecessary: reading the PR records the pair for you." },
+          "toHash": { "type": "string", "description": "Override the remembered source/feature commit for the anchor. Pair with fromHash. If the line no longer exists at current head the comment is anchored to the reviewed commit and shows as outdated, which is correct." },
           "suggestion": { "type": "string", "description": "Replacement code to suggest. Use whenever proposing a concrete code change. Posted as the final ```suggestion``` block so Apply suggestion appears. Requires filePath + line." },
           "state": { "type": "string", "enum": ["OPEN", "RESOLVED"], "description": "Task state for BLOCKER comments (update only)" },
           "threadResolved": { "type": "boolean", "description": "Resolve/reopen normal comment thread (update only)" },
           "severity": { "type": "string", "enum": ["NORMAL", "BLOCKER"], "description": "Comment severity. Leave unset — comments default to NORMAL. BLOCKER turns the comment into a task and is REJECTED on add; only pass BLOCKER on update to escalate an existing comment when the user explicitly asks. To create a task, use bitbucket_pr_tasks instead." },
+          "asAuthor": { "type": "boolean", "description": "Allow a new top-level comment on a PR you authored. Only set this when the user explicitly asked you to comment on your own PR; replies never need it." },
           "pending": { "type": "boolean", "description": "Add only. Post the comment as a PENDING draft-review comment instead of publishing it immediately — it stays unpublished until the user publishes the review from the Bitbucket UI. Only set this when the user EXPLICITLY asks for a pending/draft/unpublished comment; default published behaviour otherwise." }
         },
         "required": ["prId"]
-      }
+      },
+      "annotations": { "title": "Write PR comment", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true }
     },
     {
       "name": "bitbucket_get_file",
-      "description": "Raw file content from Bitbucket at a branch, tag, or commit. CRITICAL: if the PR branch being reviewed is NOT the currently checked-out local branch, ALL additional file context for that review MUST come from this tool — never from local Read, git_get_diff, or any tool that reads local disk. Pass the PR source branch as ref.",
+      "description": "Raw file content from Bitbucket at a branch, tag, or commit — the only correct source of file context for a PR whose branch is not checked out locally (local Read/git tools would show a different branch). Pass prId to read the PR source branch without looking it up, or ref for an explicit branch/tag/commit; with neither you get the repository default branch. Every response starts with the path and the ref it came from, and pages via maxChars/charOffset.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -371,34 +414,14 @@
           "repo": { "type": "string", "description": "Alias for repoSlug" },
           "repoPath": { "type": "string", "description": "Local path of the repo to auto-detect project/repo from (overrides workspace roots). Usually unnecessary if projectKey+repoSlug are given." },
           "path": { "type": "string", "description": "File path, e.g. \"src/index.ts\"" },
-          "ref": { "type": "string", "description": "Branch, tag, or commit hash (defaults to default branch)" }
+          "ref": { "type": "string", "description": "Branch, tag, or commit hash. Omit and pass prId to use the PR source branch; omit both for the repository default branch." },
+          "prId": { "type": "number", "description": "Read the file as it is on this PR's source branch (ignored when ref is given)" },
+          "maxChars": { "type": "number", "description": "Max characters to return (default 10000)", "default": 10000 },
+          "charOffset": { "type": "number", "description": "Skip this many characters (for paging through a large file)", "default": 0 }
         },
         "required": ["path"]
-      }
-    },
-    {
-      "name": "bitbucket_get_attachment",
-      "description": "Fetch a Bitbucket repo attachment by ID and return its contents inline. Attachments are repo-scoped, referenced from PR descriptions/comments via attachment:<id> markdown; use bitbucket_get_pr first to surface IDs. Images are auto-resized + re-encoded; text/JSON/XML return as text; videos and animated images (GIF/APNG/animated WebP) are decoded with ffmpeg into sampled frames (re-call with start/end/frames or mode=scenes to refine); audio returns as an audio block; PDFs return extracted text. Oversized/non-renderable files are saved to a temp file and the path returned.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "projectKey": { "type": "string", "description": "Bitbucket project code (usually auto-detected)" },
-          "project": { "type": "string", "description": "Alias for projectKey" },
-          "repoSlug": { "type": "string", "description": "Repository slug (usually auto-detected)" },
-          "repo": { "type": "string", "description": "Alias for repoSlug" },
-          "repoPath": { "type": "string", "description": "Local path of the repo to auto-detect project/repo from (overrides workspace roots). Usually unnecessary if projectKey+repoSlug are given." },
-          "attachmentId": { "type": "string", "description": "Numeric attachment ID" },
-          "saveTo": { "type": "string", "description": "Optional absolute path to save the original (un-resized) file to disk instead of returning inline" },
-          "maxDimension": { "type": "number", "description": "Max long-edge size in pixels for inline images (default 1568 for images, 768 for video frames)." },
-          "quality": { "type": "number", "description": "JPEG quality for re-encoded inline images (1-100, default 85 for images, 65 for video frames). Ignored for images with alpha (encoded as PNG)." },
-          "frames": { "type": "number", "description": "Video/animated-image only: number of frames to sample (default 6, range 1-60)." },
-          "start": { "type": "number", "description": "Video/animated-image only: start of sample window in seconds (default 0). Use with end/frames to zoom in." },
-          "end": { "type": "number", "description": "Video/animated-image only: end of sample window in seconds (default full duration). Must be greater than start." },
-          "mode": { "type": "string", "enum": ["uniform", "scenes"], "description": "Video/animated-image only: \"uniform\" samples N frames evenly (default); \"scenes\" uses scene-change detection." },
-          "sceneThreshold": { "type": "number", "description": "Video/animated-image only: scene-change sensitivity in 0-1 (default 0.3). Only used when mode=scenes. Lower = more frames, higher = fewer." }
-        },
-        "required": ["attachmentId"]
-      }
+      },
+      "annotations": { "title": "Read repo file", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": true }
     },
     {
       "name": "bitbucket_pr_tasks",
@@ -418,13 +441,14 @@
           "commentId": { "type": "number", "description": "Anchor the task to a specific comment ID (optional for create)" }
         },
         "required": ["prId"]
-      }
+      },
+      "annotations": { "title": "Manage PR tasks", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true }
     }
   ],
   "combined": [
     {
       "name": "complete_work",
-      "description": "Close the loop on a finished branch: merges the open PR and transitions the Jira ticket to Done (or a named transition). Mirrors start_work.",
+      "description": "Close the loop on a finished branch: merges the open PR and transitions the Jira ticket to Done (or a named transition). Mirrors start_work. Refuses to merge while reviewers have not approved or a build on the PR head has failed — pass force=true to merge anyway.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -436,9 +460,11 @@
           "mergeMessage": { "type": "string", "description": "Custom merge commit message (optional)" },
           "projectKey": { "type": "string", "description": "Bitbucket project code (usually auto-detected)" },
           "repoSlug": { "type": "string", "description": "Repository slug (usually auto-detected)" },
-          "skipJiraTransition": { "type": "boolean", "description": "Skip transitioning the Jira ticket (default false)" }
+          "skipJiraTransition": { "type": "boolean", "description": "Skip transitioning the Jira ticket (default false)" },
+          "force": { "type": "boolean", "description": "Merge even though reviewers have not approved or a build failed. Only when the user says to merge anyway." }
         }
-      }
+      },
+      "annotations": { "title": "Merge PR and close ticket", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true }
     }
   ]
 }

@@ -3,11 +3,13 @@ package main
 import (
 	"fmt"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
 // commentDispatch is the bitbucket_comment tool entry.
-func (c *BitbucketClient) commentDispatch(args map[string]any, repoRoot string) (toolResult, error) {
+func (c *BitbucketClient) commentDispatch(session *sessionState, args map[string]any, repoRoot string) (toolResult, error) {
 	action := argString(args, "action")
 	if action == "" {
 		action = "add"
@@ -17,12 +19,14 @@ func (c *BitbucketClient) commentDispatch(args map[string]any, repoRoot string) 
 		return c.updatePrComment(args, repoRoot)
 	case "delete":
 		return c.deletePrComment(args, repoRoot)
+	case "add":
+		return c.addPrComment(session, args, repoRoot)
 	default:
-		return c.addPrComment(args, repoRoot)
+		return toolResult{}, fmt.Errorf("Unknown comment action %q. Use add, update, or delete. To reply, use action=add with commentId.", action)
 	}
 }
 
-func (c *BitbucketClient) addPrComment(args map[string]any, repoRoot string) (toolResult, error) {
+func (c *BitbucketClient) addPrComment(session *sessionState, args map[string]any, repoRoot string) (toolResult, error) {
 	pk, rs, err := c.resolveProjectAndRepo(argString(args, "projectKey"), argString(args, "repoSlug"), repoRoot)
 	if err != nil {
 		return toolResult{}, err
@@ -55,6 +59,27 @@ func (c *BitbucketClient) addPrComment(args map[string]any, repoRoot string) (to
 		}
 	}
 
+	prFetched := false
+	var prCache *bbPullRequest
+	getPR := func() *bbPullRequest {
+		if !prFetched {
+			prFetched = true
+			prCache, _ = bbDecode[bbPullRequest](c, "GET", fmt.Sprintf("%s/pull-requests/%d", c.rp(pk, rs), prID), nil)
+		}
+		return prCache
+	}
+
+	// Reviewing your own PR is not a thing: a new top-level comment from the
+	// author is either an unrequested self-review or a misfire. Replies are
+	// always allowed — answering a reviewer is the author's normal job.
+	if !hasReply && !argBool(args, "asAuthor") {
+		if pr := getPR(); pr != nil && pr.Author.User.Name != "" {
+			if me, merr := c.getCurrentUsername(); merr == nil && me == pr.Author.User.Name {
+				return toolResult{}, fmt.Errorf("You are the author of PR #%d, so this would be an unsolicited comment on your own PR. Reply to an existing thread with commentId instead, or pass asAuthor=true if the user explicitly asked you to comment on your own PR.", prID)
+			}
+		}
+	}
+
 	hasText := has(args, "text")
 	hasSuggestion := has(args, "suggestion")
 	if !hasText && !hasSuggestion {
@@ -80,6 +105,12 @@ func (c *BitbucketClient) addPrComment(args map[string]any, repoRoot string) (to
 		}
 	}
 
+	if !hasReply {
+		if dup, derr := c.duplicateComment(pk, rs, prID, commentText); derr == nil && dup != 0 {
+			return toolResult{}, fmt.Errorf("You already posted this exact comment on PR #%d as #%d. Edit it (action=update commentId=%d) instead of posting it again.", prID, dup, dup)
+		}
+	}
+
 	if argString(args, "severity") == "BLOCKER" {
 		return toolResult{}, fmt.Errorf("Adding a comment never creates a task. Omit severity (comments post as NORMAL). To create a task, use bitbucket_pr_tasks (action=create) — only when the user explicitly asks for one.")
 	}
@@ -87,6 +118,7 @@ func (c *BitbucketClient) addPrComment(args map[string]any, repoRoot string) (to
 	if err != nil {
 		return toolResult{}, err
 	}
+	validText = c.linkifyCommentRefs(validText, pk, rs, prID)
 	body := map[string]any{"text": validText}
 	if sev := argString(args, "severity"); sev != "" {
 		body["severity"] = sev
@@ -101,6 +133,7 @@ func (c *BitbucketClient) addPrComment(args map[string]any, repoRoot string) (to
 
 	var inlineAnchor map[string]any
 	usedFallbackHashes := false
+	usedRememberedHashes := false
 	remapNote := ""
 	hasInline := has(args, "filePath") || has(args, "line")
 	if hasInline {
@@ -128,25 +161,35 @@ func (c *BitbucketClient) addPrComment(args map[string]any, repoRoot string) (to
 			inlineAnchor["srcPath"] = argString(args, "srcPath")
 		}
 
-		pr, _ := bbDecode[bbPullRequest](c, "GET", fmt.Sprintf("%s/pull-requests/%d", c.rp(pk, rs), prID), nil)
+		pr := getPR()
 		currentToHash := ""
 		currentFromHash := ""
 		if pr != nil {
 			currentToHash = pr.FromRef.LatestCommit
 			currentFromHash = pr.ToRef.LatestCommit
 		}
-		fromHash := argString(args, "fromHash")
-		if !has(args, "fromHash") {
+		// Hashes come from the arguments, else from what this client was last
+		// shown for this PR, else from current head (which is only right if the
+		// branch has not moved since the review).
+		argFromHash, argToHash := argString(args, "fromHash"), argString(args, "toHash")
+		if argFromHash == "" && argToHash == "" {
+			if sf, st, ok := session.lastReviewed(reviewKey(pk, rs, prID)); ok {
+				argFromHash, argToHash = sf, st
+				usedRememberedHashes = true
+			}
+		}
+		fromHash := argFromHash
+		if fromHash == "" {
 			fromHash = currentFromHash
 		}
-		toHash := argString(args, "toHash")
-		if !has(args, "toHash") {
+		toHash := argToHash
+		if toHash == "" {
 			toHash = currentToHash
 		}
-		usedFallbackHashes = !has(args, "fromHash") && !has(args, "toHash")
+		usedFallbackHashes = argFromHash == "" && argToHash == ""
 
-		reviewedToHash := argString(args, "toHash")
-		if has(args, "toHash") && currentToHash != "" && reviewedToHash != currentToHash && fileType == "TO" {
+		reviewedToHash := argToHash
+		if argToHash != "" && currentToHash != "" && reviewedToHash != currentToHash && fileType == "TO" {
 			remappedLine, lineOk := c.remapLineThroughDiff(pk, rs, filePath, reviewedToHash, currentToHash, line)
 			remappedMultilineStart := 0
 			multilineProvided := has(args, "multilineStartLine")
@@ -167,7 +210,7 @@ func (c *BitbucketClient) addPrComment(args map[string]any, repoRoot string) (to
 					inlineAnchor["multilineStartLine"] = remappedMultilineStart
 				}
 				toHash = currentToHash
-				if !has(args, "fromHash") {
+				if argFromHash == "" {
 					fromHash = currentFromHash
 				}
 			} else {
@@ -232,7 +275,10 @@ func (c *BitbucketClient) addPrComment(args map[string]any, repoRoot string) (to
 	}
 	var warnings []string
 	if inlineAnchor != nil && usedFallbackHashes {
-		warnings = append(warnings, "No fromHash/toHash passed — anchored to latest PR head. If you reviewed an older commit, the line may now point at unrelated code. Pass fromHash/toHash from bitbucket_pr_diff or bitbucket_get_pr to bind comments to the exact commit you reviewed.")
+		warnings = append(warnings, "No fromHash/toHash passed and no reviewed diff on record for this PR — anchored to latest PR head. Read the PR with bitbucket_get_pr first and the reviewed commits are remembered for you.")
+	}
+	if usedRememberedHashes {
+		warnings = append(warnings, "Anchored to the commits you were shown for this PR.")
 	}
 	if remapNote != "" {
 		warnings = append(warnings, remapNote)
@@ -242,6 +288,108 @@ func (c *BitbucketClient) addPrComment(args map[string]any, repoRoot string) (to
 		warnSuffix = "\n\nNote: " + strings.Join(warnings, " ")
 	}
 	return textResult(fmt.Sprintf("Comment #%d added to PR #%d%s%s.%s", created.ID, prID, location, pendingNote, warnSuffix)), nil
+}
+
+// ── Comment reference links ──────────────────────────────────────────────────
+
+// A bare "#123" is not a link in Bitbucket's renderer, so a comment that refers
+// to another comment that way is a dead end for the reader. These rewrite the
+// reference into a markdown link, but only for ids that really are comments on
+// this PR — "#2 in the list" or "issue #42" resolve to nothing and stay as they
+// are.
+
+var (
+	bareCommentRefRe = regexp.MustCompile(`(^|[\s(])#(\d+)\b`)
+	codeSpanRe       = regexp.MustCompile("(?s)```.*?```|`[^`\n]+`")
+)
+
+func (c *BitbucketClient) commentURL(pk, rs string, prID, commentID int) string {
+	return fmt.Sprintf("%s/projects/%s/repos/%s/pull-requests/%d/overview?commentId=%d",
+		c.baseURL, url.PathEscape(pk), url.PathEscape(rs), prID, commentID)
+}
+
+// refersToSomethingElse reports whether the words before a "#123" name a
+// different kind of thing, so the number is not a comment id.
+func refersToSomethingElse(before string) bool {
+	trimmed := strings.ToLower(strings.TrimRight(before, " \t("))
+	for _, word := range []string{"pr", "pull request", "pull-request", "issue", "task", "build", "ticket"} {
+		if strings.HasSuffix(trimmed, word) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *BitbucketClient) linkifyCommentRefs(text, pk, rs string, prID int) string {
+	if !strings.Contains(text, "#") {
+		return text
+	}
+	// Mask code so ids inside code blocks are left alone, then restore.
+	var spans []string
+	masked := codeSpanRe.ReplaceAllStringFunc(text, func(m string) string {
+		spans = append(spans, m)
+		return fmt.Sprintf("\x00cs%d\x00", len(spans)-1)
+	})
+	exists := map[int]bool{}
+	var out strings.Builder
+	last := 0
+	for _, loc := range bareCommentRefRe.FindAllStringSubmatchIndex(masked, -1) {
+		whole, digits := masked[loc[0]:loc[1]], masked[loc[4]:loc[5]]
+		out.WriteString(masked[last:loc[0]])
+		last = loc[1]
+		id, err := strconv.Atoi(digits)
+		// "PR #42" and "issue #42" are not comment references, whatever ids exist.
+		if err != nil || id <= 0 || refersToSomethingElse(masked[:loc[0]]) {
+			out.WriteString(whole)
+			continue
+		}
+		ok, seen := exists[id]
+		if !seen {
+			cmt, derr := bbDecode[bbComment](c, "GET", fmt.Sprintf("%s/pull-requests/%d/comments/%d", c.rp(pk, rs), prID, id), nil)
+			ok = derr == nil && cmt != nil && cmt.ID == id
+			exists[id] = ok
+		}
+		if !ok {
+			out.WriteString(whole)
+			continue
+		}
+		out.WriteString(masked[loc[0]:loc[4]-1] + fmt.Sprintf("[#%d](%s)", id, c.commentURL(pk, rs, prID, id)))
+	}
+	out.WriteString(masked[last:])
+	masked = out.String()
+	for i, span := range spans {
+		masked = strings.ReplaceAll(masked, fmt.Sprintf("\x00cs%d\x00", i), span)
+	}
+	return masked
+}
+
+// duplicateComment returns the id of an existing non-deleted comment of mine on
+// this PR whose text is identical, or 0. Re-running a review flow otherwise
+// posts the same summary twice, which no instruction reliably prevents.
+func (c *BitbucketClient) duplicateComment(pk, rs string, prID int, text string) (int, error) {
+	want := strings.TrimSpace(text)
+	if want == "" {
+		return 0, nil
+	}
+	me, err := c.getCurrentUsername()
+	if err != nil {
+		return 0, err
+	}
+	data, err := bbDecode[bbPaged[bbActivity]](c, "GET", fmt.Sprintf("%s/pull-requests/%d/activities?limit=100", c.rp(pk, rs), prID), nil)
+	if err != nil || data == nil {
+		return 0, err
+	}
+	var activities []bbActivity
+	activities = append(activities, data.Values...)
+	for _, cmt := range uniqueCommentsFromActivities(activities) {
+		if cmt.Deleted || cmt.Author == nil || cmt.Author.Name != me {
+			continue
+		}
+		if strings.TrimSpace(cmt.Text) == want {
+			return cmt.ID, nil
+		}
+	}
+	return 0, nil
 }
 
 func mapHas(m map[string]any, k string) (any, bool) {
@@ -301,7 +449,7 @@ func (c *BitbucketClient) updatePrComment(args map[string]any, repoRoot string) 
 			if err != nil {
 				return nil, err
 			}
-			body["text"] = vt
+			body["text"] = c.linkifyCommentRefs(vt, pk, rs, prID)
 		}
 		if stateArg != "" && targetSeverity == "BLOCKER" {
 			body["state"] = stateArg
@@ -388,10 +536,14 @@ func (c *BitbucketClient) prTasksDispatch(args map[string]any, repoRoot string) 
 	if action == "" {
 		action = "list"
 	}
-	if action == "list" {
+	switch action {
+	case "list":
 		return c.getPrTasks(args, repoRoot)
+	case "create", "resolve", "reopen", "delete":
+		return c.mutatePrTask(action, args, repoRoot)
+	default:
+		return toolResult{}, fmt.Errorf("Unknown task action %q. Use list, create, resolve, reopen, or delete.", action)
 	}
-	return c.mutatePrTask(action, args, repoRoot)
 }
 
 func (c *BitbucketClient) getPrTasks(args map[string]any, repoRoot string) (toolResult, error) {
@@ -498,8 +650,12 @@ func (c *BitbucketClient) mutatePrTask(action string, args map[string]any, repoR
 		return toolResult{}, fmt.Errorf("Task #%d does not belong to PR #%d.", *taskID, *prID)
 	}
 	newState := "OPEN"
-	if action == "resolve" {
+	switch action {
+	case "resolve":
 		newState = "RESOLVED"
+	case "reopen":
+	default:
+		return toolResult{}, fmt.Errorf("Unknown task action %q. Use list, create, resolve, reopen, or delete.", action)
 	}
 	updated, err := bbDecode[bbTask](c, "PUT", fmt.Sprintf("/tasks/%d?version=%d", *taskID, task.Version), map[string]any{"id": task.ID, "state": newState, "text": task.Text})
 	if err != nil {

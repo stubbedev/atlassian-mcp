@@ -7,6 +7,45 @@ import (
 	"strings"
 )
 
+// resolveReviewers maps caller-supplied reviewer strings to real Bitbucket
+// usernames. A display name or an email prefix looks plausible and is silently
+// dropped by Bitbucket, so an unmatched name is an error with the candidates
+// attached rather than a PR that quietly has no reviewers. When the user lookup
+// itself fails (no permission on the repo, for instance) the names are passed
+// through untouched — validation must not be the reason a PR cannot be opened.
+func (c *BitbucketClient) resolveReviewers(pk, rs string, names []string) ([]string, error) {
+	out := make([]string, 0, len(names))
+	for _, raw := range names {
+		name := strings.TrimSpace(raw)
+		if name == "" {
+			continue
+		}
+		users, err := c.searchUsersRaw(pk, rs, name, 10)
+		if err != nil {
+			logf("reviewer lookup for %q failed, using it as given: %v", name, err)
+			out = append(out, name)
+			continue
+		}
+		matched := ""
+		var candidates []string
+		for _, u := range users {
+			if strings.EqualFold(u.Name, name) {
+				matched = u.Name
+				break
+			}
+			candidates = append(candidates, fmt.Sprintf("%s (%s)", u.Name, u.DisplayName))
+		}
+		if matched == "" {
+			if len(candidates) == 0 {
+				return nil, fmt.Errorf("No Bitbucket user matches reviewer %q. Find the username with bitbucket_search resource=users.", name)
+			}
+			return nil, fmt.Errorf("Reviewer %q is not a Bitbucket username. Did you mean: %s? Usernames come from bitbucket_search resource=users.", name, strings.Join(candidates, ", "))
+		}
+		out = append(out, matched)
+	}
+	return uniqueStrings(out), nil
+}
+
 // createPullRequest opens a PR, or returns the existing open PR for the branch.
 func (c *BitbucketClient) createPullRequest(projectKey, repoSlug, repoRoot, title, description, fromBranch, toBranch string, reviewers []string) (toolResult, error) {
 	pk, rs, err := c.resolveProjectAndRepo(projectKey, repoSlug, repoRoot)
@@ -38,8 +77,12 @@ func (c *BitbucketClient) createPullRequest(projectKey, repoSlug, repoRoot, titl
 			return toolResult{}, err
 		}
 	}
-	reviewerObjs := make([]map[string]any, 0, len(reviewers))
-	for _, name := range reviewers {
+	resolvedReviewers, err := c.resolveReviewers(pk, rs, reviewers)
+	if err != nil {
+		return toolResult{}, err
+	}
+	reviewerObjs := make([]map[string]any, 0, len(resolvedReviewers))
+	for _, name := range resolvedReviewers {
 		reviewerObjs = append(reviewerObjs, map[string]any{"user": map[string]any{"name": name}})
 	}
 	body := map[string]any{
@@ -59,7 +102,7 @@ func (c *BitbucketClient) createPullRequest(projectKey, repoSlug, repoRoot, titl
 	return textResult(fmt.Sprintf("Created PR #%d: %q\n%s", data.ID, data.Title, c.pullRequestURL(pk, rs, data.ID, data))), nil
 }
 
-func (c *BitbucketClient) updatePullRequest(projectKey, repoSlug, repoRoot string, prID int, titleP, descP, toBranchP *string, reviewersP *[]string) (toolResult, error) {
+func (c *BitbucketClient) updatePullRequest(projectKey, repoSlug, repoRoot string, prID int, titleP, descP, toBranchP *string, reviewersP *[]string, replaceReviewers bool) (toolResult, error) {
 	pk, rs, err := c.resolveProjectAndRepo(projectKey, repoSlug, repoRoot)
 	if err != nil {
 		return toolResult{}, err
@@ -73,6 +116,34 @@ func (c *BitbucketClient) updatePullRequest(projectKey, repoSlug, repoRoot strin
 	}
 	if existing == nil {
 		return toolResult{}, fmt.Errorf("PR #%d not found.", prID)
+	}
+	if reviewersP != nil {
+		resolved, rerr := c.resolveReviewers(pk, rs, *reviewersP)
+		if rerr != nil {
+			return toolResult{}, rerr
+		}
+		// A reviewer list is a replacement, not a merge, so a list that just
+		// forgets someone silently un-invites them. Dropping a reviewer has to
+		// be asked for.
+		if !replaceReviewers {
+			var dropped []string
+			for _, r := range existing.Reviewers {
+				keep := false
+				for _, name := range resolved {
+					if strings.EqualFold(name, r.User.Name) {
+						keep = true
+						break
+					}
+				}
+				if !keep {
+					dropped = append(dropped, r.User.Name)
+				}
+			}
+			if len(dropped) > 0 {
+				return toolResult{}, fmt.Errorf("This would remove existing reviewer(s) %s from PR #%d. Include them in update.reviewers to keep them, or pass update.replaceReviewers=true if the user asked for them to be removed.", strings.Join(dropped, ", "), prID)
+			}
+		}
+		reviewersP = &resolved
 	}
 	buildBody := func(pr *bbPullRequest) map[string]any {
 		body := map[string]any{"version": pr.Version}
@@ -148,7 +219,7 @@ func (c *BitbucketClient) mutatePullRequest(args map[string]any, repoRoot string
 		if !hasUpdate {
 			return c.getPullRequest(pk, rs, "", prID)
 		}
-		return c.updatePullRequest(pk, rs, "", prID, titleP, descP, toBranchP, reviewersP)
+		return c.updatePullRequest(pk, rs, "", prID, titleP, descP, toBranchP, reviewersP, argBool(update, "replaceReviewers"))
 	}
 
 	sourceBranch := ""
@@ -171,7 +242,7 @@ func (c *BitbucketClient) mutatePullRequest(args map[string]any, repoRoot string
 	}
 	if existing != nil {
 		if hasUpdate {
-			return c.updatePullRequest(pk, rs, "", existing.ID, titleP, descP, toBranchP, reviewersP)
+			return c.updatePullRequest(pk, rs, "", existing.ID, titleP, descP, toBranchP, reviewersP, argBool(update, "replaceReviewers"))
 		}
 		return c.getPullRequest(pk, rs, "", existing.ID)
 	}
@@ -282,6 +353,45 @@ func (c *BitbucketClient) declinePr(projectKey, repoSlug, repoRoot string, prID 
 	return textResult(fmt.Sprintf("Declined PR #%d: %q.\n%s", data.ID, data.Title, c.pullRequestURL(pk, rs, data.ID, data))), nil
 }
 
+// mergeBlockers lists the reasons a PR looks unfinished: reviewers who have not
+// approved, and failed builds on its head commit. Bitbucket only refuses a merge
+// when the repository has merge checks configured, so a workflow tool that
+// merges on the caller's behalf checks for itself rather than trusting prose.
+func (c *BitbucketClient) mergeBlockers(projectKey, repoSlug string, prID int) []string {
+	pr, err := bbDecode[bbPullRequest](c, "GET", fmt.Sprintf("%s/pull-requests/%d", c.rp(projectKey, repoSlug), prID), nil)
+	if err != nil || pr == nil {
+		return nil
+	}
+	var blockers []string
+	var pending []string
+	for _, r := range pr.Reviewers {
+		if !r.Approved {
+			name := r.User.DisplayName
+			if name == "" {
+				name = r.User.Name
+			}
+			pending = append(pending, name)
+		}
+	}
+	if len(pending) > 0 {
+		blockers = append(blockers, fmt.Sprintf("%d reviewer(s) have not approved: %s", len(pending), strings.Join(pending, ", ")))
+	}
+	if pr.FromRef.LatestCommit != "" {
+		if statuses, serr := c.requestBuildStatus("/commits/" + pr.FromRef.LatestCommit); serr == nil && statuses != nil {
+			for _, st := range statuses.Values {
+				if strings.EqualFold(st.State, "FAILED") {
+					name := st.Name
+					if name == "" {
+						name = st.Key
+					}
+					blockers = append(blockers, "failed build: "+name)
+				}
+			}
+		}
+	}
+	return blockers
+}
+
 func (c *BitbucketClient) mergePr(projectKey, repoSlug, repoRoot string, prID int, mergeStrategy, message string) (toolResult, error) {
 	pk, rs, err := c.resolveProjectAndRepo(projectKey, repoSlug, repoRoot)
 	if err != nil {
@@ -329,6 +439,17 @@ func bitbucketMutate(session *sessionState, args map[string]any, repoRoot string
 		return bitbucket.declinePr(pk, rs, repoRoot, prID, argString(args, "declineMessage"))
 	case "merge":
 		return bitbucket.mergePr(pk, rs, repoRoot, prID, argString(args, "mergeStrategy"), argString(args, "mergeMessage"))
+	case "create":
+		if argMap(args, "create") == nil {
+			return toolResult{}, fmt.Errorf("action=create needs a create object (title, and optionally description/fromBranch/toBranch/reviewers).")
+		}
+	case "update":
+		if argMap(args, "update") == nil {
+			return toolResult{}, fmt.Errorf("action=update needs an update object (title, description, toBranch, or reviewers).")
+		}
+	case "":
+	default:
+		return toolResult{}, fmt.Errorf("Unknown action %q. Use create, update, approve, unapprove, needs_work, decline, or merge.", action)
 	}
 
 	// Interactive reviewer picker for PR creation.

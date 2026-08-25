@@ -537,3 +537,34 @@ func collectImages(dir, prefix string, exts []string) [][]byte {
 	}
 	return out
 }
+
+// getAttachmentDispatch is the get_attachment tool entry: one tool over both
+// services, since the two only differ in how the bytes are fetched. source is
+// optional when only one service is configured — there is nothing to disambiguate.
+func getAttachmentDispatch(session *sessionState, args map[string]any) (toolResult, error) {
+	args = normalizeBitbucketArgs(args)
+	if rerr := validateAttachmentArgs(args); rerr != nil {
+		return toolResult{}, rerr
+	}
+	source := argString(args, "source")
+	if source == "" {
+		switch {
+		case jira != nil && bitbucket == nil:
+			source = "jira"
+		case bitbucket != nil && jira == nil:
+			source = "bitbucket"
+		default:
+			return toolResult{}, fmt.Errorf("source is required: \"jira\" for an issue attachment (IDs from jira_get) or \"bitbucket\" for a repo attachment (IDs from bitbucket_get_pr).")
+		}
+	}
+	if source == "jira" {
+		if jira == nil {
+			return toolResult{}, fmt.Errorf("Jira is not configured.")
+		}
+		return jira.getAttachment(args)
+	}
+	if bitbucket == nil {
+		return toolResult{}, fmt.Errorf("Bitbucket is not configured.")
+	}
+	return bitbucket.getAttachment(args, resolveRepoRoot(session, args))
+}

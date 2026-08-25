@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -212,7 +213,7 @@ func TestFormatDiff(t *testing.T) {
 			},
 		}},
 	})
-	out := formatDiff(d, 8000)
+	out := formatDiff(d, 8000, 0)
 	for _, want := range []string{"# fromHash=aaa toHash=bbb", "--- a/a.go", "+++ b/a.go", "@@ -1,2 +1,3 @@", " ctx", "+new", "-old"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("formatDiff missing %q in:\n%s", want, out)
@@ -308,16 +309,16 @@ func TestRemoteMatchesBitbucketInstance(t *testing.T) {
 
 func TestToolListGating(t *testing.T) {
 	jira, bitbucket = nil, nil
-	if got := len(toolList()); got != 2 {
-		t.Errorf("git-only should be 2 tools, got %d", got)
+	if got := len(toolList()); got != 1 {
+		t.Errorf("git-only should be 1 tool, got %d", got)
 	}
 	jira = &JiraClient{}
-	if got := len(toolList()); got != 10 {
-		t.Errorf("git+context+jira should be 10 tools, got %d", got)
+	if got := len(toolList()); got != 7 {
+		t.Errorf("git+context+jira should be 7 tools, got %d", got)
 	}
 	bitbucket = &BitbucketClient{}
-	if got := len(toolList()); got != 18 {
-		t.Errorf("all should be 18 tools, got %d", got)
+	if got := len(toolList()); got != 14 {
+		t.Errorf("all should be 14 tools, got %d", got)
 	}
 	jira, bitbucket = nil, nil
 }
@@ -483,5 +484,194 @@ func TestSendHintAndAllowedHint(t *testing.T) {
 	got := allowedHint(many)
 	if !strings.Contains(got, "...and 5 more") || strings.Contains(got, "v20") {
 		t.Errorf("allowedHint should cap at 20: %q", got)
+	}
+}
+
+func TestValidateToolArgs(t *testing.T) {
+	// Unknown enum values used to fall through to a handler default.
+	if rerr := validateToolArgs("bitbucket_pr_tasks", map[string]any{"prId": 1.0, "action": "close"}); rerr == nil {
+		t.Error("action=close should be rejected")
+	}
+	if rerr := validateToolArgs("jira_search", map[string]any{"resource": "version"}); rerr == nil {
+		t.Error("resource=version should be rejected")
+	}
+	// Case and separator differences are normalised, not rejected.
+	args := map[string]any{"prId": 1.0, "action": "NEEDS-WORK"}
+	if rerr := validateToolArgs("bitbucket_mutate", args); rerr != nil {
+		t.Fatalf("needs-work should normalise: %v", rerr.Message)
+	}
+	if args["action"] != "needs_work" {
+		t.Errorf("action = %v, want needs_work", args["action"])
+	}
+	// Required fields.
+	if rerr := validateToolArgs("get_attachment", map[string]any{"attachmentId": "  "}); rerr == nil {
+		t.Error("blank attachmentId should be rejected")
+	}
+	if rerr := validateToolArgs("get_attachment", map[string]any{"attachmentId": "12"}); rerr != nil {
+		t.Errorf("valid args rejected: %v", rerr.Message)
+	}
+	// Nested objects are checked too.
+	nested := map[string]any{"version": map[string]any{"action": "publish"}}
+	if rerr := validateToolArgs("jira_mutate", nested); rerr == nil {
+		t.Error("version.action=publish should be rejected")
+	}
+	if rerr := validateToolArgs("no_such_tool", map[string]any{"whatever": 1}); rerr != nil {
+		t.Error("unknown tools should pass through to runTool")
+	}
+}
+
+func TestMarkdownToJiraWiki(t *testing.T) {
+	in := "## Heading\n" +
+		"Some **bold** and `code` and [link](http://x/y).\n" +
+		"- one\n" +
+		"  - nested\n" +
+		"1. first\n" +
+		"```go\nx := **not bold**\n```\n"
+	got, converted := markdownToJiraWiki(in)
+	if !converted {
+		t.Fatal("should report a conversion")
+	}
+	for _, want := range []string{"h2. Heading", "*bold*", "{{code}}", "[link|http://x/y]", "\n* one", "\n** nested", "\n# first", "{code:go}", "x := **not bold**"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	// Text that is already wiki markup must survive untouched, including
+	// markdown-looking punctuation inside a wiki code block.
+	wiki := "h2. Heading\n*bold* and {{code}} and [link|http://x/y]\n* one\n{code:go}\nx := **1** - 2\n{code}"
+	if out, converted := markdownToJiraWiki(wiki); converted || out != wiki {
+		t.Errorf("wiki markup was rewritten:\n%s", out)
+	}
+}
+
+func TestLinkifyCommentRefs(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Only comment 12 exists on this PR.
+		if strings.HasSuffix(r.URL.Path, "/pull-requests/7/comments/12") {
+			w.Write([]byte(`{"id":12,"text":"x"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+	c := NewBitbucketClient(srv.URL, "t")
+	got := c.linkifyCommentRefs("see #12, not #99 or `#12` or code:\n```\n#12\n```", "ENG", "api", 7)
+	want := "see [#12](" + srv.URL + "/projects/ENG/repos/api/pull-requests/7/overview?commentId=12), not #99"
+	if !strings.HasPrefix(got, want) {
+		t.Errorf("linkify = %q, want prefix %q", got, want)
+	}
+	if strings.Count(got, "[#12]") != 1 {
+		t.Errorf("code spans should be left alone: %q", got)
+	}
+	// A number that names something else is not a comment reference.
+	if other := c.linkifyCommentRefs("same as PR #12 and issue #12", "ENG", "api", 7); strings.Contains(other, "[#12]") {
+		t.Errorf("PR/issue references should not be linkified: %q", other)
+	}
+}
+
+func TestResolveReviewers(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("filter") == "nobody" {
+			w.Write([]byte(`{"values":[]}`))
+			return
+		}
+		w.Write([]byte(`{"values":[{"user":{"name":"abs","displayName":"Alexander Bugge Stage"}}]}`))
+	}))
+	defer srv.Close()
+	c := NewBitbucketClient(srv.URL, "t")
+	got, err := c.resolveReviewers("ENG", "api", []string{"ABS"})
+	if err != nil || len(got) != 1 || got[0] != "abs" {
+		t.Errorf("resolveReviewers = %v, %v; want [abs]", got, err)
+	}
+	if _, err := c.resolveReviewers("ENG", "api", []string{"Alexander Bugge Stage"}); err == nil {
+		t.Error("a display name should be rejected with candidates")
+	}
+	if _, err := c.resolveReviewers("ENG", "api", []string{"nobody"}); err == nil {
+		t.Error("an unknown user should be rejected")
+	}
+}
+
+func TestPageText(t *testing.T) {
+	text := strings.Repeat("x", 100)
+	if got := pageText(text, 0, 200, "charOffset", "maxChars"); got != text {
+		t.Error("short text should come back whole")
+	}
+	got := pageText(text, 0, 40, "charOffset", "maxChars")
+	if !strings.HasPrefix(got, strings.Repeat("x", 40)) {
+		t.Error("wrong window")
+	}
+	// A truncated response must name the argument that continues it.
+	if !strings.Contains(got, "charOffset=40") || !strings.Contains(got, "maxChars") {
+		t.Errorf("no continuation hint: %q", got)
+	}
+	if tail := pageText(text, 40, 60, "charOffset", "maxChars"); tail != strings.Repeat("x", 60) {
+		t.Errorf("tail = %q", tail)
+	}
+}
+
+func TestCheckProjectNames(t *testing.T) {
+	if err := checkProjectNames("Component(s)", "PAY", []string{"api"}, []string{"API", "Web"}); err != nil {
+		t.Errorf("case-insensitive match should pass: %v", err)
+	}
+	err := checkProjectNames("Component(s)", "PAY", []string{"Mobile"}, []string{"API", "Web"})
+	if err == nil || !strings.Contains(err.Error(), "API, Web") {
+		t.Errorf("unknown name should list the real ones, got %v", err)
+	}
+	// Nothing known about the project means Jira decides, not us.
+	if err := checkProjectNames("Version(s)", "PAY", []string{"9.9"}, nil); err != nil {
+		t.Errorf("empty available list should not block: %v", err)
+	}
+}
+
+func TestSessionRemembersReviewedHashes(t *testing.T) {
+	s := &sessionState{}
+	key := reviewKey("ENG", "api", 7)
+	if _, _, ok := s.lastReviewed(key); ok {
+		t.Error("nothing should be remembered yet")
+	}
+	s.rememberReviewed(key, "aaa", "bbb")
+	from, to, ok := s.lastReviewed(key)
+	if !ok || from != "aaa" || to != "bbb" {
+		t.Errorf("lastReviewed = %q %q %v", from, to, ok)
+	}
+	// Scoped per repo: the same PR number elsewhere is a different review.
+	if _, _, ok := s.lastReviewed(reviewKey("ENG", "web", 7)); ok {
+		t.Error("review state leaked across repos")
+	}
+	var nilSession *sessionState
+	nilSession.rememberReviewed(key, "a", "b")
+	if _, _, ok := nilSession.lastReviewed(key); ok {
+		t.Error("nil session should be inert")
+	}
+}
+
+func TestToolAnnotations(t *testing.T) {
+	jira, bitbucket = &JiraClient{}, &BitbucketClient{}
+	t.Cleanup(func() { jira, bitbucket = nil, nil })
+	readOnly := map[string]bool{}
+	for _, raw := range toolList() {
+		var tl struct {
+			Name        string `json:"name"`
+			Annotations *struct {
+				Title           string `json:"title"`
+				ReadOnlyHint    bool   `json:"readOnlyHint"`
+				DestructiveHint bool   `json:"destructiveHint"`
+			} `json:"annotations"`
+		}
+		if err := json.Unmarshal(raw, &tl); err != nil {
+			t.Fatal(err)
+		}
+		if tl.Annotations == nil || tl.Annotations.Title == "" {
+			t.Fatalf("%s has no annotations", tl.Name)
+		}
+		readOnly[tl.Name] = tl.Annotations.ReadOnlyHint
+		if tl.Annotations.ReadOnlyHint && tl.Annotations.DestructiveHint {
+			t.Errorf("%s is both read-only and destructive", tl.Name)
+		}
+	}
+	for name, want := range map[string]bool{"jira_get": true, "bitbucket_get_pr": true, "jira_mutate": false, "complete_work": false} {
+		if readOnly[name] != want {
+			t.Errorf("%s readOnlyHint = %v, want %v", name, readOnly[name], want)
+		}
 	}
 }
