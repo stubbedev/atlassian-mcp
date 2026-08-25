@@ -30,7 +30,7 @@
           # vendorHash is kept current by .github/workflows/flake.yml on any
           # change to go.mod / go.sum. If you bump deps locally, set this to
           # pkgs.lib.fakeHash, run `nix build`, and paste the reported hash.
-          vendorHash = "sha256-WISNwWX5uvTEBtjZ9KaJmj6umLSgZe01/P5AtVaPoz0=";
+          vendorHash = "sha256-7C6a+XrlD5krhYLZadyQ59E9RPmCk+ZDFc7PSzBLt3c=";
 
           # Version is embedded from package.json (single source of truth) — no -X needed.
           ldflags = [ "-s" "-w" ];
