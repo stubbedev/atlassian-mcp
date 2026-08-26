@@ -919,8 +919,26 @@ func (e permEntry) resolved() bbUser {
 	return e.bbUser
 }
 
-func (c *BitbucketClient) searchUsers(projectKey, repoSlug, query string, limit, start int) (toolResult, error) {
+// usersPage lists users scoped to the repo/project, falling back to the global
+// user directory when the token may not read repository permissions. The scope
+// is only an access filter on the results, so a 401/403 there is not worth
+// surfacing — silently widening beats handing the caller a dead end.
+func (c *BitbucketClient) usersPage(projectKey, repoSlug, query string, limit, start int) (*bbPaged[permEntry], error) {
 	data, err := bbDecode[bbPaged[permEntry]](c, "GET", c.usersPath(projectKey, repoSlug, query, limit, start), nil)
+	if err != nil && (projectKey != "" || repoSlug != "") && isBbAccessDenied(err) {
+		logf("scoped user lookup denied (%v), falling back to the global user directory", err)
+		return bbDecode[bbPaged[permEntry]](c, "GET", c.usersPath("", "", query, limit, start), nil)
+	}
+	return data, err
+}
+
+func isBbAccessDenied(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "Bitbucket 401 ") || strings.Contains(msg, "Bitbucket 403 ")
+}
+
+func (c *BitbucketClient) searchUsers(projectKey, repoSlug, query string, limit, start int) (toolResult, error) {
+	data, err := c.usersPage(projectKey, repoSlug, query, limit, start)
 	if err != nil {
 		return toolResult{}, err
 	}
@@ -943,7 +961,7 @@ func (c *BitbucketClient) searchUsers(projectKey, repoSlug, query string, limit,
 }
 
 func (c *BitbucketClient) searchUsersRaw(projectKey, repoSlug, query string, limit int) ([]bbUser, error) {
-	data, err := bbDecode[bbPaged[permEntry]](c, "GET", c.usersPath(projectKey, repoSlug, query, limit, 0), nil)
+	data, err := c.usersPage(projectKey, repoSlug, query, limit, 0)
 	if err != nil {
 		return nil, err
 	}

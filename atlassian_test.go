@@ -675,3 +675,32 @@ func TestToolAnnotations(t *testing.T) {
 		}
 	}
 }
+
+func TestUserLookupFallsBackWhenScopeDenied(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if strings.Contains(r.URL.Path, "/permissions/users") {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Write([]byte(`{"values":[{"name":"mm","displayName":"Magnus Melin"}]}`))
+	}))
+	defer srv.Close()
+	c := NewBitbucketClient(srv.URL, "t")
+	users, err := c.searchUsersRaw("ENG", "api", "magnus", 10)
+	if err != nil || len(users) != 1 || users[0].Name != "mm" {
+		t.Fatalf("searchUsersRaw = %v, %v; want [mm] with no error", users, err)
+	}
+	if len(paths) != 2 || !strings.HasSuffix(paths[1], "/users") {
+		t.Errorf("expected a fallback to the global directory, got %v", paths)
+	}
+	// A denial on an unscoped lookup has nothing to fall back to.
+	deny := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer deny.Close()
+	if _, err := NewBitbucketClient(deny.URL, "t").searchUsersRaw("", "", "magnus", 10); err == nil {
+		t.Error("an unscoped 401 should still be an error")
+	}
+}
