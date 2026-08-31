@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -27,6 +29,27 @@ func TestRootsFromHeaders(t *testing.T) {
 	}
 	if got := rootsFromHeaders(http.Header{}); got != nil {
 		t.Errorf("empty headers should yield nil, got %+v", got)
+	}
+}
+
+// TestParseRootList covers the path shapes that only ever arrive from GUI
+// desktop clients: a ~ that no shell expanded, and a Windows drive path that
+// url.Parse reads as a scheme rather than a path. Both used to resolve to "",
+// which silently disables every repo-dependent tool.
+func TestParseRootList(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home dir")
+	}
+	got := parseRootList("file:///srv/a, ~/code/x", `C:\repo`, "  ", "relative/path")
+	want := []string{"/srv/a", filepath.Join(home, "code/x"), `C:\repo`}
+	if len(got) != len(want) {
+		t.Fatalf("got %d roots, want %d: %+v", len(got), len(want), got)
+	}
+	for i, w := range want {
+		if got[i].path != w {
+			t.Errorf("root[%d].path = %q, want %q", i, got[i].path, w)
+		}
 	}
 }
 

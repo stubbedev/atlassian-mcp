@@ -25,6 +25,22 @@ jobs:
       - name: Build
         run: go build -o atlassian-mcp .
 
+      # The .mcpb packer only runs at release time, so exercise it here: a broken
+      # manifest template or missing substitution would otherwise surface on tag day.
+      - name: Pack .mcpb bundle
+        run: |
+          set -euo pipefail
+          packaging/mcpb/pack.sh atlassian-mcp linux dist/atlassian-mcp_linux_amd64.mcpb
+          unzip -p dist/atlassian-mcp_linux_amd64.mcpb manifest.json > manifest.out.json
+          python3 - <<'EOF'
+          import json
+          m = json.load(open("manifest.out.json"))
+          assert m["version"] == json.load(open("package.json"))["version"], m["version"]
+          assert m["compatibility"]["platforms"] == ["linux"], m["compatibility"]
+          assert "__" not in m["version"] + m["server"]["entry_point"], "unsubstituted token"
+          print("mcpb manifest OK", m["version"])
+          EOF
+
       # Real-binary smoke over stdio: a full MCP handshake (initialize →
       # initialized → tools/list) on the official SDK transport. Both services
       # are configured (via env) so the full tool set registers. The trailing

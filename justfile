@@ -20,6 +20,25 @@ build:
 fmt:
     gofmt -w .
 
+# Build a .mcpb bundle for the host platform into dist/ (what publish.yml
+# attaches to a release for every platform). Install it in Claude Desktop via
+# Settings -> Extensions -> Advanced -> install from file.
+bundle:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    goos="$(go env GOOS)"
+    goarch="$(go env GOARCH)"
+    case "$goos" in
+        darwin) platform=darwin ;;
+        windows) platform=win32 ;;
+        *) platform=linux ;;
+    esac
+    ext=""
+    [ "$goos" = windows ] && ext=".exe"
+    mkdir -p dist
+    CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "dist/atlassian-mcp${ext}" .
+    packaging/mcpb/pack.sh "dist/atlassian-mcp${ext}" "$platform" "dist/atlassian-mcp_${goos}_${goarch}.mcpb"
+
 # Recompute the Go module vendorHash in flake.nix from go.mod/go.sum, the same
 # way .github/workflows/flake.yml does. Run after any dependency change.
 sync-flake:

@@ -45,20 +45,21 @@ func readJSONFile(path string) *configFile {
 
 // getConfigPath resolves the config file location in priority order:
 // --config <path> → ATLASSIAN_MCP_CONFIG → ~/.atlassian-mcp.json → ./.atlassian-mcp.json
+// A leading ~ in the explicit paths is expanded (see expandHome).
 func getConfigPath() string {
 	args := os.Args[1:]
 	for i, a := range args {
 		if a == "--config" && i+1 < len(args) {
-			p, _ := filepath.Abs(args[i+1])
+			p, _ := filepath.Abs(expandHome(args[i+1]))
 			return p
 		}
 		if strings.HasPrefix(a, "--config=") {
-			p, _ := filepath.Abs(strings.TrimPrefix(a, "--config="))
+			p, _ := filepath.Abs(expandHome(strings.TrimPrefix(a, "--config=")))
 			return p
 		}
 	}
 	if env := os.Getenv("ATLASSIAN_MCP_CONFIG"); env != "" {
-		p, _ := filepath.Abs(env)
+		p, _ := filepath.Abs(expandHome(env))
 		return p
 	}
 	if home, err := os.UserHomeDir(); err == nil {
@@ -87,6 +88,18 @@ func getConfigPath() string {
 		}
 	}
 	return ""
+}
+
+// expandHome expands a leading ~ in a path. GUI desktop clients spawn the
+// server without a shell, so a ~ in a config path or repo root arrives here
+// literally instead of already expanded.
+func expandHome(p string) string {
+	if p == "~" || strings.HasPrefix(p, "~/") || strings.HasPrefix(p, `~\`) {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, strings.TrimLeft(p[1:], `/\`))
+		}
+	}
+	return p
 }
 
 func fileExists(path string) bool {

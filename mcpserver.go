@@ -300,17 +300,7 @@ var rootHeaders = []string{"X-Repo-Root", "X-Mcp-Roots", "X-Mcp-Root", "Mcp-Root
 func rootsFromHeaders(h http.Header) []rootEntry {
 	var list []rootEntry
 	for _, name := range rootHeaders {
-		for _, v := range h.Values(name) {
-			for _, part := range strings.Split(v, ",") {
-				part = strings.TrimSpace(part)
-				if part == "" {
-					continue
-				}
-				if p := fileURIToPath(part); p != "" {
-					list = append(list, rootEntry{uri: part, path: p})
-				}
-			}
-		}
+		list = append(list, parseRootList(h.Values(name)...)...)
 	}
 	return list
 }

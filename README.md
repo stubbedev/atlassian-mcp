@@ -156,11 +156,22 @@ BITBUCKET_URL=https://bitbucket.example.com
 BITBUCKET_ACCESS_TOKEN=your-bitbucket-personal-access-token
 ```
 
-Config is resolved in this order: `--config <path>` CLI arg → `ATLASSIAN_MCP_CONFIG` env var → `~/.atlassian-mcp.json` → `$XDG_CONFIG_HOME/atlassian-mcp/config.json` (default `~/.config/atlassian-mcp/config.json`) → `.atlassian-mcp.json` in cwd → environment variables.
+Config is resolved in this order: `--config <path>` CLI arg → `ATLASSIAN_MCP_CONFIG` env var → `~/.atlassian-mcp.json` → `$XDG_CONFIG_HOME/atlassian-mcp/config.json` (default `~/.config/atlassian-mcp/config.json`) → `.atlassian-mcp.json` in cwd → environment variables. A leading `~` in the first two is expanded by the server, so a client that spawns it without a shell still resolves the path. Within a file, per-field: a value in the config file wins, environment variables fill the gaps.
 
 ### 2. Connect to your AI tool
 
 No cloning or building required — just point your tool at `npx @stubbedev/atlassian-mcp@latest` and it will install and run automatically.
+
+CLI-driven clients need one line:
+
+```bash
+claude mcp add atlassian -- npx -y @stubbedev/atlassian-mcp@latest       # Claude Code
+codex mcp add atlassian -- npx -y @stubbedev/atlassian-mcp@latest        # Codex CLI / IDE / app
+code --add-mcp '{"name":"atlassian","command":"npx","args":["-y","@stubbedev/atlassian-mcp@latest"]}'   # VS Code
+```
+
+Desktop apps: **Claude Desktop** installs a one-click [`.mcpb` bundle](#claude-desktop) —
+no Node, no JSON. Everything else takes a config file; see below.
 
 > Note: `--prefer-online` can break MCP startup in some clients. Keep the command simple and use the update steps below when you want to refresh.
 
@@ -171,6 +182,66 @@ No cloning or building required — just point your tool at `npx @stubbedev/atla
 ```bash
 claude mcp add atlassian -- npx -y @stubbedev/atlassian-mcp@latest --config ~/.atlassian-mcp.json
 ```
+
+---
+
+#### Claude Desktop
+
+**One-click (recommended).** Grab the `.mcpb` bundle for your platform from the
+[latest release](https://github.com/stubbedev/atlassian-mcp/releases/latest) —
+`atlassian-mcp_darwin_arm64.mcpb` (Apple Silicon), `atlassian-mcp_darwin_amd64.mcpb`
+(Intel Mac), `atlassian-mcp_windows_amd64.mcpb` — then **double-click it**, drag it onto the
+Claude Desktop window, or use **Settings → Extensions → Advanced settings → Install
+Extension…**. The install dialog asks for Jira/Bitbucket URL and token (tokens are stored
+by Claude Desktop, not in a file) plus **Repository**, the working tree the git and PR tools
+default to. Leaving URL/token blank reuses an existing `~/.atlassian-mcp.json`.
+
+The bundle carries the binary, so there is no Node, no `npx`, no `PATH` to fix and no JSON
+to edit. [MCP Bundles](https://github.com/modelcontextprotocol/mcpb) are a Claude Desktop
+feature today; other clients use the config files below.
+
+**Manual config.** Claude Desktop is a GUI app: it launches the server with a minimal
+`PATH`, no shell, and `/` as the working directory. So `command` must be an **absolute
+path** (a bare `npx` fails with `spawn npx ENOENT`), a `.env` file or relative
+`--config` path never resolves, and nothing expands `~` for you — the server expands a
+leading `~` in `--config` / `ATLASSIAN_MCP_CONFIG` itself, but a client that inserts `~`
+anywhere else will not. Config file:
+
+- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "atlassian": {
+      "command": "/absolute/path/to/atlassian-mcp",
+      "env": {
+        "JIRA_URL": "https://jira.example.com",
+        "JIRA_ACCESS_TOKEN": "your-jira-personal-access-token",
+        "BITBUCKET_URL": "https://bitbucket.example.com",
+        "BITBUCKET_ACCESS_TOKEN": "your-bitbucket-personal-access-token",
+        "ATLASSIAN_MCP_REPO_ROOT": "/Users/you/code/my-repo"
+      }
+    }
+  }
+}
+```
+
+To keep `npx`, set `command` to the absolute path of your launcher (`which npx`, e.g.
+`/opt/homebrew/bin/npx`) with `"args": ["-y", "@stubbedev/atlassian-mcp@latest"]`.
+
+`ATLASSIAN_MCP_REPO_ROOT` is what makes `get_dev_context`, `git_get_context`,
+`start_work`, `complete_work` and Bitbucket repo auto-detection usable here: a desktop app
+has no workspace, so it advertises no MCP roots and there is no useful cwd to fall back to.
+Comma-separate several worktrees (first git repo wins); a per-call `repoPath` still
+overrides it.
+
+On Windows, Git is frequently absent from a GUI app's `PATH`. The server probes the usual
+install locations before giving up; set `ATLASSIAN_MCP_GIT_PATH` if yours lives elsewhere.
+
+Server stderr is logged to `~/Library/Logs/Claude/mcp-server-atlassian.log` (macOS) or
+`%APPDATA%\Claude\logs\mcp-server-atlassian.log` (Windows) — read that first when a
+connection fails.
 
 ---
 
@@ -237,34 +308,116 @@ Add to `opencode.json` in your project root (or `~/.config/opencode/opencode.jso
   "mcp": {
     "atlassian": {
       "type": "local",
-      "command": ["npx", "-y", "@stubbedev/atlassian-mcp@latest", "--config", "/home/you/.atlassian-mcp.json"]
+      "command": ["npx", "-y", "@stubbedev/atlassian-mcp@latest", "--config", "/home/you/.atlassian-mcp.json"],
+      "environment": { "ATLASSIAN_MCP_REPO_ROOT": "/home/you/code/my-repo" }
     }
   }
 }
 ```
 
+`environment` also accepts the `JIRA_*` / `BITBUCKET_*` variables if you would rather not
+keep a config file. Set `"type": "remote"` with `"url"` and `"headers"` to point at a
+shared [HTTP server](#running-as-an-http-server-shared--behind-a-proxy) instead.
+
 ---
 
-#### Codex CLI
+#### Codex (CLI, IDE extension, app)
 
-Add to `~/.codex/config.yaml`:
+One command — it writes the config for all three:
 
-```yaml
-mcpServers:
-  atlassian:
-    command: npx
-    args:
-      - -y
-      - @stubbedev/atlassian-mcp@latest
-      - --config
-      - /home/you/.atlassian-mcp.json
+```bash
+codex mcp add atlassian -- npx -y @stubbedev/atlassian-mcp@latest
 ```
+
+Or edit `~/.codex/config.toml` directly (`.codex/config.toml` in a trusted project for a
+project-scoped server). Note the TOML table name is `mcp_servers`, with an underscore:
+
+```toml
+[mcp_servers.atlassian]
+command = "npx"
+args = ["-y", "@stubbedev/atlassian-mcp@latest", "--config", "/home/you/.atlassian-mcp.json"]
+
+# Optional — instead of a config file, and to pin the repo for the git/PR tools:
+[mcp_servers.atlassian.env]
+JIRA_URL = "https://jira.example.com"
+JIRA_ACCESS_TOKEN = "…"
+ATLASSIAN_MCP_REPO_ROOT = "/home/you/code/my-repo"
+```
+
+Codex picks the transport from the keys present: `command` means stdio, `url` means
+streamable HTTP. To share one [HTTP server](#running-as-an-http-server-shared--behind-a-proxy):
+
+```toml
+[mcp_servers.atlassian]
+url = "http://127.0.0.1:7337/mcp"
+bearer_token_env_var = "ATLASSIAN_MCP_HTTP_TOKEN"
+```
+
+---
+
+#### VS Code / GitHub Copilot
+
+```bash
+code --add-mcp '{"name":"atlassian","command":"npx","args":["-y","@stubbedev/atlassian-mcp@latest"]}'
+```
+
+Or commit `.vscode/mcp.json` with a `servers` object of the same shape to share it with the
+repo.
 
 ---
 
 #### Any other MCP-compatible tool
 
-Most tools that support MCP accept the same JSON format. Use `npx` as the command with `["-y", "@stubbedev/atlassian-mcp@latest", "--config", "/path/to/config.json"]` as the args.
+Most clients accept the Claude Desktop shape — an `mcpServers` object keyed by name, with
+`command`, `args` and `env`:
+
+```json
+{
+  "mcpServers": {
+    "atlassian": {
+      "command": "npx",
+      "args": ["-y", "@stubbedev/atlassian-mcp@latest"],
+      "env": {
+        "JIRA_URL": "https://jira.example.com",
+        "JIRA_ACCESS_TOKEN": "…",
+        "BITBUCKET_URL": "https://bitbucket.example.com",
+        "BITBUCKET_ACCESS_TOKEN": "…",
+        "ATLASSIAN_MCP_REPO_ROOT": "/home/you/code/my-repo"
+      }
+    }
+  }
+}
+```
+
+LM Studio uses exactly that shape in its own `mcp.json` (edit it from the app's plugin
+panel); Cherry Studio, Witsy, Jan and 5ire have in-app MCP dialogs with the same fields.
+
+Goose is the exception — its `~/.config/goose/config.yaml` uses `extensions:` with `cmd`
+rather than `command`:
+
+```yaml
+extensions:
+  atlassian:
+    enabled: true
+    type: stdio
+    cmd: npx
+    args: ["-y", "@stubbedev/atlassian-mcp@latest"]
+    envs:
+      ATLASSIAN_MCP_REPO_ROOT: /home/you/code/my-repo
+```
+
+Every GUI client brings the caveats from the [Claude Desktop](#claude-desktop) section:
+absolute `command` path, no usable cwd, no MCP roots — so set `ATLASSIAN_MCP_REPO_ROOT`.
+
+---
+
+#### ChatGPT (desktop / web) — not supported
+
+ChatGPT connectors accept **remote HTTPS MCP servers only** (streamable HTTP or SSE, with
+OAuth or no auth); it cannot spawn a local stdio server. This server's `--http` mode speaks
+the right protocol, but making it work would mean exposing an endpoint that reaches your
+self-hosted Jira/Bitbucket to OpenAI's servers, and ChatGPT offers no place for the static
+bearer token this server uses. Use a client from the list above.
 
 ### Updating existing installs
 
@@ -281,7 +434,9 @@ Then restart your MCP client.
 ### Install without npm
 
 The server is a single static Go binary. The `npx` path above downloads the prebuilt
-binary for your platform on first run; these alternatives skip Node entirely:
+binary for your platform on first run; these alternatives skip Node entirely — as does the
+[`.mcpb` bundle](#claude-desktop) for Claude Desktop, and the per-platform binaries
+attached to every [release](https://github.com/stubbedev/atlassian-mcp/releases/latest):
 
 ```bash
 # Go toolchain — installs to $GOBIN / $GOPATH/bin
@@ -292,9 +447,11 @@ nix run github:stubbedev/atlassian-mcp -- --config ~/.atlassian-mcp.json
 ```
 
 Then point your MCP client's `command` at the resulting `atlassian-mcp` binary
-instead of `npx`. On these paths `ffmpeg`/`ffprobe` must be available on `PATH`
-(or set `ATLASSIAN_MCP_FFMPEG_PATH` / `ATLASSIAN_MCP_FFPROBE_PATH`); the npm
-wrapper bundles them automatically.
+instead of `npx`. On these Node-free paths (`go install`, Nix, a release binary or the
+`.mcpb` bundle) `ffmpeg`/`ffprobe` must be available on `PATH` for video and
+animated-image attachments (or set `ATLASSIAN_MCP_FFMPEG_PATH` /
+`ATLASSIAN_MCP_FFPROBE_PATH`); the npm wrapper bundles them automatically. Everything
+else — still images, PDF text, JSON/text — is pure Go and needs nothing extra.
 
 ### Running as an HTTP server (shared / behind a proxy)
 
@@ -324,9 +481,10 @@ ATLASSIAN_MCP_HTTP=1 atlassian-mcp   # same, via env
 **Repo context comes from the client, not the server's working directory.** Tools that
 need a repo (`git_get_context`, `get_dev_context`, `start_work`, `complete_work`, and
 Bitbucket project/repo auto-detection) resolve it in this order: an explicit `repoPath`
-argument → a **root pinned via request header** (see below) → the client's **MCP workspace
-roots** (the server asks via `roots/list`, caches per session, and refreshes on
-`notifications/roots/list_changed`) → the process cwd (stdio
+argument → a **root pinned via request header** (see below) → **`ATLASSIAN_MCP_REPO_ROOT`**
+(comma-separated for several worktrees — the only workspace signal a GUI desktop client
+can give) → the client's **MCP workspace roots** (the server asks via `roots/list`, caches
+per session, and refreshes on `notifications/roots/list_changed`) → the process cwd (stdio
 only). So one shared HTTP server handles many worktrees: each client's own workspace drives
 its calls. When a session exposes **several** roots (multiple worktrees), a tool with no
 `repoPath` uses the first git-repo root; pass `repoPath` (an absolute path, or a worktree
@@ -384,8 +542,8 @@ pure-Go implementation shell out to external binaries:
 - **`ffmpeg` + `ffprobe`** — video and animated-image frame sampling. The npm wrapper bundles
   [`ffmpeg-static`](https://www.npmjs.com/package/ffmpeg-static) /
   [`ffprobe-static`](https://www.npmjs.com/package/ffprobe-static) and injects their paths, so the
-  npx install path is zero-config. On the `go install` / Nix paths, install `ffmpeg` (it provides
-  `ffprobe`) or set the env vars below.
+  npx install path is zero-config. On every Node-free path (`go install`, Nix, release binary,
+  `.mcpb` bundle), install `ffmpeg` (it provides `ffprobe`) or set the env vars below.
 - **`pdftoppm` (poppler) or `mutool` (MuPDF)** — only needed to rasterize *scanned* PDFs that have no
   extractable text. If neither is on `PATH`, such PDFs are saved to disk instead.
 
@@ -395,6 +553,8 @@ pure-Go implementation shell out to external binaries:
 | --- | --- | --- |
 | `ATLASSIAN_MCP_HTTP` | Run as a Streamable HTTP server instead of stdio. `1`/`true` → `127.0.0.1:7337`; or set an explicit `host:port`. Same as `--http`. | unset (stdio) |
 | `ATLASSIAN_MCP_HTTP_TOKEN` | Bearer token for HTTP mode. Optional on loopback binds; **required** on non-loopback binds. | unset |
+| `ATLASSIAN_MCP_REPO_ROOT` | Default workspace root(s) for the git/PR tools, comma-separated. `file://` URIs, absolute paths, `~/…` and Windows drive paths all work. Needed by clients that expose no MCP roots (desktop apps). Overridden by a `repoPath` argument or a root header. | unset |
+| `ATLASSIAN_MCP_GIT_PATH` | Path to the `git` executable. Only needed when `git` is off the host app's `PATH`; the server already probes the usual install locations. | `git` on `PATH` |
 | `ATLASSIAN_MCP_FFMPEG_PATH` | Path to `ffmpeg` binary. | npm: bundled `ffmpeg-static`; otherwise `ffmpeg` on `PATH` |
 | `ATLASSIAN_MCP_FFPROBE_PATH` | Path to `ffprobe` binary. | npm: bundled `ffprobe-static`; otherwise `ffprobe` on `PATH` |
 | `ATLASSIAN_MCP_TMP_TTL_DAYS` | Auto-saved attachments older than this are pruned. | `7` |
@@ -409,8 +569,10 @@ This package is published to npm as `@stubbedev/atlassian-mcp`.
 Use semantic versioning for releases. Breaking tool-surface changes should bump the minor version while `<1.0.0` (for example `0.0.x` -> `0.1.0`).
 
 On a pushed `v*` tag, `.github/workflows/publish.yml` cross-compiles the Go binary for 14
-OS/arch targets, attaches them to a GitHub release, and publishes the npm wrapper (which
-downloads the matching binary on install).
+OS/arch targets, packs six of them into `.mcpb` bundles for one-click desktop install
+(`packaging/mcpb/pack.sh`, macOS/Windows/Linux × amd64/arm64), attaches everything to a
+GitHub release, and publishes the npm wrapper (which downloads the matching binary on
+install). `just bundle` builds a bundle for the host platform locally.
 
 Release flow (`just` drives it; it refuses to run on a dirty tree):
 

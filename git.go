@@ -3,11 +3,38 @@ package main
 import (
 	"fmt"
 	"net/url"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 )
+
+// gitBin resolves the git executable once: ATLASSIAN_MCP_GIT_PATH wins, then
+// PATH, then the usual install locations. GUI-launched desktop clients inherit
+// a minimal PATH that often lacks Git (notably on Windows), so a PATH miss is
+// not proof that git is absent.
+var gitBin = sync.OnceValue(func() string {
+	if p := expandHome(os.Getenv("ATLASSIAN_MCP_GIT_PATH")); p != "" {
+		return p
+	}
+	if p, err := exec.LookPath("git"); err == nil {
+		return p
+	}
+	for _, c := range []string{
+		`C:\Program Files\Git\cmd\git.exe`,
+		`C:\Program Files (x86)\Git\cmd\git.exe`,
+		filepath.Join(os.Getenv("LOCALAPPDATA"), `Programs\Git\cmd\git.exe`),
+		"/usr/bin/git", "/opt/homebrew/bin/git", "/usr/local/bin/git",
+	} {
+		if fileExists(c) {
+			return c
+		}
+	}
+	return "git"
+})
 
 // Allowlist for git refs (commits, branches used as refs in diff commands).
 var safeRefRe = regexp.MustCompile(`^[a-zA-Z0-9/_.\-@{}~^:]+(\.\.\.[a-zA-Z0-9/_.\-@{}~^:]+)?$`)
@@ -17,7 +44,7 @@ var safeBranchRe = regexp.MustCompile(`^[a-zA-Z0-9/_.\-]+$`)
 
 // gitIn runs git in cwd and returns trimmed stdout, or an error.
 func gitIn(cwd string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+	cmd := exec.Command(gitBin(), args...)
 	if cwd != "" {
 		cmd.Dir = cwd
 	}

@@ -65,10 +65,26 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v7
+
       - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
+
+      # MCP Bundles: one-click install in Claude Desktop (Settings -> Extensions).
+      # Each bundle is manifest.json + that platform's binary, so the desktop app
+      # needs no client JSON, no Node and no PATH fixing.
+      - name: Pack .mcpb bundles
+        run: |
+          set -euo pipefail
+          pack() { packaging/mcpb/pack.sh "dist/$1" "$2" "dist/atlassian-mcp_$3.mcpb"; }
+          pack atlassian-mcp_darwin_arm64       darwin darwin_arm64
+          pack atlassian-mcp_darwin_amd64       darwin darwin_amd64
+          pack atlassian-mcp_windows_amd64.exe  win32  windows_amd64
+          pack atlassian-mcp_windows_arm64.exe  win32  windows_arm64
+          pack atlassian-mcp_linux_amd64        linux  linux_amd64
+          pack atlassian-mcp_linux_arm64        linux  linux_arm64
 
       - name: Create / update GitHub release
         uses: softprops/action-gh-release@v3

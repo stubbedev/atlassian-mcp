@@ -193,7 +193,7 @@ func buildInstructions(config Config) string {
 	w(bbLine)
 	w("")
 	w("## Repo context")
-	w("- Tools that need a repo (git_get_context, get_dev_context, start_work, complete_work, and Bitbucket project/repo auto-detection) resolve it from your MCP workspace roots, or from an explicit `repoPath` argument. Pass `repoPath` (or `projectKey`+`repoSlug` for Bitbucket) when working outside a single known workspace.")
+	w("- Tools that need a repo (git_get_context, get_dev_context, start_work, complete_work, and Bitbucket project/repo auto-detection) resolve it from your MCP workspace roots, from the ATLASSIAN_MCP_REPO_ROOT env var, or from an explicit `repoPath` argument. Pass `repoPath` (or `projectKey`+`repoSlug` for Bitbucket) when working outside a single known workspace.")
 	w("")
 	w("## Use these tools — do NOT shell out")
 	w("- \"What am I working on / what's the status / show me the context\" → call `get_dev_context` first. It returns branch state, linked Jira tickets, the open PR, and reviewer status in one shot. The same report is also the `dev-context://current` resource — re-read it for fresh state instead of re-calling the tool.")

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -122,6 +123,14 @@ func (s *sessionState) setHeaderRoots(list []rootEntry) {
 	s.mu.Unlock()
 }
 
+// envRoots holds workspace roots pinned via ATLASSIAN_MCP_REPO_ROOT. GUI
+// desktop clients (Claude Desktop, LM Studio, …) expose no MCP roots and start
+// the server with cwd "/", so this env var is the only workspace signal they
+// have. Comma-separate for several worktrees.
+var envRoots = sync.OnceValue(func() []rootEntry {
+	return parseRootList(os.Getenv("ATLASSIAN_MCP_REPO_ROOT"))
+})
+
 // loadRoots returns the session's workspace roots, querying roots/list once and
 // caching the result. The round-trip is issued WITHOUT holding the lock — it
 // blocks on the client (HTTP back-channel, up to 120s) and must not stall other
@@ -136,6 +145,12 @@ func (s *sessionState) loadRoots() []rootEntry {
 		return r
 	}
 	s.mu.Unlock()
+	// Env-pinned roots are as authoritative as header roots: a client that gave
+	// us neither roots nor a header still gets repo tools.
+	if list := envRoots(); len(list) > 0 {
+		s.setHeaderRoots(list)
+		return list
+	}
 	if !s.caps.roots {
 		return nil
 	}
@@ -202,6 +217,25 @@ func (s *sessionState) resolveRepo(repoPathArg string) string {
 	return primaryRoot(s.loadRoots())
 }
 
+// parseRootList turns comma-separated file:// URIs or filesystem paths
+// (absolute, ~-prefixed, or Windows drive paths) into root entries. Shared by
+// the root request headers and ATLASSIAN_MCP_REPO_ROOT.
+func parseRootList(values ...string) []rootEntry {
+	var list []rootEntry
+	for _, v := range values {
+		for _, part := range strings.Split(v, ",") {
+			part = expandHome(strings.TrimSpace(part))
+			if part == "" {
+				continue
+			}
+			if p := fileURIToPath(part); p != "" {
+				list = append(list, rootEntry{uri: part, path: p})
+			}
+		}
+	}
+	return list
+}
+
 // fileURIToPath converts a file:// URI to a local filesystem path. Returns ""
 // for non-file URIs.
 func fileURIToPath(uri string) string {
@@ -212,6 +246,11 @@ func fileURIToPath(uri string) string {
 	if err != nil || u.Scheme != "file" {
 		// Some clients send bare paths; accept absolute ones.
 		if len(uri) > 0 && uri[0] == '/' {
+			return uri
+		}
+		// Windows drive path (C:\repo, C:/repo) — url.Parse reads "C:" as a
+		// scheme, so it never reaches the file:// branch above.
+		if len(uri) >= 3 && uri[1] == ':' && (uri[2] == '\\' || uri[2] == '/') {
 			return uri
 		}
 		return ""

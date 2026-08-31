@@ -1,0 +1,74 @@
+{
+  "manifest_version": "0.3",
+  "name": "atlassian-mcp",
+  "display_name": "Self-hosted Jira & Bitbucket",
+  "version": "__VERSION__",
+  "description": "Tickets, pull requests, review threads and git context for self-hosted Jira and Bitbucket (Server / Data Center).",
+  "long_description": "Exposes Jira Server/Data Center and Bitbucket Server/Data Center as MCP tools: read and write tickets, open and review pull requests, manage comment threads and PR tasks, and read git state for the repository you point it at. Jira Cloud and Bitbucket Cloud are not supported.\n\nFill in your instance URLs and personal access tokens below, or leave them blank to reuse an existing ~/.atlassian-mcp.json. Set Repository so the git and pull-request tools know which working tree you mean.",
+  "author": { "name": "stubbedev", "url": "https://github.com/stubbedev" },
+  "homepage": "https://github.com/stubbedev/atlassian-mcp",
+  "documentation": "https://github.com/stubbedev/atlassian-mcp#readme",
+  "support": "https://github.com/stubbedev/atlassian-mcp/issues",
+  "repository": { "type": "git", "url": "https://github.com/stubbedev/atlassian-mcp" },
+  "license": "MIT",
+  "keywords": ["jira", "bitbucket", "atlassian", "git", "pull-requests", "self-hosted"],
+  "server": {
+    "type": "binary",
+    "entry_point": "__BIN__",
+    "mcp_config": {
+      "command": "${__dirname}/__BIN__",
+      "args": [],
+      "env": {
+        "JIRA_URL": "${user_config.jira_url}",
+        "JIRA_ACCESS_TOKEN": "${user_config.jira_token}",
+        "BITBUCKET_URL": "${user_config.bitbucket_url}",
+        "BITBUCKET_ACCESS_TOKEN": "${user_config.bitbucket_token}",
+        "ATLASSIAN_MCP_REPO_ROOT": "${user_config.repo_root}",
+        "ATLASSIAN_MCP_GIT_PATH": "${user_config.git_path}"
+      }
+    }
+  },
+  "user_config": {
+    "jira_url": {
+      "type": "string",
+      "title": "Jira URL",
+      "description": "e.g. https://jira.example.com — self-hosted only. Blank reuses ~/.atlassian-mcp.json.",
+      "required": false
+    },
+    "jira_token": {
+      "type": "string",
+      "title": "Jira personal access token",
+      "description": "Profile → Personal Access Tokens in Jira (8.14+).",
+      "sensitive": true,
+      "required": false
+    },
+    "bitbucket_url": {
+      "type": "string",
+      "title": "Bitbucket URL",
+      "description": "e.g. https://bitbucket.example.com — self-hosted only. Blank reuses ~/.atlassian-mcp.json.",
+      "required": false
+    },
+    "bitbucket_token": {
+      "type": "string",
+      "title": "Bitbucket personal access token",
+      "description": "Manage account → Personal access tokens in Bitbucket (5.5+).",
+      "sensitive": true,
+      "required": false
+    },
+    "repo_root": {
+      "type": "directory",
+      "title": "Repository",
+      "description": "Working tree the git and pull-request tools default to. Without it, those tools need an explicit repoPath on every call.",
+      "required": false
+    },
+    "git_path": {
+      "type": "file",
+      "title": "git executable (optional)",
+      "description": "Only needed if git is not on this app's PATH — common on Windows, e.g. C:\\Program Files\\Git\\cmd\\git.exe.",
+      "required": false
+    }
+  },
+  "compatibility": {
+    "platforms": ["__PLATFORM__"]
+  }
+}
