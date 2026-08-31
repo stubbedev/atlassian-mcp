@@ -24,9 +24,10 @@ sed -e "s/__VERSION__/${version}/" \
     "$root/packaging/mcpb/manifest.template.json" > "$tmp/manifest.json"
 cp "$bin" "$tmp/$name"
 chmod +x "$tmp/$name"
+cp "$root/packaging/mcpb/icon.png" "$tmp/icon.png"
 
 # manifest.json must sit at the zip root.
-(cd "$tmp" && zip -q -X -r bundle.mcpb manifest.json "$name")
+(cd "$tmp" && zip -q -X -r bundle.mcpb manifest.json icon.png "$name")
 mkdir -p "$(dirname "$out")"
 mv "$tmp/bundle.mcpb" "$out"
 echo "$out ($(du -h "$out" | cut -f1), v${version}, ${platform})"

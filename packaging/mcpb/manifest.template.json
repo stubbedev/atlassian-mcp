@@ -6,6 +6,7 @@
   "description": "Tickets, pull requests, review threads and git context for self-hosted Jira and Bitbucket (Server / Data Center).",
   "long_description": "Exposes Jira Server/Data Center and Bitbucket Server/Data Center as MCP tools: read and write tickets, open and review pull requests, manage comment threads and PR tasks, and read git state for the repository you point it at. Jira Cloud and Bitbucket Cloud are not supported.\n\nFill in your instance URLs and personal access tokens below, or leave them blank to reuse an existing ~/.atlassian-mcp.json. Set Repository so the git and pull-request tools know which working tree you mean.",
   "author": { "name": "stubbedev", "url": "https://github.com/stubbedev" },
+  "icon": "icon.png",
   "homepage": "https://github.com/stubbedev/atlassian-mcp",
   "documentation": "https://github.com/stubbedev/atlassian-mcp#readme",
   "support": "https://github.com/stubbedev/atlassian-mcp/issues",

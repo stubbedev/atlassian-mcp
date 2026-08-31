@@ -31,6 +31,7 @@ jobs:
         run: |
           set -euo pipefail
           packaging/mcpb/pack.sh atlassian-mcp linux dist/atlassian-mcp_linux_amd64.mcpb
+          unzip -l dist/atlassian-mcp_linux_amd64.mcpb | grep -q ' icon.png$'
           unzip -p dist/atlassian-mcp_linux_amd64.mcpb manifest.json > manifest.out.json
           python3 - <<'EOF'
           import json
