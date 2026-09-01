@@ -727,3 +727,59 @@ func TestUserLookupFallsBackWhenScopeDenied(t *testing.T) {
 		t.Error("an unscoped 401 should still be an error")
 	}
 }
+
+// TestAttachToText covers the Bitbucket upload path end to end: files reach the
+// repo attachments endpoint, a path already written into the text is swapped in
+// place, and a file nobody mentioned still ends up referenced.
+func TestAttachToText(t *testing.T) {
+	var uploads []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" || !strings.HasSuffix(r.URL.Path, "/attachments") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.Header.Get("X-Atlassian-Token") != "no-check" {
+			t.Errorf("missing XSRF header")
+		}
+		f, hdr, err := r.FormFile("files")
+		if err != nil {
+			t.Errorf("no files part: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		f.Close()
+		uploads = append(uploads, hdr.Filename)
+		fmt.Fprintf(w, `{"attachments":[{"id":%d,"url":"attachment:%d","name":%q}]}`, len(uploads), len(uploads), hdr.Filename)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	shot := filepath.Join(dir, "shot.png")
+	log := filepath.Join(dir, "run.log")
+	for _, p := range []string{shot, log} {
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	c := NewBitbucketClient(srv.URL, "t")
+	text, uploaded, err := c.attachToText("ENG", "api", "Before:\n\n![the widget]("+shot+")", []string{shot, log})
+	if err != nil {
+		t.Fatalf("attachToText: %v", err)
+	}
+	if len(uploaded) != 2 || uploaded[0].ID.String() != "1" {
+		t.Fatalf("uploaded = %+v", uploaded)
+	}
+	want := "Before:\n\n![the widget](attachment:1)\n\n[run.log](attachment:2)"
+	if text != want {
+		t.Errorf("text =\n%q\nwant\n%q", text, want)
+	}
+	// A bare path (no markdown link around it) becomes the full markup.
+	bare, _, err := c.attachToText("ENG", "api", "see "+shot, []string{shot})
+	if err != nil {
+		t.Fatalf("attachToText: %v", err)
+	}
+	if bare != "see ![shot.png](attachment:3)" {
+		t.Errorf("bare path = %q", bare)
+	}
+}

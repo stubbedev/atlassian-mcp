@@ -319,7 +319,7 @@
     },
     {
       "name": "bitbucket_mutate",
-      "description": "Create, update, approve/unapprove, mark needs_work, decline, or merge a PR — in one call. Auto-targets the open PR for the current branch when prId is omitted. needs_work sets your reviewer status to \"Needs work\" (Bitbucket Server's changes-requested signal); revert with action=unapprove.",
+      "description": "Create, update, approve/unapprove, mark needs_work, decline, or merge a PR — in one call. Auto-targets the open PR for the current branch when prId is omitted. needs_work sets your reviewer status to \"Needs work\" (Bitbucket Server's changes-requested signal); revert with action=unapprove. Local files (screenshots, logs) reach a PR via create.attachments / update.attachments — uploaded to the repo and referenced from the description.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -345,7 +345,8 @@
                 "items": { "type": "string" },
                 "description": "Reviewer usernames (not display names). Each is verified against Bitbucket and the call is rejected with candidates if one does not resolve."
               },
-              "pickReviewers": { "type": "boolean", "description": "Show an interactive reviewer picker before creating the PR (lists users with repo access)" }
+              "pickReviewers": { "type": "boolean", "description": "Show an interactive reviewer picker before creating the PR (lists users with repo access)" },
+              "attachments": { "type": "array", "items": { "type": "string" }, "description": "Local file paths (screenshots, logs) to upload as repo attachments and reference from the description. A path that already appears in description is replaced in place by the attachment markup, keeping the markdown caption; anything unreferenced is appended. The result lists each attachment id and its ![name](attachment:<id>) markup, so a later call can reference a file this one uploaded." }
             },
             "required": ["title"]
           },
@@ -360,7 +361,8 @@
                 "items": { "type": "string" },
                 "description": "Reviewer usernames. This replaces the reviewer set, so include everyone who should stay — dropping or clearing existing reviewers is rejected unless replaceReviewers=true."
               },
-              "replaceReviewers": { "type": "boolean", "description": "Allow update.reviewers to remove reviewers who are currently on the PR. Only set this when the user asked for a reviewer to be removed." }
+              "replaceReviewers": { "type": "boolean", "description": "Allow update.reviewers to remove reviewers who are currently on the PR. Only set this when the user asked for a reviewer to be removed." },
+              "attachments": { "type": "array", "items": { "type": "string" }, "description": "Local file paths to upload as repo attachments and reference from the description. Without update.description they are appended to the PR's current description; a path already present in the text is replaced in place. The result lists each attachment id and its ![name](attachment:<id>) markup." }
             }
           }
         }
@@ -369,7 +371,7 @@
     },
     {
       "name": "bitbucket_comment",
-      "description": "Add, update, or delete a PR comment. action defaults to \"add\"; a reply is action=add with commentId. Posts COMMENTS, never tasks: severity=BLOCKER is rejected on add — use bitbucket_pr_tasks (action=create) for a task, and only when the user explicitly asks. For code changes use an inline comment with suggestion whenever exact replacement code exists. Keep comments concise, no emojis (rejected). Enforced server-side, so you do not have to track it: one reply per thread per author (update your existing reply instead), no duplicate of a comment you already posted, no new top-level comment on a PR you authored (pass asAuthor=true only if the user asked for one), explanatory text only before a suggestion block, and bare \"#123\" references rewritten into clickable comment links. Inline comments anchor to the commits bitbucket_get_pr last showed you for that PR — remembered per session, remapped onto current head if the branch advanced — so fromHash/toHash are only needed to override that.",
+      "description": "Add, update, or delete a PR comment. action defaults to \"add\"; a reply is action=add with commentId. Posts COMMENTS, never tasks: severity=BLOCKER is rejected on add — use bitbucket_pr_tasks (action=create) for a task, and only when the user explicitly asks. For code changes use an inline comment with suggestion whenever exact replacement code exists. Keep comments concise, no emojis (rejected). Enforced server-side, so you do not have to track it: one reply per thread per author (update your existing reply instead), no duplicate of a comment you already posted, no new top-level comment on a PR you authored (pass asAuthor=true only if the user asked for one), explanatory text only before a suggestion block, and bare \"#123\" references rewritten into clickable comment links. Inline comments anchor to the commits bitbucket_get_pr last showed you for that PR — remembered per session, remapped onto current head if the branch advanced — so fromHash/toHash are only needed to override that. Local files (screenshots, logs) reach a comment via attachments — uploaded to the repo and referenced from the text.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -396,7 +398,8 @@
           "threadResolved": { "type": "boolean", "description": "Resolve/reopen normal comment thread (update only)" },
           "severity": { "type": "string", "enum": ["NORMAL", "BLOCKER"], "description": "Comment severity. Leave unset — comments default to NORMAL. BLOCKER turns the comment into a task and is REJECTED on add; only pass BLOCKER on update to escalate an existing comment when the user explicitly asks. To create a task, use bitbucket_pr_tasks instead." },
           "asAuthor": { "type": "boolean", "description": "Allow a new top-level comment on a PR you authored. Only set this when the user explicitly asked you to comment on your own PR; replies never need it." },
-          "pending": { "type": "boolean", "description": "Add only. Post the comment as a PENDING draft-review comment instead of publishing it immediately — it stays unpublished until the user publishes the review from the Bitbucket UI. Only set this when the user EXPLICITLY asks for a pending/draft/unpublished comment; default published behaviour otherwise." }
+          "pending": { "type": "boolean", "description": "Add only. Post the comment as a PENDING draft-review comment instead of publishing it immediately — it stays unpublished until the user publishes the review from the Bitbucket UI. Only set this when the user EXPLICITLY asks for a pending/draft/unpublished comment; default published behaviour otherwise." },
+          "attachments": { "type": "array", "items": { "type": "string" }, "description": "Local file paths (screenshots, logs) to upload as repo attachments and reference from the comment. On update without text they are appended to the comment's current text; a path already present in text is replaced in place by the attachment markup. The result lists each attachment id and its ![name](attachment:<id>) markup." }
         },
         "required": ["prId"]
       },

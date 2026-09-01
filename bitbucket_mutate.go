@@ -47,7 +47,7 @@ func (c *BitbucketClient) resolveReviewers(pk, rs string, names []string) ([]str
 }
 
 // createPullRequest opens a PR, or returns the existing open PR for the branch.
-func (c *BitbucketClient) createPullRequest(projectKey, repoSlug, repoRoot, title, description, fromBranch, toBranch string, reviewers []string) (toolResult, error) {
+func (c *BitbucketClient) createPullRequest(projectKey, repoSlug, repoRoot, title, description, fromBranch, toBranch string, reviewers, attachments []string) (toolResult, error) {
 	pk, rs, err := c.resolveProjectAndRepo(projectKey, repoSlug, repoRoot)
 	if err != nil {
 		return toolResult{}, err
@@ -81,6 +81,13 @@ func (c *BitbucketClient) createPullRequest(projectKey, repoSlug, repoRoot, titl
 	if err != nil {
 		return toolResult{}, err
 	}
+	var uploaded []bbUploadedAttachment
+	if len(attachments) > 0 {
+		description, uploaded, err = c.attachToText(pk, rs, description, attachments)
+		if err != nil {
+			return toolResult{}, err
+		}
+	}
 	reviewerObjs := make([]map[string]any, 0, len(resolvedReviewers))
 	for _, name := range resolvedReviewers {
 		reviewerObjs = append(reviewerObjs, map[string]any{"user": map[string]any{"name": name}})
@@ -97,18 +104,18 @@ func (c *BitbucketClient) createPullRequest(projectKey, repoSlug, repoRoot, titl
 		return toolResult{}, err
 	}
 	if data == nil {
-		return textResult("Pull request created."), nil
+		return textResult("Pull request created." + attachmentSummary(uploaded)), nil
 	}
-	return textResult(fmt.Sprintf("Created PR #%d: %q\n%s", data.ID, data.Title, c.pullRequestURL(pk, rs, data.ID, data))), nil
+	return textResult(fmt.Sprintf("Created PR #%d: %q\n%s%s", data.ID, data.Title, c.pullRequestURL(pk, rs, data.ID, data), attachmentSummary(uploaded))), nil
 }
 
-func (c *BitbucketClient) updatePullRequest(projectKey, repoSlug, repoRoot string, prID int, titleP, descP, toBranchP *string, reviewersP *[]string, replaceReviewers bool) (toolResult, error) {
+func (c *BitbucketClient) updatePullRequest(projectKey, repoSlug, repoRoot string, prID int, titleP, descP, toBranchP *string, reviewersP *[]string, replaceReviewers bool, attachments []string) (toolResult, error) {
 	pk, rs, err := c.resolveProjectAndRepo(projectKey, repoSlug, repoRoot)
 	if err != nil {
 		return toolResult{}, err
 	}
-	if titleP == nil && descP == nil && toBranchP == nil && reviewersP == nil {
-		return toolResult{}, fmt.Errorf("At least one field is required: title, description, toBranch, or reviewers")
+	if titleP == nil && descP == nil && toBranchP == nil && reviewersP == nil && len(attachments) == 0 {
+		return toolResult{}, fmt.Errorf("At least one field is required: title, description, toBranch, reviewers, or attachments")
 	}
 	existing, err := bbDecode[bbPullRequest](c, "GET", fmt.Sprintf("%s/pull-requests/%d", c.rp(pk, rs), prID), nil)
 	if err != nil {
@@ -116,6 +123,20 @@ func (c *BitbucketClient) updatePullRequest(projectKey, repoSlug, repoRoot strin
 	}
 	if existing == nil {
 		return toolResult{}, fmt.Errorf("PR #%d not found.", prID)
+	}
+	// Attachments without a new description go onto the description the PR
+	// already has — an uploaded file nothing references is invisible.
+	var uploaded []bbUploadedAttachment
+	if len(attachments) > 0 {
+		base := existing.Description
+		if descP != nil {
+			base = *descP
+		}
+		desc, ups, aerr := c.attachToText(pk, rs, base, attachments)
+		if aerr != nil {
+			return toolResult{}, aerr
+		}
+		descP, uploaded = &desc, ups
 	}
 	if reviewersP != nil {
 		resolved, rerr := c.resolveReviewers(pk, rs, *reviewersP)
@@ -190,9 +211,9 @@ func (c *BitbucketClient) updatePullRequest(projectKey, repoSlug, repoRoot strin
 		}
 	}
 	if updated == nil {
-		return textResult(fmt.Sprintf("Updated PR #%d.", prID)), nil
+		return textResult(fmt.Sprintf("Updated PR #%d.%s", prID, attachmentSummary(uploaded))), nil
 	}
-	return textResult(fmt.Sprintf("Updated PR #%d: %q (%s → %s).\n%s", updated.ID, updated.Title, updated.FromRef.DisplayID, updated.ToRef.DisplayID, c.pullRequestURL(pk, rs, updated.ID, updated))), nil
+	return textResult(fmt.Sprintf("Updated PR #%d: %q (%s → %s).\n%s%s", updated.ID, updated.Title, updated.FromRef.DisplayID, updated.ToRef.DisplayID, c.pullRequestURL(pk, rs, updated.ID, updated), attachmentSummary(uploaded))), nil
 }
 
 func (c *BitbucketClient) mutatePullRequest(args map[string]any, repoRoot string) (toolResult, error) {
@@ -212,14 +233,15 @@ func (c *BitbucketClient) mutatePullRequest(args map[string]any, repoRoot string
 	create := argMap(args, "create")
 
 	titleP, descP, toBranchP, reviewersP := updatePointers(update)
-	hasUpdate := update != nil && (titleP != nil || descP != nil || toBranchP != nil || reviewersP != nil)
+	updateAttachments := argStrSlice(update, "attachments")
+	hasUpdate := update != nil && (titleP != nil || descP != nil || toBranchP != nil || reviewersP != nil || len(updateAttachments) > 0)
 
 	if has(args, "prId") {
 		prID := argInt(args, "prId")
 		if !hasUpdate {
 			return c.getPullRequest(pk, rs, "", prID)
 		}
-		return c.updatePullRequest(pk, rs, "", prID, titleP, descP, toBranchP, reviewersP, argBool(update, "replaceReviewers"))
+		return c.updatePullRequest(pk, rs, "", prID, titleP, descP, toBranchP, reviewersP, argBool(update, "replaceReviewers"), updateAttachments)
 	}
 
 	sourceBranch := ""
@@ -242,7 +264,7 @@ func (c *BitbucketClient) mutatePullRequest(args map[string]any, repoRoot string
 	}
 	if existing != nil {
 		if hasUpdate {
-			return c.updatePullRequest(pk, rs, "", existing.ID, titleP, descP, toBranchP, reviewersP, argBool(update, "replaceReviewers"))
+			return c.updatePullRequest(pk, rs, "", existing.ID, titleP, descP, toBranchP, reviewersP, argBool(update, "replaceReviewers"), updateAttachments)
 		}
 		return c.getPullRequest(pk, rs, "", existing.ID)
 	}
@@ -253,7 +275,7 @@ func (c *BitbucketClient) mutatePullRequest(args map[string]any, repoRoot string
 }
 
 func (c *BitbucketClient) createFromMap(pk, rs, repoRoot string, create map[string]any) (toolResult, error) {
-	return c.createPullRequest(pk, rs, repoRoot, argString(create, "title"), argString(create, "description"), argString(create, "fromBranch"), argString(create, "toBranch"), argStrSlice(create, "reviewers"))
+	return c.createPullRequest(pk, rs, repoRoot, argString(create, "title"), argString(create, "description"), argString(create, "fromBranch"), argString(create, "toBranch"), argStrSlice(create, "reviewers"), argStrSlice(create, "attachments"))
 }
 
 func updatePointers(update map[string]any) (titleP, descP, toBranchP *string, reviewersP *[]string) {

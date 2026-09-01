@@ -119,6 +119,15 @@ func (c *BitbucketClient) addPrComment(session *sessionState, args map[string]an
 		return toolResult{}, err
 	}
 	validText = c.linkifyCommentRefs(validText, pk, rs, prID)
+	var uploaded []bbUploadedAttachment
+	if paths := argStrSlice(args, "attachments"); len(paths) > 0 {
+		// Uploaded last, after every rejection above, so a refused comment does
+		// not leave orphan files on the repo.
+		validText, uploaded, err = c.attachToText(pk, rs, validText, paths)
+		if err != nil {
+			return toolResult{}, err
+		}
+	}
 	body := map[string]any{"text": validText}
 	if sev := argString(args, "severity"); sev != "" {
 		body["severity"] = sev
@@ -264,10 +273,10 @@ func (c *BitbucketClient) addPrComment(session *sessionState, args map[string]an
 		pendingNote = " (pending — not yet published; publish the review from the Bitbucket UI to send it to the author)"
 	}
 	if created == nil {
-		return textResult(fmt.Sprintf("Comment added to PR #%d%s.", prID, pendingNote)), nil
+		return textResult(fmt.Sprintf("Comment added to PR #%d%s.%s", prID, pendingNote, attachmentSummary(uploaded))), nil
 	}
 	if hasReply {
-		return textResult(fmt.Sprintf("Reply #%d added to comment #%d on PR #%d%s.", created.ID, replyToCommentID, prID, pendingNote)), nil
+		return textResult(fmt.Sprintf("Reply #%d added to comment #%d on PR #%d%s.%s", created.ID, replyToCommentID, prID, pendingNote, attachmentSummary(uploaded))), nil
 	}
 	location := ""
 	if has(args, "filePath") && has(args, "line") {
@@ -287,7 +296,7 @@ func (c *BitbucketClient) addPrComment(session *sessionState, args map[string]an
 	if len(warnings) > 0 {
 		warnSuffix = "\n\nNote: " + strings.Join(warnings, " ")
 	}
-	return textResult(fmt.Sprintf("Comment #%d added to PR #%d%s%s.%s", created.ID, prID, location, pendingNote, warnSuffix)), nil
+	return textResult(fmt.Sprintf("Comment #%d added to PR #%d%s%s.%s%s", created.ID, prID, location, pendingNote, attachmentSummary(uploaded), warnSuffix)), nil
 }
 
 // ── Comment reference links ──────────────────────────────────────────────────
@@ -411,8 +420,9 @@ func (c *BitbucketClient) updatePrComment(args map[string]any, repoRoot string) 
 	stateArg := argString(args, "state")
 	severityArg := argString(args, "severity")
 	hasThreadResolved := has(args, "threadResolved")
-	if !hasText && stateArg == "" && severityArg == "" && !hasThreadResolved {
-		return toolResult{}, fmt.Errorf("At least one field is required: text, state, severity, or threadResolved")
+	attachments := argStrSlice(args, "attachments")
+	if !hasText && stateArg == "" && severityArg == "" && !hasThreadResolved && len(attachments) == 0 {
+		return toolResult{}, fmt.Errorf("At least one field is required: text, state, severity, threadResolved, or attachments")
 	}
 
 	current, err := bbDecode[bbComment](c, "GET", fmt.Sprintf("%s/pull-requests/%d/comments/%d", c.rp(pk, rs), prID, commentID), nil)
@@ -442,14 +452,33 @@ func (c *BitbucketClient) updatePrComment(args map[string]any, repoRoot string) 
 		commentPath = fmt.Sprintf("%s/pull-requests/%d/blocker-comments/%d", c.rp(pk, rs), prID, commentID)
 	}
 
+	// Uploaded once, before the version-conflict retry loop, so a 409 does not
+	// upload the same files twice. Attachments with no new text go onto the
+	// text the comment already has.
+	var uploaded []bbUploadedAttachment
+	newText := ""
+	if hasText || len(attachments) > 0 {
+		if hasText {
+			vt, verr := validateCommentText(argString(args, "text"))
+			if verr != nil {
+				return toolResult{}, verr
+			}
+			newText = c.linkifyCommentRefs(vt, pk, rs, prID)
+		} else {
+			newText = current.Text
+		}
+		if len(attachments) > 0 {
+			newText, uploaded, err = c.attachToText(pk, rs, newText, attachments)
+			if err != nil {
+				return toolResult{}, err
+			}
+		}
+	}
+
 	buildBody := func(version int) (map[string]any, error) {
 		body := map[string]any{"version": version}
-		if hasText {
-			vt, err := validateCommentText(argString(args, "text"))
-			if err != nil {
-				return nil, err
-			}
-			body["text"] = c.linkifyCommentRefs(vt, pk, rs, prID)
+		if newText != "" {
+			body["text"] = newText
 		}
 		if stateArg != "" && targetSeverity == "BLOCKER" {
 			body["state"] = stateArg
@@ -486,7 +515,7 @@ func (c *BitbucketClient) updatePrComment(args map[string]any, repoRoot string) 
 		}
 	}
 	if updated == nil {
-		return textResult(fmt.Sprintf("Comment #%d updated.", commentID)), nil
+		return textResult(fmt.Sprintf("Comment #%d updated.%s", commentID, attachmentSummary(uploaded))), nil
 	}
 	state := firstNonEmpty(updated.State, current.State, "OPEN")
 	severity := firstNonEmpty(updated.Severity, current.Severity, "NORMAL")
@@ -502,7 +531,7 @@ func (c *BitbucketClient) updatePrComment(args map[string]any, repoRoot string) 
 		}
 		threadStatus = ", thread=" + st
 	}
-	return textResult(fmt.Sprintf("Comment #%d updated (%s/%s%s).", updated.ID, state, severity, threadStatus)), nil
+	return textResult(fmt.Sprintf("Comment #%d updated (%s/%s%s).%s", updated.ID, state, severity, threadStatus, attachmentSummary(uploaded))), nil
 }
 
 func (c *BitbucketClient) deletePrComment(args map[string]any, repoRoot string) (toolResult, error) {
