@@ -567,6 +567,136 @@ func TestMarkdownToJiraWiki(t *testing.T) {
 	}
 }
 
+func TestMarkdownCodeFenceVariants(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{"plain fence", "```go\nx\n```", "{code:go}\nx\n{code}"},
+		{"lang with hash", "```c#\nx\n```", "{code:c#}\nx\n{code}"},
+		{"info with extra words", "```shell script\nx\n```", "{code:shell}\nx\n{code}"},
+		{"info with attributes", "```js copy startline=3\nx\n```", "{code:js}\nx\n{code}"},
+		{"unrecognised lang kept", "```fantom-lang\nx\n```", "{code:fantom-lang}\nx\n{code}"},
+		{"tilde fence", "~~~python\nprint(1)\n~~~", "{code:python}\nprint(1)\n{code}"},
+		{"bare tilde fence", "~~~\nx\n~~~", "{code}\nx\n{code}"},
+		{"four backticks", "````\n```\nx\n```\n````", "{code}\n```\nx\n```\n{code}"},
+		{"no stray backticks", "````\nx\n````", "{code}\nx\n{code}"},
+		{"closing fence trailing spaces", "```go\nx\n```   ", "{code:go}\nx\n{code}"},
+		{"empty body", "```\n```", "{code}\n{code}"},
+		{"unterminated runs to end", "```go\nx\nstill code", "{code:go}\nx\nstill code\n{code}"},
+		{"crlf fences", "```go\r\nx\r\n```", "{code:go}\nx\n{code}"},
+		{"indented fence keeps indent", "- item\n  ```go\n  x\n  ```", "* item\n  {code:go}\n  x\n  {code}"},
+		{"inline code inside body untouched", "```go\n`not mono`\n```", "{code:go}\n`not mono`\n{code}"},
+		{"trailing blank lines trimmed", "```go\nx\n\n\n```", "{code:go}\nx\n{code}"},
+	} {
+		got, converted := markdownToJiraWiki(tc.in)
+		if !converted || got != tc.want {
+			t.Errorf("%s:\nmarkdownToJiraWiki(%q) = %q, %v; want %q", tc.name, tc.in, got, converted, tc.want)
+		}
+	}
+}
+
+func TestMarkdownInlineCodeVariants(t *testing.T) {
+	for _, tc := range []struct {
+		name, in, want string
+		converted      bool
+	}{
+		{name: "single backticks", in: "use `make all` here", want: "use {{make all}} here", converted: true},
+		{name: "double backticks", in: "use ``a`b`` here", want: "use {{a`b}} here", converted: true},
+		{name: "double with space", in: "use `` `escaped` `` here", want: "use {{ `escaped` }} here", converted: true},
+		{name: "unpaired backtick stays", in: "a ` b", want: "a ` b"},
+		{name: "bold inside inline code stays", in: "`**x**`", want: "{{**x**}}", converted: true},
+		{name: "inline across lines stays", in: "a ` b\nc ` d", want: "a ` b\nc ` d"},
+	} {
+		got, converted := markdownToJiraWiki(tc.in)
+		if converted != tc.converted || got != tc.want {
+			t.Errorf("%s:\nmarkdownToJiraWiki(%q) = %q, %v; want %q, %v", tc.name, tc.in, got, converted, tc.want, tc.converted)
+		}
+	}
+}
+
+func TestMarkdownTables(t *testing.T) {
+	for _, tc := range []struct {
+		name, in, want string
+		converted      bool
+	}{
+		{name: "simple table", in: "| a | b |\n| --- | --- |\n| 1 | 2 |", want: "|| a || b ||\n| 1 | 2 |", converted: true},
+		{name: "no outer pipes", in: "a | b\n--- | ---\n1 | 2", want: "|| a || b ||\n| 1 | 2 |", converted: true},
+		{name: "alignment dropped", in: "| a | b |\n| :-- | --: |\n| 1 | 2 |", want: "|| a || b ||\n| 1 | 2 |", converted: true},
+		{name: "short rows padded", in: "| a | b |\n| --- | --- |\n| 1 |", want: "|| a || b ||\n| 1 |  |", converted: true},
+		{name: "long rows clipped", in: "| a |\n| --- |\n| 1 | 2 |", want: "|| a ||\n| 1 |", converted: true},
+		{name: "header only", in: "| a |\n| --- |", want: "|| a ||", converted: true},
+		{name: "escaped pipe in cell", in: "| a \\| b |\n| --- |\n| c |", want: "|| a | b ||\n| c |", converted: true},
+		{name: "cell count mismatch left alone", in: "| a |\n| --- | --- |\n| 1 |", want: "| a |\n| --- | --- |\n| 1 |"},
+		{name: "wiki table passthrough", in: "|| a || b ||\n| 1 | 2 |", want: "|| a || b ||\n| 1 | 2 |"},
+		{name: "pipes in prose left alone", in: "either | or\nnothing to see", want: "either | or\nnothing to see"},
+	} {
+		got, converted := markdownToJiraWiki(tc.in)
+		if converted != tc.converted || got != tc.want {
+			t.Errorf("%s:\nmarkdownToJiraWiki(%q) = %q, %v; want %q, %v", tc.name, tc.in, got, converted, tc.want, tc.converted)
+		}
+	}
+	// Inline formatting inside cells survives the table rewrite.
+	got, _ := markdownToJiraWiki("| `x` | **y** | [z](http://u) |\n| --- | --- | --- |")
+	for _, want := range []string{"|| {{x}} || *y* || [z|http://u] ||"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	// A `|` inside an inline code span does not split the cell.
+	if got, _ := markdownToJiraWiki("| `a|b` |\n| --- |"); !strings.Contains(got, "{{a|b}}") {
+		t.Errorf("code span with pipe broken by table scan: %q", got)
+	}
+}
+
+func TestMarkdownQuotesAndEmphasis(t *testing.T) {
+	for _, tc := range []struct {
+		name, in, want string
+		converted      bool
+	}{
+		{name: "single line quote", in: "> note", want: "bq. note", converted: true},
+		{name: "multi line quote", in: "> a\n> b", want: "{quote}\na\nb\n{quote}", converted: true},
+		{name: "nested markers flatten", in: ">> deep", want: "bq. deep", converted: true},
+		{name: "blank line inside quote", in: "> a\n>\n> b", want: "{quote}\na\n\nb\n{quote}", converted: true},
+		{name: "two quote blocks", in: "> a\n\n> b", want: "bq. a\n\nbq. b", converted: true},
+		{name: "heading inside quote block", in: "> ## H\n> body", want: "{quote}\nh2. H\nbody\n{quote}", converted: true},
+		{name: "bullet inside quote block", in: "> - item", want: "{quote}\n* item\n{quote}", converted: true},
+		{name: "emphasis inside quote", in: "> **x** and [l](http://u)", want: "bq. *x* and [l|http://u]", converted: true},
+		{name: "quoted fence", in: "> ```go\n> x\n> ```", want: "{quote}\n{code:go}\nx\n{code}\n{quote}", converted: true},
+		{name: "gt inside fence body literal", in: "```\n> literal\n```", want: "{code}\n> literal\n{code}", converted: true},
+		{name: "bold italic", in: "***x***", want: "*_x_*", converted: true},
+		{name: "bold italic underscores", in: "___x___", want: "*_x_*", converted: true},
+		{name: "autolink", in: "see <https://a.b/c> now", want: "see [https://a.b/c|https://a.b/c] now", converted: true},
+		{name: "paren ordered list", in: "1) first\n2) second", want: "# first\n# second", converted: true},
+		{name: "dot ordered list unchanged path", in: "1. first", want: "# first", converted: true},
+	} {
+		got, converted := markdownToJiraWiki(tc.in)
+		if converted != tc.converted || got != tc.want {
+			t.Errorf("%s:\nmarkdownToJiraWiki(%q) = %q, %v; want %q, %v", tc.name, tc.in, got, converted, tc.want, tc.converted)
+		}
+	}
+}
+
+func TestMarkdownKitchenSink(t *testing.T) {
+	in := "## Deploy notes\n" +
+		"Run `make build` (see [docs](https://x/d)) or <https://x/d>.\n" +
+		"- step **one**\n" +
+		"  1) check `foo`\n" +
+		"> warning: ***read this***\n" +
+		"| env | status |\n" +
+		"| --- | --- |\n" +
+		"| prod | ~~down~~ |\n" +
+		"```bash\nmake deploy # **literal**\n```"
+	want := "h2. Deploy notes\n" +
+		"Run {{make build}} (see [docs|https://x/d]) or [https://x/d|https://x/d].\n" +
+		"* step *one*\n" +
+		"## check {{foo}}\n" +
+		"bq. warning: *_read this_*\n" +
+		"|| env || status ||\n" +
+		"| prod | -down- |\n" +
+		"{code:bash}\nmake deploy # **literal**\n{code}"
+	if got, converted := markdownToJiraWiki(in); !converted || got != want {
+		t.Errorf("markdownToJiraWiki kitchen sink =\n%s\nwant:\n%s", got, want)
+	}
+}
+
 func TestLinkifyCommentRefs(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Only comment 12 exists on this PR.
@@ -781,5 +911,30 @@ func TestAttachToText(t *testing.T) {
 	}
 	if bare != "see ![shot.png](attachment:3)" {
 		t.Errorf("bare path = %q", bare)
+	}
+}
+
+func TestWikiMarkupPassesThroughUntouched(t *testing.T) {
+	// Everything a wiki-savvy caller might write must survive byte for byte,
+	// including "##" nested ordered lists, which look like markdown headings.
+	wiki := "* bullet\n** nested\n*** deeper\n# one\n## two\n_italic_\n-strike-\n" +
+		"[link|http://x]\n{quote}\nq *b*\n{quote}\nbq. quoted\n----\n|| a || b ||\n| 1 | 2 |\n" +
+		"{noformat}\n**raw**\n{noformat}\nh3. Head\n{{mono}}"
+	if out, converted := markdownToJiraWiki(wiki); converted || out != wiki {
+		t.Errorf("wiki markup was rewritten:\n%s", out)
+	}
+	// A markdown heading is still converted once the list block has ended.
+	md := "# one\n## two\n\n## Real Heading"
+	want := "# one\n## two\n\nh2. Real Heading"
+	if out, _ := markdownToJiraWiki(md); out != want {
+		t.Errorf("heading after list = %q, want %q", out, want)
+	}
+}
+
+func TestConsecutiveMarkdownHeadings(t *testing.T) {
+	in := "## A\n## B\n\ntext\n# item\n## nested"
+	want := "h2. A\nh2. B\n\ntext\n# item\n## nested"
+	if out, _ := markdownToJiraWiki(in); out != want {
+		t.Errorf("consecutive headings = %q, want %q", out, want)
 	}
 }

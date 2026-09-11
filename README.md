@@ -95,7 +95,11 @@ cannot get them wrong, and they need no prompting:
   components and fix versions, and Bitbucket reviewers are checked first; a bad
   one comes back with the valid options instead of an opaque 400.
 - **Markdown is converted to Jira wiki markup** on every Jira write (comments,
-  descriptions, worklogs). Text that is already wiki markup is left alone.
+  descriptions, environments, worklogs): fenced code blocks in any style
+  (```` ``` ````/```` ```` ````/`~~~`, any info string), inline code, headings,
+  bold/bold-italic, strikethrough, links, autolinks and images, blockquotes
+  (`bq.`/`{quote}`), tables, and bullet or ordered lists (`-`/`*`/`+` and
+  `1.`/`1)`). Text that is already wiki markup is left alone.
 - **PR comment hygiene:** one reply per thread per author, no duplicate of a
   comment you already posted, no new top-level comment on a PR you authored
   (`asAuthor=true` to override), no tasks via `severity`, no emoji, and bare

@@ -1271,7 +1271,8 @@ func (c *JiraClient) createIssueInternal(create map[string]any, repoRoot string)
 		fields["versions"] = namedList(vers)
 	}
 	if env := argString(create, "environment"); env != "" {
-		fields["environment"] = env
+		wiki, _ := markdownToJiraWiki(env)
+		fields["environment"] = wiki
 	}
 	if tt := buildTimeTracking(create); tt != nil {
 		fields["timetracking"] = tt
@@ -1380,7 +1381,8 @@ func (c *JiraClient) updateIssueFieldsInternal(issueKey string, update map[strin
 	}
 	if has(update, "environment") {
 		if env := argString(update, "environment"); env != "" {
-			fields["environment"] = env
+			wiki, _ := markdownToJiraWiki(env)
+			fields["environment"] = wiki
 		} else {
 			fields["environment"] = nil
 		}
