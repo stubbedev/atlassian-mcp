@@ -51,13 +51,23 @@ jobs:
           FAKE="sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
           CUR="$(grep -oP 'vendorHash = "\K[^"]+' flake.nix)"
           sed -i "s#vendorHash = \"${CUR}\"#vendorHash = \"${FAKE}\"#" flake.nix
-          GOT="$(nix build .#default --no-link 2>&1 | grep -oP 'got:\s+\K(sha256-\S+)' | head -1 || true)"
+          OUT="$(nix build .#default --no-link 2>&1 || true)"
+          GOT="$(printf '%s' "$OUT" | grep -oP 'got:\s+\K(sha256-\S+)' | head -1 || true)"
           [ -z "$GOT" ] && GOT="$CUR"
           sed -i "s#vendorHash = \"${FAKE}\"#vendorHash = \"${GOT}\"#" flake.nix
           echo "vendorHash = ${GOT}"
+          # A build that fails without reporting a hash (wrong Go toolchain,
+          # broken source) must fail the job instead of silently keeping the
+          # old hash and surfacing later as "no paths to push".
+          if ! nix build .#default --no-link 2>&1 | tail -20; then
+            echo "::error::nix build fails for a reason other than a stale vendorHash"
+            exit 1
+          fi
 
       - name: Build check (compiles + runs go test via doCheck)
-        run: nix build .#default --no-link --print-out-paths | tee /tmp/outpaths
+        run: |
+          set -o pipefail
+          nix build .#default --no-link --print-out-paths | tee /tmp/outpaths
 
       # attic-action watched the store and uploaded everything realised after
       # it; xilo pushes explicitly, so name the closure we just built.

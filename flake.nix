@@ -22,7 +22,9 @@
     in
     {
       packages = forAllSystems (pkgs: rec {
-        atlassian-mcp = pkgs.buildGoModule {
+        # go.mod requires 1.27; nixpkgs' default buildGoModule lags it, so use
+        # the version-pinned builder.
+        atlassian-mcp = pkgs.buildGo127Module {
           pname = "atlassian-mcp";
           inherit version;
           src = self;
@@ -56,7 +58,7 @@
 
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
-          packages = [ pkgs.go pkgs.gopls pkgs.gotools pkgs.golangci-lint ];
+          packages = [ pkgs.go_latest pkgs.gopls pkgs.gotools pkgs.golangci-lint ];
         };
       });
 

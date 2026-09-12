@@ -54,9 +54,20 @@ sync-flake:
     fake="sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
     cur="$(grep -oP 'vendorHash = "\K[^"]+' flake.nix)"
     sed -i "s#vendorHash = \"${cur}\"#vendorHash = \"${fake}\"#" flake.nix
-    got="$(nix build .#default --no-link 2>&1 | grep -oP 'got:\s+\K(sha256-\S+)' | head -1 || true)"
-    [ -n "$got" ] || got="$cur"
+    out="$(nix build .#default --no-link 2>&1 || true)"
+    got="$(printf '%s' "$out" | grep -oP 'got:\s+\K(sha256-\S+)' | head -1 || true)"
+    if [ -z "$got" ]; then
+        got="$cur"
+    fi
     sed -i "s#vendorHash = \"${fake}\"#vendorHash = \"${got}\"#" flake.nix
+    # A build that fails without reporting a hash (wrong Go toolchain, broken
+    # source) must fail loudly, not silently keep the old hash: the CI build
+    # would then fail anyway, with a much more confusing error.
+    if ! nix build .#default --no-link >/dev/null 2>/tmp/sync-flake.err; then
+        echo "nix build fails for a reason other than a stale vendorHash:" >&2
+        tail -20 /tmp/sync-flake.err >&2
+        exit 1
+    fi
     echo "vendorHash = ${got}"
 
 # Show the next major/minor/patch versions.
