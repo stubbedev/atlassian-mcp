@@ -1,12 +1,19 @@
 # atlassian-mcp dev / release tasks.
-# Mirrors the CI gates (go vet/test/build + nix build vendorHash) so a green
-# `just check` predicts green CI.
+# Mirrors the CI gates (golangci-lint, go vet/test/build + nix build vendorHash)
+# so a green `just check` predicts green CI.
 
 default:
     @just --list
 
-# vet + test + build (what ci.yml runs).
-check: vet test build
+# lint + vet + test + build (what ci.yml runs).
+check: lint vet test build
+
+lint:
+    golangci-lint run
+
+# Autofix what the linters can (modernize, errcheck, gocritic, formatters).
+lint-fix:
+    golangci-lint run --fix
 
 vet:
     go vet ./...

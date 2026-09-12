@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -57,7 +58,7 @@ func (c *BitbucketClient) createPullRequest(projectKey, repoSlug, repoRoot, titl
 		sourceBranch = safeGit(repoRoot, "", "rev-parse", "--abbrev-ref", "HEAD")
 	}
 	if sourceBranch == "" || sourceBranch == "HEAD" {
-		return toolResult{}, fmt.Errorf("Could not determine source branch. Provide create.fromBranch or pass repoPath / connect a client with workspace roots.")
+		return toolResult{}, errors.New("Could not determine source branch. Provide create.fromBranch or pass repoPath / connect a client with workspace roots.")
 	}
 	sourceBranchName := branchDisplayID(sourceBranch)
 	existing, err := c.findOpenPrForBranch(pk, rs, sourceBranchName)
@@ -72,10 +73,7 @@ func (c *BitbucketClient) createPullRequest(projectKey, repoSlug, repoRoot, titl
 	if toBranch != "" {
 		toRef = toBranchRef(toBranch)
 	} else {
-		toRef, err = c.getDefaultBranchRef(pk, rs, repoRoot)
-		if err != nil {
-			return toolResult{}, err
-		}
+		toRef = c.getDefaultBranchRef(pk, rs, repoRoot)
 	}
 	resolvedReviewers, err := c.resolveReviewers(pk, rs, reviewers)
 	if err != nil {
@@ -88,6 +86,7 @@ func (c *BitbucketClient) createPullRequest(projectKey, repoSlug, repoRoot, titl
 			return toolResult{}, err
 		}
 	}
+	description = appendAIMarkerMarkdown(description)
 	reviewerObjs := make([]map[string]any, 0, len(resolvedReviewers))
 	for _, name := range resolvedReviewers {
 		reviewerObjs = append(reviewerObjs, map[string]any{"user": map[string]any{"name": name}})
@@ -115,7 +114,7 @@ func (c *BitbucketClient) updatePullRequest(projectKey, repoSlug, repoRoot strin
 		return toolResult{}, err
 	}
 	if titleP == nil && descP == nil && toBranchP == nil && reviewersP == nil && len(attachments) == 0 {
-		return toolResult{}, fmt.Errorf("At least one field is required: title, description, toBranch, reviewers, or attachments")
+		return toolResult{}, errors.New("At least one field is required: title, description, toBranch, reviewers, or attachments")
 	}
 	existing, err := bbDecode[bbPullRequest](c, "GET", fmt.Sprintf("%s/pull-requests/%d", c.rp(pk, rs), prID), nil)
 	if err != nil {
@@ -137,6 +136,10 @@ func (c *BitbucketClient) updatePullRequest(projectKey, repoSlug, repoRoot strin
 			return toolResult{}, aerr
 		}
 		descP, uploaded = &desc, ups
+	}
+	if descP != nil {
+		marked := appendAIMarkerMarkdown(*descP)
+		descP = &marked
 	}
 	if reviewersP != nil {
 		resolved, rerr := c.resolveReviewers(pk, rs, *reviewersP)
@@ -255,7 +258,7 @@ func (c *BitbucketClient) mutatePullRequest(args map[string]any, repoRoot string
 		if create != nil {
 			return c.createFromMap(pk, rs, repoRoot, create)
 		}
-		return toolResult{}, fmt.Errorf("Could not determine source branch. Provide create.fromBranch, pass repoPath, or connect a client with workspace roots.")
+		return toolResult{}, errors.New("Could not determine source branch. Provide create.fromBranch, pass repoPath, or connect a client with workspace roots.")
 	}
 
 	existing, err := c.findOpenPrForBranch(pk, rs, sourceBranch)
@@ -463,11 +466,11 @@ func bitbucketMutate(session *sessionState, args map[string]any, repoRoot string
 		return bitbucket.mergePr(pk, rs, repoRoot, prID, argString(args, "mergeStrategy"), argString(args, "mergeMessage"))
 	case "create":
 		if argMap(args, "create") == nil {
-			return toolResult{}, fmt.Errorf("action=create needs a create object (title, and optionally description/fromBranch/toBranch/reviewers).")
+			return toolResult{}, errors.New("action=create needs a create object (title, and optionally description/fromBranch/toBranch/reviewers).")
 		}
 	case "update":
 		if argMap(args, "update") == nil {
-			return toolResult{}, fmt.Errorf("action=update needs an update object (title, description, toBranch, or reviewers).")
+			return toolResult{}, errors.New("action=update needs an update object (title, description, toBranch, or reviewers).")
 		}
 	case "":
 	default:

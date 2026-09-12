@@ -82,7 +82,7 @@ func TestHeaderRootsAreAuthoritative(t *testing.T) {
 func fakeRootsSession(rootsJSON string) *sessionState {
 	return &sessionState{
 		caps: clientCaps{roots: true},
-		send: func(method string, params any) (json.RawMessage, error) {
+		send: func(_ string, _ any) (json.RawMessage, error) {
 			return json.RawMessage(rootsJSON), nil
 		},
 	}
@@ -348,11 +348,19 @@ func TestToolListGating(t *testing.T) {
 
 func TestNamedList(t *testing.T) {
 	// non-empty → [{"name":n}]
-	if b, _ := json.Marshal(namedList([]string{"Frontend", "Backend"})); string(b) != `[{"name":"Frontend"},{"name":"Backend"}]` {
+	b, err := json.Marshal(namedList([]string{"Frontend", "Backend"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != `[{"name":"Frontend"},{"name":"Backend"}]` {
 		t.Errorf("got %s", b)
 	}
 	// empty → [] not null, so update clears the field
-	if b, _ := json.Marshal(namedList(nil)); string(b) != "[]" {
+	b, err = json.Marshal(namedList(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "[]" {
 		t.Errorf("empty should marshal to [], got %s", b)
 	}
 }
@@ -384,7 +392,11 @@ func TestBuildTimeTracking(t *testing.T) {
 	if tt["originalEstimate"] != "3d" || tt["remainingEstimate"] != "1d" {
 		t.Errorf("got %v", tt)
 	}
-	if b, _ := json.Marshal(buildTimeTracking(map[string]any{"originalEstimate": "2h"})); string(b) != `{"originalEstimate":"2h"}` {
+	b, err := json.Marshal(buildTimeTracking(map[string]any{"originalEstimate": "2h"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != `{"originalEstimate":"2h"}` {
 		t.Errorf("partial: got %s", b)
 	}
 }
@@ -573,7 +585,7 @@ func TestMarkdownCodeFenceVariants(t *testing.T) {
 		{"lang with hash", "```c#\nx\n```", "{code:c#}\nx\n{code}"},
 		{"info with extra words", "```shell script\nx\n```", "{code:shell}\nx\n{code}"},
 		{"info with attributes", "```js copy startline=3\nx\n```", "{code:js}\nx\n{code}"},
-		{"unrecognised lang kept", "```fantom-lang\nx\n```", "{code:fantom-lang}\nx\n{code}"},
+		{"unrecognized lang kept", "```fantom-lang\nx\n```", "{code:fantom-lang}\nx\n{code}"},
 		{"tilde fence", "~~~python\nprint(1)\n~~~", "{code:python}\nprint(1)\n{code}"},
 		{"bare tilde fence", "~~~\nx\n~~~", "{code}\nx\n{code}"},
 		{"four backticks", "````\n```\nx\n```\n````", "{code}\n```\nx\n```\n{code}"},
@@ -701,7 +713,7 @@ func TestLinkifyCommentRefs(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Only comment 12 exists on this PR.
 		if strings.HasSuffix(r.URL.Path, "/pull-requests/7/comments/12") {
-			w.Write([]byte(`{"id":12,"text":"x"}`))
+			_, _ = w.Write([]byte(`{"id":12,"text":"x"}`))
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -725,10 +737,10 @@ func TestLinkifyCommentRefs(t *testing.T) {
 func TestResolveReviewers(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("filter") == "nobody" {
-			w.Write([]byte(`{"values":[]}`))
+			_, _ = w.Write([]byte(`{"values":[]}`))
 			return
 		}
-		w.Write([]byte(`{"values":[{"user":{"name":"abs","displayName":"Alexander Bugge Stage"}}]}`))
+		_, _ = w.Write([]byte(`{"values":[{"user":{"name":"abs","displayName":"Alexander Bugge Stage"}}]}`))
 	}))
 	defer srv.Close()
 	c := NewBitbucketClient(srv.URL, "t")
@@ -837,7 +849,7 @@ func TestUserLookupFallsBackWhenScopeDenied(t *testing.T) {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		w.Write([]byte(`{"values":[{"name":"mm","displayName":"Magnus Melin"}]}`))
+		_, _ = w.Write([]byte(`{"values":[{"name":"mm","displayName":"Magnus Melin"}]}`))
 	}))
 	defer srv.Close()
 	c := NewBitbucketClient(srv.URL, "t")
@@ -849,7 +861,7 @@ func TestUserLookupFallsBackWhenScopeDenied(t *testing.T) {
 		t.Errorf("expected a fallback to the global directory, got %v", paths)
 	}
 	// A denial on an unscoped lookup has nothing to fall back to.
-	deny := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	deny := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	defer deny.Close()
@@ -864,7 +876,7 @@ func TestUserLookupFallsBackWhenScopeDenied(t *testing.T) {
 func TestAttachToText(t *testing.T) {
 	var uploads []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" || !strings.HasSuffix(r.URL.Path, "/attachments") {
+		if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/attachments") {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -877,9 +889,9 @@ func TestAttachToText(t *testing.T) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		f.Close()
+		_ = f.Close()
 		uploads = append(uploads, hdr.Filename)
-		fmt.Fprintf(w, `{"attachments":[{"id":%d,"url":"attachment:%d","name":%q}]}`, len(uploads), len(uploads), hdr.Filename)
+		_, _ = fmt.Fprintf(w, `{"attachments":[{"id":%d,"url":"attachment:%d","name":%q}]}`, len(uploads), len(uploads), hdr.Filename)
 	}))
 	defer srv.Close()
 
@@ -936,5 +948,65 @@ func TestConsecutiveMarkdownHeadings(t *testing.T) {
 	want := "h2. A\nh2. B\n\ntext\n# item\n## nested"
 	if out, _ := markdownToJiraWiki(in); out != want {
 		t.Errorf("consecutive headings = %q, want %q", out, want)
+	}
+}
+
+func TestAppendAIMarkerWiki(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"plain", "Crashes on save", "Crashes on save\n\n" + aiMarkerWiki},
+		{"already marked", "x\n\n" + aiMarkerWiki, "x\n\n" + aiMarkerWiki},
+		{"trailing whitespace trimmed", "x  \n", "x\n\n" + aiMarkerWiki},
+		{"after closed code block", "{code}\nselect 1\n{code}", "{code}\nselect 1\n{code}\n\n" + aiMarkerWiki},
+		{"empty stays empty", "  ", "  "},
+	}
+	for _, c := range cases {
+		if got := appendAIMarkerWiki(c.in); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+	// An unclosed {code} runs to the end of the field: a marker appended after
+	// it would render inside the block, so the text is left unmarked.
+	if got := appendAIMarkerWiki("{code:sql\nselect 1"); got != "{code:sql\nselect 1" {
+		t.Errorf("unclosed code block: got %q", got)
+	}
+	// The real write path converts markdown first, so an unterminated markdown
+	// fence is closed into {code} and the marker lands after it, never inside.
+	wiki, _ := markdownToJiraWiki("look:\n```go\nfmt.Println(1)")
+	if got := appendAIMarkerWiki(wiki); !strings.HasSuffix(got, "{code}\n\n"+aiMarkerWiki) {
+		t.Errorf("converted fence: got %q", got)
+	}
+	markAITextEnabled = false
+	defer func() { markAITextEnabled = true }()
+	if got := appendAIMarkerWiki("x"); got != "x" {
+		t.Errorf("disabled: got %q", got)
+	}
+}
+
+func TestAppendAIMarkerMarkdown(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"plain", "LGTM", "LGTM\n\n" + aiMarkerMarkdown},
+		{"already marked", "LGTM\n\n" + aiMarkerMarkdown, "LGTM\n\n" + aiMarkerMarkdown},
+		{"after closed fence", "```go\nx\n```", "```go\nx\n```\n\n" + aiMarkerMarkdown},
+		{"inline code span intact", "use `foo` here", "use `foo` here\n\n" + aiMarkerMarkdown},
+		{"empty stays empty", " ", " "},
+	}
+	for _, c := range cases {
+		if got := appendAIMarkerMarkdown(c.in); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+	// An unterminated fence would swallow the marker, so it is skipped.
+	open := "```python\nprint(1)"
+	if got := appendAIMarkerMarkdown(open); got != open {
+		t.Errorf("open fence: got %q", got)
+	}
+	// A trailing suggestion block must stay last; the marker goes before it.
+	sugg := "drop the loop\n\n```suggestion\nx := 1\n```"
+	want := "drop the loop\n\n" + aiMarkerMarkdown + "\n\n```suggestion\nx := 1\n```"
+	if got := appendAIMarkerMarkdown(sugg); got != want {
+		t.Errorf("suggestion: got %q, want %q", got, want)
+	}
+	if got := stripAIMarker(want); got != sugg {
+		t.Errorf("stripAIMarker: got %q, want %q", got, sugg)
 	}
 }

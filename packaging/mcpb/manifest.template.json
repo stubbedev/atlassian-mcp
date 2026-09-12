@@ -25,7 +25,8 @@
         "BITBUCKET_URL": "${user_config.bitbucket_url}",
         "BITBUCKET_ACCESS_TOKEN": "${user_config.bitbucket_token}",
         "ATLASSIAN_MCP_REPO_ROOT": "${user_config.repo_root}",
-        "ATLASSIAN_MCP_GIT_PATH": "${user_config.git_path}"
+        "ATLASSIAN_MCP_GIT_PATH": "${user_config.git_path}",
+        "ATLASSIAN_MCP_MARK_AI_TEXT": "${user_config.mark_ai_text}"
       }
     }
   },
@@ -66,6 +67,12 @@
       "type": "file",
       "title": "git executable (optional)",
       "description": "Only needed if git is not on this app's PATH — common on Windows, e.g. C:\\Program Files\\Git\\cmd\\git.exe.",
+      "required": false
+    },
+    "mark_ai_text": {
+      "type": "boolean",
+      "title": "Mark AI-written text",
+      "description": "Append a bold [AI] line to Jira and Bitbucket text this server posts, so readers can tell AI writing from yours.",
       "required": false
     }
   },

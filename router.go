@@ -11,7 +11,6 @@ func runTool(session *sessionState, name string, args map[string]any) (toolResul
 		return toolResult{}, rerr
 	}
 	switch name {
-
 	// ── Git (always available) ───────────────────────────────────────────
 	case "git_get_context":
 		return gitGetContext(args, resolveRepoRoot(session, args)), nil

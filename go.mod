@@ -1,6 +1,6 @@
 module github.com/stubbedev/atlassian-mcp
 
-go 1.26
+go 1.27
 
 require (
 	github.com/disintegration/imaging v1.6.2

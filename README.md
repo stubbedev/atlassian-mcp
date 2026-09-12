@@ -117,6 +117,12 @@ cannot get them wrong, and they need no prompting:
   so reading the wrong branch is visible rather than silent.
 - **Tool annotations** (`readOnlyHint`, `destructiveHint`, `idempotentHint`) are
   published for every tool, so hosts can gate confirmation on metadata.
+- **AI-written text is attributed.** Every Jira ticket description, Jira comment
+  (including worklog comments) and Bitbucket PR description / PR comment posted
+  through this server ends with a bold `[AI]` line, added after markdown→wiki
+  conversion so it never lands inside a code block, and skipped rather than
+  mangled when the text ends inside an open code fence. Disable with
+  `"markAIText": false` in the config file or `ATLASSIAN_MCP_MARK_AI_TEXT=false`.
 
 ## Setup
 
@@ -559,6 +565,7 @@ pure-Go implementation shell out to external binaries:
 | `ATLASSIAN_MCP_HTTP_TOKEN` | Bearer token for HTTP mode. Optional on loopback binds; **required** on non-loopback binds. | unset |
 | `ATLASSIAN_MCP_REPO_ROOT` | Default workspace root(s) for the git/PR tools, comma-separated. `file://` URIs, absolute paths, `~/…` and Windows drive paths all work. Needed by clients that expose no MCP roots (desktop apps). Overridden by a `repoPath` argument or a root header. | unset |
 | `ATLASSIAN_MCP_GIT_PATH` | Path to the `git` executable. Only needed when `git` is off the host app's `PATH`; the server already probes the usual install locations. | `git` on `PATH` |
+| `ATLASSIAN_MCP_MARK_AI_TEXT` | Set `false` to stop appending the bold `[AI]` attribution line to Jira/Bitbucket text this server posts. | `true` |
 | `ATLASSIAN_MCP_FFMPEG_PATH` | Path to `ffmpeg` binary. | npm: bundled `ffmpeg-static`; otherwise `ffmpeg` on `PATH` |
 | `ATLASSIAN_MCP_FFPROBE_PATH` | Path to `ffprobe` binary. | npm: bundled `ffprobe-static`; otherwise `ffprobe` on `PATH` |
 | `ATLASSIAN_MCP_TMP_TTL_DAYS` | Auto-saved attachments older than this are pruned. | `7` |

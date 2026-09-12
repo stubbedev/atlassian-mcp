@@ -42,6 +42,11 @@
           "description": "Personal Access Token (PAT) for Bitbucket Server authentication"
         }
       }
+    },
+    "markAIText": {
+      "type": "boolean",
+      "default": true,
+      "description": "Append a bold [AI] attribution line to Jira ticket descriptions/comments and Bitbucket PR descriptions/comments posted through this server, so readers can tell AI writing from yours. Default true."
     }
   }
 }

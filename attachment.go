@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"image"
 	"image/gif"
@@ -194,7 +196,7 @@ func pruneTmpFiles() {
 			continue
 		}
 		if now.Sub(info.ModTime()) > ttl {
-			os.Remove(p)
+			_ = os.Remove(p)
 			continue
 		}
 		survivors = append(survivors, survivor{p, info.Size(), info.ModTime()})
@@ -233,7 +235,7 @@ func sanitizeFilename(name string) string {
 func autoSaveOversized(id, filename string, buffer []byte) (string, error) {
 	pruneTmpFiles()
 	path := filepath.Join(os.TempDir(), tmpPrefix+id+"-"+sanitizeFilename(filename))
-	if err := os.WriteFile(path, buffer, 0o644); err != nil {
+	if err := os.WriteFile(path, buffer, 0o600); err != nil {
 		return "", err
 	}
 	return path, nil
@@ -451,10 +453,7 @@ func buildPDFResult(a attachmentArgs, header string) toolResult {
 	}
 
 	if len(body) < pdfRasterThreshold && totalPages > 0 {
-		pageCount := totalPages
-		if pageCount > pdfMaxRasterPages {
-			pageCount = pdfMaxRasterPages
-		}
+		pageCount := min(totalPages, pdfMaxRasterPages)
 		maxDim := intOr(a.maxDimension, defaultMaxDimension)
 		quality := intOr(a.quality, defaultJpegQuality)
 		images, rerr := rasterizePDF(a.buffer, pageCount, maxDim)
@@ -486,15 +485,15 @@ func rasterizePDF(buffer []byte, pageCount, maxDim int) ([][]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 	inputPDF := filepath.Join(dir, "input.pdf")
-	if err := os.WriteFile(inputPDF, buffer, 0o644); err != nil {
+	if err := os.WriteFile(inputPDF, buffer, 0o600); err != nil {
 		return nil, err
 	}
 
 	if p, lerr := exec.LookPath("pdftoppm"); lerr == nil {
 		prefix := filepath.Join(dir, "page")
-		cmd := exec.Command(p, "-jpeg", "-scale-to", strconv.Itoa(maxDim), "-f", "1", "-l", strconv.Itoa(pageCount), inputPDF, prefix)
+		cmd := exec.CommandContext(context.Background(), p, "-jpeg", "-scale-to", strconv.Itoa(maxDim), "-f", "1", "-l", strconv.Itoa(pageCount), inputPDF, prefix)
 		if err := cmd.Run(); err == nil {
 			if imgs := collectImages(dir, "page", []string{".jpg", ".jpeg"}); len(imgs) > 0 {
 				return imgs, nil
@@ -503,14 +502,14 @@ func rasterizePDF(buffer []byte, pageCount, maxDim int) ([][]byte, error) {
 	}
 	if p, lerr := exec.LookPath("mutool"); lerr == nil {
 		out := filepath.Join(dir, "page-%d.png")
-		cmd := exec.Command(p, "draw", "-F", "png", "-w", strconv.Itoa(maxDim), "-o", out, inputPDF, fmt.Sprintf("1-%d", pageCount))
+		cmd := exec.CommandContext(context.Background(), p, "draw", "-F", "png", "-w", strconv.Itoa(maxDim), "-o", out, inputPDF, fmt.Sprintf("1-%d", pageCount))
 		if err := cmd.Run(); err == nil {
 			if imgs := collectImages(dir, "page-", []string{".png"}); len(imgs) > 0 {
 				return imgs, nil
 			}
 		}
 	}
-	return nil, fmt.Errorf("no external PDF rasterizer (pdftoppm/mutool) found on PATH")
+	return nil, errors.New("no external PDF rasterizer (pdftoppm/mutool) found on PATH")
 }
 
 func collectImages(dir, prefix string, exts []string) [][]byte {
@@ -554,17 +553,17 @@ func getAttachmentDispatch(session *sessionState, args map[string]any) (toolResu
 		case bitbucket != nil && jira == nil:
 			source = "bitbucket"
 		default:
-			return toolResult{}, fmt.Errorf("source is required: \"jira\" for an issue attachment (IDs from jira_get) or \"bitbucket\" for a repo attachment (IDs from bitbucket_get_pr).")
+			return toolResult{}, errors.New("source is required: \"jira\" for an issue attachment (IDs from jira_get) or \"bitbucket\" for a repo attachment (IDs from bitbucket_get_pr).")
 		}
 	}
 	if source == "jira" {
 		if jira == nil {
-			return toolResult{}, fmt.Errorf("Jira is not configured.")
+			return toolResult{}, errors.New("Jira is not configured.")
 		}
 		return jira.getAttachment(args)
 	}
 	if bitbucket == nil {
-		return toolResult{}, fmt.Errorf("Bitbucket is not configured.")
+		return toolResult{}, errors.New("Bitbucket is not configured.")
 	}
 	return bitbucket.getAttachment(args, resolveRepoRoot(session, args))
 }

@@ -1,9 +1,11 @@
 package main
 
 import (
-	"crypto/sha1"
+	"context"
+	"crypto/sha1" //nolint:gosec // SHA-1 is used only as a change-detection digest, not for security
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -79,7 +81,7 @@ func ffprobePath() string {
 }
 
 func runCmd(cmd string, args ...string) (stdout []byte, stderr string, code int, err error) {
-	c := exec.Command(cmd, args...)
+	c := exec.CommandContext(context.Background(), cmd, args...)
 	var outBuf, errBuf strings.Builder
 	// capture stdout as bytes, stderr as string
 	var stdoutBuf []byte
@@ -95,7 +97,8 @@ func runCmd(cmd string, args ...string) (stdout []byte, stderr string, code int,
 	_ = outBuf
 	stderr = errBuf.String()
 	if werr != nil {
-		if ee, ok := werr.(*exec.ExitError); ok {
+		ee := &exec.ExitError{}
+		if errors.As(werr, &ee) {
 			return stdoutBuf, stderr, ee.ExitCode(), nil
 		}
 		return stdoutBuf, stderr, 0, werr
@@ -127,15 +130,15 @@ func readAll(r interface{ Read([]byte) (int, error) }) ([]byte, error) {
 func decodeStillViaFFmpeg(buffer []byte) ([]byte, error) {
 	fm := ffmpegPath()
 	if fm == "" {
-		return nil, fmt.Errorf("ffmpeg unavailable")
+		return nil, errors.New("ffmpeg unavailable")
 	}
 	dir, err := os.MkdirTemp(os.TempDir(), "atlmcp-img-")
 	if err != nil {
 		return nil, err
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 	input := filepath.Join(dir, "input")
-	if err := os.WriteFile(input, buffer, 0o644); err != nil {
+	if err := os.WriteFile(input, buffer, 0o600); err != nil {
 		return nil, err
 	}
 	out := filepath.Join(dir, "out.png")
@@ -156,7 +159,7 @@ func decodeStillViaFFmpeg(buffer []byte) ([]byte, error) {
 func probeVideo(filePath string) (videoMeta, error) {
 	fp := ffprobePath()
 	if fp == "" {
-		return videoMeta{}, fmt.Errorf("ffprobe binary unavailable. Set ATLASSIAN_MCP_FFPROBE_PATH or install ffprobe.")
+		return videoMeta{}, errors.New("ffprobe binary unavailable. Set ATLASSIAN_MCP_FFPROBE_PATH or install ffprobe.")
 	}
 	stdout, stderr, code, err := runCmd(fp,
 		"-v", "error",
@@ -194,7 +197,7 @@ func probeVideo(filePath string) (videoMeta, error) {
 		return videoMeta{}, err
 	}
 	if len(data.Streams) == 0 {
-		return videoMeta{}, fmt.Errorf("No video stream found.")
+		return videoMeta{}, errors.New("No video stream found.")
 	}
 	s := data.Streams[0]
 	rate := s.RFrameRate
@@ -236,12 +239,9 @@ func probeVideo(filePath string) (videoMeta, error) {
 }
 
 func quickHash(buf []byte) string {
-	h := sha1.New()
+	h := sha1.New() //nolint:gosec // digest for change detection, not security
 	const head = 1024 * 1024
-	end := head
-	if len(buf) < end {
-		end = len(buf)
-	}
+	end := min(len(buf), head)
 	h.Write(buf[:end])
 	if len(buf) > head*2 {
 		h.Write(buf[len(buf)-head:])
@@ -288,11 +288,11 @@ func videoCacheSet(key string, value *processVideoResult) {
 	videoCacheOrder = append(videoCacheOrder, key)
 }
 
-var showinfoTsRe = regexp.MustCompile(`Parsed_showinfo[^\]]*\][^\n]*pts_time:([\d.]+)`)
+var showinfoTSRe = regexp.MustCompile(`Parsed_showinfo[^\]]*\][^\n]*pts_time:([\d.]+)`)
 
 func parseShowinfoTimestamps(stderr string) []float64 {
 	var out []float64
-	for _, m := range showinfoTsRe.FindAllStringSubmatch(stderr, -1) {
+	for _, m := range showinfoTSRe.FindAllStringSubmatch(stderr, -1) {
 		if v, err := strconv.ParseFloat(m[1], 64); err == nil {
 			out = append(out, v)
 		}
@@ -303,7 +303,7 @@ func parseShowinfoTimestamps(stderr string) []float64 {
 func processVideo(buffer []byte, opts processVideoOpts) (*processVideoResult, error) {
 	fm := ffmpegPath()
 	if fm == "" {
-		return nil, fmt.Errorf("ffmpeg binary unavailable. Set ATLASSIAN_MCP_FFMPEG_PATH or install ffmpeg.")
+		return nil, errors.New("ffmpeg binary unavailable. Set ATLASSIAN_MCP_FFMPEG_PATH or install ffmpeg.")
 	}
 	frames := opts.frames
 	if frames < videoFramesMin {
@@ -340,9 +340,9 @@ func processVideo(buffer []byte, opts processVideoOpts) (*processVideoResult, er
 	if err != nil {
 		return nil, err
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 	input := filepath.Join(dir, "input")
-	if err := os.WriteFile(input, buffer, 0o644); err != nil {
+	if err := os.WriteFile(input, buffer, 0o600); err != nil {
 		return nil, err
 	}
 	meta, err := probeVideo(input)
@@ -400,7 +400,7 @@ func processVideo(buffer []byte, opts processVideoOpts) (*processVideoResult, er
 		}
 		if code != 0 {
 			var errLines []string
-			for _, l := range strings.Split(stderr, "\n") {
+			for l := range strings.SplitSeq(stderr, "\n") {
 				if strings.Contains(strings.ToLower(l), "error") {
 					errLines = append(errLines, l)
 				}
@@ -442,7 +442,7 @@ func processVideo(buffer []byte, opts processVideoOpts) (*processVideoResult, er
 		entries, _ := os.ReadDir(dir)
 		for _, e := range entries {
 			if strings.HasPrefix(e.Name(), "frame-") {
-				os.Remove(filepath.Join(dir, e.Name()))
+				_ = os.Remove(filepath.Join(dir, e.Name()))
 			}
 		}
 	}

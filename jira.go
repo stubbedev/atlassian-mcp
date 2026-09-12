@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -252,16 +254,16 @@ var (
 	emojiRe           = regexp.MustCompile(`[\x{1F000}-\x{1FAFF}\x{2600}-\x{27BF}\x{2190}-\x{21FF}\x{2B00}-\x{2BFF}\x{FE00}-\x{FE0F}\x{1F1E6}-\x{1F1FF}]`)
 )
 
-func capText(value string, max int) string {
-	if max <= 0 {
+func capText(value string, limit int) string {
+	if limit <= 0 {
 		return value
 	}
 	r := []rune(value)
-	if len(r) <= max {
+	if len(r) <= limit {
 		return value
 	}
-	more := len(r) - max
-	return fmt.Sprintf("%s\n... (truncated, %d more chars — pass fullDescription=true for the rest)", string(r[:max]), more)
+	more := len(r) - limit
+	return fmt.Sprintf("%s\n... (truncated, %d more chars — pass fullDescription=true for the rest)", string(r[:limit]), more)
 }
 
 func pagination(total, startAt, count int) string {
@@ -273,14 +275,14 @@ func pagination(total, startAt, count int) string {
 }
 
 func jsonStr(s string) string {
-	b, _ := json.Marshal(s)
+	b, _ := json.Marshal(s) //nolint:errchkjson // a string cannot fail to marshal
 	return string(b)
 }
 
 func buildJQL(query, jql, project, status, assignee, issueType string) (string, error) {
 	if jql != "" {
 		if len(jql) > 2000 {
-			return "", fmt.Errorf("JQL query too long (max 2000 characters).")
+			return "", errors.New("JQL query too long (max 2000 characters).")
 		}
 		return jql, nil
 	}
@@ -301,7 +303,7 @@ func buildJQL(query, jql, project, status, assignee, issueType string) (string, 
 		clauses = append(clauses, `issuetype = "`+issueType+`"`)
 	}
 	if len(clauses) == 0 {
-		return "", fmt.Errorf("Provide at least one of: query, jql, project, status, assignee, issueType")
+		return "", errors.New("Provide at least one of: query, jql, project, status, assignee, issueType")
 	}
 	return strings.Join(clauses, " AND ") + " ORDER BY updated DESC", nil
 }
@@ -378,10 +380,10 @@ func formatJiraError(status int, method, path, details string) string {
 func validateCommentBody(body string) (string, bool, error) {
 	trimmed := strings.TrimSpace(body)
 	if trimmed == "" {
-		return "", false, fmt.Errorf("Jira comment body must not be empty.")
+		return "", false, errors.New("Jira comment body must not be empty.")
 	}
 	if emojiRe.MatchString(trimmed) {
-		return "", false, fmt.Errorf("Jira comments must not include emoji. Use concise Jira wiki markup or plain text only.")
+		return "", false, errors.New("Jira comments must not include emoji. Use concise Jira wiki markup or plain text only.")
 	}
 	wiki, converted := markdownToJiraWiki(trimmed)
 	return wiki, converted, nil
@@ -440,7 +442,10 @@ func (c *JiraClient) doRequest(apiBase, method, path string, body any) ([]byte, 
 	reqURL := c.baseURL + apiBase + path
 	var reader io.Reader
 	if body != nil {
-		b, _ := json.Marshal(body)
+		b, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
 		reader = bytes.NewReader(b)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -456,12 +461,12 @@ func (c *JiraClient) doRequest(apiBase, method, path string, body any) ([]byte, 
 	if err != nil {
 		return nil, err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	raw, _ := io.ReadAll(res.Body)
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		return nil, fmt.Errorf("%s", formatJiraError(res.StatusCode, method, path, parseJiraErrorDetails(string(raw))))
 	}
-	if res.StatusCode == 204 || len(raw) == 0 {
+	if res.StatusCode == http.StatusNoContent || len(raw) == 0 {
 		return nil, nil
 	}
 	return raw, nil
@@ -504,7 +509,7 @@ func (c *JiraClient) getCurrentUser() (*jiraCurrentUser, error) {
 		return nil, err
 	}
 	if me == nil {
-		return nil, fmt.Errorf("Could not determine current Jira user identity.")
+		return nil, errors.New("Could not determine current Jira user identity.")
 	}
 	c.currentUser = me
 	return me, nil
@@ -575,7 +580,7 @@ func (c *JiraClient) getEpicNameFieldID() (string, error) {
 func (c *JiraClient) resolveFieldID(nameOrID string) (string, error) {
 	key := strings.TrimSpace(nameOrID)
 	if key == "" {
-		return "", fmt.Errorf("customFields keys must be a field name or id.")
+		return "", errors.New("customFields keys must be a field name or id.")
 	}
 	fields, err := c.fieldList()
 	if err != nil {
@@ -645,11 +650,11 @@ func allowedHint(labels []string) string {
 	if len(labels) == 0 {
 		return ""
 	}
-	const cap = 20
-	if len(labels) <= cap {
+	const maxLabels = 20
+	if len(labels) <= maxLabels {
 		return " — allowed: " + strings.Join(labels, " | ")
 	}
-	return fmt.Sprintf(" — allowed: %s | ...and %d more", strings.Join(labels[:cap], " | "), len(labels)-cap)
+	return fmt.Sprintf(" — allowed: %s | ...and %d more", strings.Join(labels[:maxLabels], " | "), len(labels)-maxLabels)
 }
 
 // sendHint is the example value to put in customFields for a schema.
@@ -785,7 +790,7 @@ func (c *JiraClient) listFields(args map[string]any, repoRoot string) (toolResul
 			return toolResult{}, perr
 		}
 		if issueType == "" {
-			return toolResult{}, fmt.Errorf("Pass issueType together with project (create screens are per issue type), or pass issueKey for an existing issue.")
+			return toolResult{}, errors.New("Pass issueType together with project (create screens are per issue type), or pass issueKey for an existing issue.")
 		}
 		meta, err = c.createMeta(pk, issueType)
 		scope = fmt.Sprintf("on the %s create screen in %s (jira_mutate create.customFields)", issueType, pk)
@@ -912,7 +917,7 @@ func (c *JiraClient) resolveProjectKey(projectKey, repoRoot string) (string, err
 	}
 	projects := c.projects
 	if len(projects) == 0 {
-		return "", fmt.Errorf("No Jira projects found for your account.")
+		return "", errors.New("No Jira projects found for your account.")
 	}
 	keys := map[string]bool{}
 	for _, p := range projects {
@@ -948,7 +953,7 @@ func (c *JiraClient) resolveTransitionID(issueKey, transitionID, transitionName 
 	}
 	requested := strings.TrimSpace(transitionName)
 	if requested == "" {
-		return "", fmt.Errorf("Provide transitionId or transitionName")
+		return "", errors.New("Provide transitionId or transitionName")
 	}
 	data, err := jiraGet[jiraTransitionsResult](c, "/rest/api/2", "GET", "/issue/"+url.PathEscape(issueKey)+"/transitions", nil)
 	if err != nil {
@@ -1242,7 +1247,7 @@ func (c *JiraClient) createIssueInternal(create map[string]any, repoRoot string)
 	}
 	if d := argString(create, "description"); d != "" {
 		wiki, _ := markdownToJiraWiki(d)
-		fields["description"] = wiki
+		fields["description"] = appendAIMarkerWiki(wiki)
 	}
 	if a := argString(create, "assignee"); a != "" {
 		fields["assignee"] = map[string]any{"name": a}
@@ -1297,7 +1302,7 @@ func (c *JiraClient) createIssueInternal(create map[string]any, repoRoot string)
 			return nil, err
 		}
 		if epicFieldID == "" {
-			return nil, fmt.Errorf("Epic Link custom field not found on this Jira instance. Set it manually in the Jira UI.")
+			return nil, errors.New("Epic Link custom field not found on this Jira instance. Set it manually in the Jira UI.")
 		}
 		fields[epicFieldID] = epicTarget
 	}
@@ -1339,7 +1344,7 @@ func (c *JiraClient) updateIssueFieldsInternal(issueKey string, update map[strin
 	}
 	if has(update, "description") {
 		wiki, _ := markdownToJiraWiki(argString(update, "description"))
-		fields["description"] = wiki
+		fields["description"] = appendAIMarkerWiki(wiki)
 	}
 	if has(update, "assignee") {
 		if a := argString(update, "assignee"); a != "" {
@@ -1396,7 +1401,7 @@ func (c *JiraClient) updateIssueFieldsInternal(issueKey string, update map[strin
 			return false, err
 		}
 		if epicFieldID == "" {
-			return false, fmt.Errorf("Epic Link custom field not found on this Jira instance. Set it manually in the Jira UI.")
+			return false, errors.New("Epic Link custom field not found on this Jira instance. Set it manually in the Jira UI.")
 		}
 		if e := argString(update, "epicLink"); e != "" {
 			fields[epicFieldID] = e
@@ -1492,8 +1497,8 @@ func (c *JiraClient) searchIssues(query, jql, project, status, assignee, issueTy
 	}
 	q := url.Values{}
 	q.Set("jql", builtJQL)
-	q.Set("maxResults", fmt.Sprint(maxResults))
-	q.Set("startAt", fmt.Sprint(startAt))
+	q.Set("maxResults", strconv.Itoa(maxResults))
+	q.Set("startAt", strconv.Itoa(startAt))
 	q.Set("fields", "summary,status,assignee,priority,issuetype")
 	data, err := jiraGet[jiraSearchResult](c, "/rest/api/2", "GET", "/search?"+q.Encode(), nil)
 	if err != nil {
@@ -1525,7 +1530,7 @@ func (c *JiraClient) findIssues(query string, maxResults int) ([]jiraFoundIssue,
 	}
 	q := url.Values{}
 	q.Set("jql", builtJQL)
-	q.Set("maxResults", fmt.Sprint(maxResults))
+	q.Set("maxResults", strconv.Itoa(maxResults))
 	q.Set("startAt", "0")
 	q.Set("fields", "summary,status,issuetype")
 	data, err := jiraGet[jiraSearchResult](c, "/rest/api/2", "GET", "/search?"+q.Encode(), nil)
@@ -1582,8 +1587,8 @@ func (c *JiraClient) getIssueTypes(projectKey, repoRoot string) (toolResult, err
 
 func (c *JiraClient) getSprints(boardID int, state string, maxResults, startAt int) (toolResult, error) {
 	q := url.Values{}
-	q.Set("maxResults", fmt.Sprint(maxResults))
-	q.Set("startAt", fmt.Sprint(startAt))
+	q.Set("maxResults", strconv.Itoa(maxResults))
+	q.Set("startAt", strconv.Itoa(startAt))
 	if state != "" {
 		q.Set("state", state)
 	}
@@ -1618,7 +1623,7 @@ func (c *JiraClient) getSprints(boardID int, state string, maxResults, startAt i
 func (c *JiraClient) searchUsers(query string, maxResults int) (toolResult, error) {
 	q := url.Values{}
 	q.Set("username", query)
-	q.Set("maxResults", fmt.Sprint(maxResults))
+	q.Set("maxResults", strconv.Itoa(maxResults))
 	data, err := jiraGet[[]jiraUser](c, "/rest/api/2", "GET", "/user/search?"+q.Encode(), nil)
 	if err != nil {
 		return toolResult{}, err
@@ -1661,11 +1666,11 @@ type issueOverviewOpts struct {
 
 func issueOverviewOptsFromArgs(args map[string]any) issueOverviewOpts {
 	full := argBool(args, "fullDescription")
-	cap := 2000
+	defaultCap := 2000
 	if full {
-		cap = 0
+		defaultCap = 0
 	} else if has(args, "descriptionMaxChars") {
-		cap = argInt(args, "descriptionMaxChars")
+		defaultCap = argInt(args, "descriptionMaxChars")
 	}
 	return issueOverviewOpts{
 		issueKey:           argString(args, "issueKey"),
@@ -1674,7 +1679,7 @@ func issueOverviewOptsFromArgs(args map[string]any) issueOverviewOpts {
 		commentsStartAt:    argIntDefault(args, "commentsStartAt", 0),
 		includeTransitions: argBoolDefault(args, "includeTransitions", true),
 		includeSprint:      argBoolDefault(args, "includeSprint", true),
-		descriptionCap:     cap,
+		descriptionCap:     defaultCap,
 	}
 }
 
@@ -1903,8 +1908,8 @@ func (c *JiraClient) boardOverview(args map[string]any) (toolResult, error) {
 
 	board, _ := jiraGet[jiraBoard](c, "/rest/agile/1.0", "GET", fmt.Sprintf("/board/%d", boardID), nil)
 	sq := url.Values{}
-	sq.Set("maxResults", fmt.Sprint(sprintMaxResults))
-	sq.Set("startAt", fmt.Sprint(sprintStartAt))
+	sq.Set("maxResults", strconv.Itoa(sprintMaxResults))
+	sq.Set("startAt", strconv.Itoa(sprintStartAt))
 	if sprintState != "" {
 		sq.Set("state", sprintState)
 	} else {
@@ -1935,15 +1940,12 @@ func (c *JiraClient) boardOverview(args map[string]any) (toolResult, error) {
 	}
 	issueJql := strings.Join(filterClauses, " AND ")
 
-	type sprintIssues struct {
-		issues *jiraSearchResult
-	}
 	issueBySprint := map[int]*jiraSearchResult{}
 	if includeIssues {
 		for _, sprint := range sprints.Values {
 			q := url.Values{}
-			q.Set("maxResults", fmt.Sprint(issueMaxResults))
-			q.Set("startAt", fmt.Sprint(issueStartAt))
+			q.Set("maxResults", strconv.Itoa(issueMaxResults))
+			q.Set("startAt", strconv.Itoa(issueStartAt))
 			q.Set("fields", "summary,status,assignee,priority,issuetype")
 			if issueJql != "" {
 				q.Set("jql", issueJql)
@@ -2035,14 +2037,14 @@ func (c *JiraClient) mutateIssue(args map[string]any, repoRoot string) (toolResu
 			return toolResult{}, err
 		}
 		if created == nil {
-			return toolResult{}, fmt.Errorf("Issue creation did not return an issue key.")
+			return toolResult{}, errors.New("Issue creation did not return an issue key.")
 		}
 		issueKey = created.Key
 		actions = append(actions, "created issue")
 	}
 
 	if issueKey == "" {
-		return toolResult{}, fmt.Errorf("Provide issueKey, or provide create with issueType and summary.")
+		return toolResult{}, errors.New("Provide issueKey, or provide create with issueType and summary.")
 	}
 
 	if update := argMap(args, "update"); update != nil {
@@ -2141,7 +2143,8 @@ func (c *JiraClient) mutateIssue(args map[string]any, repoRoot string) (toolResu
 	if worklog := argMap(args, "worklog"); worklog != nil {
 		wBody := map[string]any{"timeSpent": argString(worklog, "timeSpent")}
 		if cmt := argString(worklog, "comment"); cmt != "" {
-			wBody["comment"], _ = markdownToJiraWiki(cmt)
+			wiki, _ := markdownToJiraWiki(cmt)
+			wBody["comment"] = appendAIMarkerWiki(wiki)
 		}
 		if started := argString(worklog, "started"); started != "" {
 			wBody["started"] = started
@@ -2190,6 +2193,7 @@ func (c *JiraClient) addComment(issueKey, body string, attachments []string) (to
 		if err != nil {
 			return toolResult{}, err
 		}
+		v = appendAIMarkerWiki(v)
 		if _, err := c.api("POST", "/issue/"+url.PathEscape(issueKey)+"/comment", map[string]any{"body": v}); err != nil {
 			return toolResult{}, err
 		}
@@ -2208,7 +2212,7 @@ func (c *JiraClient) addComment(issueKey, body string, attachments []string) (to
 func (c *JiraClient) editComment(issueKey, commentID, body string) (toolResult, error) {
 	commentID = strings.TrimSpace(commentID)
 	if commentID == "" || commentID == "undefined" || commentID == "null" {
-		return toolResult{}, fmt.Errorf("commentId is required.")
+		return toolResult{}, errors.New("commentId is required.")
 	}
 	path := "/issue/" + url.PathEscape(issueKey) + "/comment/" + url.PathEscape(commentID)
 	current, err := jiraGet[jiraComment](c, "/rest/api/2", "GET", path, nil)
@@ -2225,6 +2229,7 @@ func (c *JiraClient) editComment(issueKey, commentID, body string) (toolResult, 
 	if err != nil {
 		return toolResult{}, err
 	}
+	v = appendAIMarkerWiki(v)
 	if _, err := c.api("PUT", path, map[string]any{"body": v}); err != nil {
 		return toolResult{}, err
 	}
@@ -2234,7 +2239,7 @@ func (c *JiraClient) editComment(issueKey, commentID, body string) (toolResult, 
 func (c *JiraClient) deleteComment(issueKey, commentID string) (toolResult, error) {
 	commentID = strings.TrimSpace(commentID)
 	if commentID == "" || commentID == "undefined" || commentID == "null" {
-		return toolResult{}, fmt.Errorf("commentId is required.")
+		return toolResult{}, errors.New("commentId is required.")
 	}
 	path := "/issue/" + url.PathEscape(issueKey) + "/comment/" + url.PathEscape(commentID)
 	current, err := jiraGet[jiraComment](c, "/rest/api/2", "GET", path, nil)
@@ -2259,7 +2264,7 @@ func (c *JiraClient) deleteComment(issueKey, commentID string) (toolResult, erro
 func (c *JiraClient) resolveBoardID(projectKey, repoRoot string) (int, error) {
 	pk, err := c.resolveProjectKey(projectKey, repoRoot)
 	if err != nil {
-		return 0, fmt.Errorf("boardId is required, or pass project so the board can be resolved. Find boards with jira_search resource=boards.")
+		return 0, errors.New("boardId is required, or pass project so the board can be resolved. Find boards with jira_search resource=boards.")
 	}
 	q := url.Values{}
 	q.Set("maxResults", "50")
@@ -2283,8 +2288,8 @@ func (c *JiraClient) resolveBoardID(projectKey, repoRoot string) (int, error) {
 
 func (c *JiraClient) getBoards(projectKey string, maxResults, startAt int) (toolResult, error) {
 	q := url.Values{}
-	q.Set("maxResults", fmt.Sprint(maxResults))
-	q.Set("startAt", fmt.Sprint(startAt))
+	q.Set("maxResults", strconv.Itoa(maxResults))
+	q.Set("startAt", strconv.Itoa(startAt))
 	if projectKey != "" {
 		q.Set("projectKeyOrId", projectKey)
 	}
@@ -2460,7 +2465,7 @@ func (c *JiraClient) mutateVersion(args map[string]any, repoRoot string) (toolRe
 		}
 		name := strings.TrimSpace(argString(args, "name"))
 		if name == "" {
-			return toolResult{}, fmt.Errorf("name is required to create a version.")
+			return toolResult{}, errors.New("name is required to create a version.")
 		}
 		body := map[string]any{"project": pk, "name": name}
 		if has(args, "description") {
@@ -2483,7 +2488,7 @@ func (c *JiraClient) mutateVersion(args map[string]any, repoRoot string) (toolRe
 			return toolResult{}, err
 		}
 		if created == nil {
-			return toolResult{}, fmt.Errorf("Jira returned no body when creating version.")
+			return toolResult{}, errors.New("Jira returned no body when creating version.")
 		}
 		return textResult(fmt.Sprintf("Created version [%s] %s in %s.", created.ID, created.Name, pk)), nil
 	}
@@ -2518,16 +2523,17 @@ func (c *JiraClient) mutateVersion(args map[string]any, repoRoot string) (toolRe
 	if has(args, "archived") {
 		body["archived"] = argBool(args, "archived")
 	}
-	if action == "release" {
+	switch action {
+	case "release":
 		body["released"] = true
 		if _, ok := body["releaseDate"]; !ok {
 			body["releaseDate"] = time.Now().UTC().Format("2006-01-02")
 		}
-	} else if action == "archive" {
+	case "archive":
 		body["archived"] = true
 	}
 	if len(body) == 0 {
-		return toolResult{}, fmt.Errorf("Nothing to update.")
+		return toolResult{}, errors.New("Nothing to update.")
 	}
 	updated, err := jiraGet[jiraVersion](c, "/rest/api/2", "PUT", "/version/"+url.PathEscape(id), body)
 	if err != nil {
@@ -2553,23 +2559,21 @@ func (c *JiraClient) mutateVersion(args map[string]any, repoRoot string) (toolRe
 func (c *JiraClient) uploadAttachments(issueKey string, paths []string) ([]string, error) {
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
-	var names []string
+	names := make([]string, 0, len(paths))
 	for _, p := range paths {
 		abs, _ := filepath.Abs(p)
 		f, err := os.Open(abs)
 		if err != nil {
 			return nil, fmt.Errorf("cannot open attachment %s: %w", p, err)
 		}
+		defer func() { _ = f.Close() }()
 		part, err := w.CreateFormFile("file", filepath.Base(abs))
 		if err != nil {
-			f.Close()
 			return nil, err
 		}
 		if _, err := io.Copy(part, f); err != nil {
-			f.Close()
 			return nil, err
 		}
-		f.Close()
 		names = append(names, filepath.Base(abs))
 	}
 	if err := w.Close(); err != nil {
@@ -2579,7 +2583,7 @@ func (c *JiraClient) uploadAttachments(issueKey string, paths []string) ([]strin
 	reqURL := c.baseURL + "/rest/api/2/issue/" + url.PathEscape(issueKey) + "/attachments"
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "POST", reqURL, &buf)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, &buf)
 	if err != nil {
 		return nil, err
 	}
@@ -2590,7 +2594,7 @@ func (c *JiraClient) uploadAttachments(issueKey string, paths []string) ([]strin
 	if err != nil {
 		return nil, err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	raw, _ := io.ReadAll(res.Body)
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		return nil, fmt.Errorf("%s", formatJiraError(res.StatusCode, "POST", "/issue/"+issueKey+"/attachments", parseJiraErrorDetails(string(raw))))
@@ -2602,7 +2606,7 @@ func (c *JiraClient) uploadAttachments(issueKey string, paths []string) ([]strin
 func (c *JiraClient) getAttachment(args map[string]any) (toolResult, error) {
 	id := strings.TrimSpace(argString(args, "attachmentId"))
 	if id == "" {
-		return toolResult{}, fmt.Errorf("attachmentId is required.")
+		return toolResult{}, errors.New("attachmentId is required.")
 	}
 	meta, err := jiraGet[jiraAttachment](c, "/rest/api/2", "GET", "/attachment/"+url.PathEscape(id), nil)
 	if err != nil {
@@ -2623,7 +2627,7 @@ func (c *JiraClient) getAttachment(args map[string]any) (toolResult, error) {
 		if err != nil {
 			return toolResult{}, err
 		}
-		defer res.Body.Close()
+		defer func() { _ = res.Body.Close() }()
 		if res.StatusCode < 200 || res.StatusCode >= 300 {
 			raw, _ := io.ReadAll(res.Body)
 			return toolResult{}, fmt.Errorf("%s", formatJiraError(res.StatusCode, "GET", meta.Content, parseJiraErrorDetails(string(raw))))
@@ -2632,9 +2636,13 @@ func (c *JiraClient) getAttachment(args map[string]any) (toolResult, error) {
 		if err != nil {
 			return toolResult{}, err
 		}
-		defer f.Close()
-		if _, err := io.Copy(f, res.Body); err != nil {
-			return toolResult{}, err
+		_, copyErr := io.Copy(f, res.Body)
+		closeErr := f.Close()
+		if copyErr != nil {
+			return toolResult{}, copyErr
+		}
+		if closeErr != nil {
+			return toolResult{}, closeErr
 		}
 		sizeLabel := "unknown size"
 		if meta.Size > 0 {
@@ -2650,14 +2658,14 @@ func (c *JiraClient) getAttachment(args map[string]any) (toolResult, error) {
 	if err != nil {
 		return toolResult{}, err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		raw, _ := io.ReadAll(res.Body)
 		return toolResult{}, fmt.Errorf("%s", formatJiraError(res.StatusCode, "GET", meta.Content, parseJiraErrorDetails(string(raw))))
 	}
-	if cl := res.Header.Get("content-length"); cl != "" {
+	if cl := res.Header.Get("Content-Length"); cl != "" {
 		var declared int64
-		fmt.Sscanf(cl, "%d", &declared)
+		_, _ = fmt.Sscanf(cl, "%d", &declared)
 		if declared > maxVideoSourceBytes {
 			return toolResult{}, fmt.Errorf("Attachment #%s is %s, exceeds the %s inline cap. Pass saveTo=/absolute/path to stream it to disk.", id, formatBytes(declared), formatBytes(maxVideoSourceBytes))
 		}
@@ -2688,7 +2696,7 @@ func (c *JiraClient) getAttachment(args map[string]any) (toolResult, error) {
 // fetchContent GETs an absolute attachment-content URL with just the auth header.
 func (c *JiraClient) fetchContent(contentURL string, timeout time.Duration) (*http.Response, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	req, err := http.NewRequestWithContext(ctx, "GET", contentURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, contentURL, nil)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -2706,6 +2714,7 @@ func (c *JiraClient) fetchContent(contentURL string, timeout time.Duration) (*ht
 
 type cancelReadCloser struct {
 	io.ReadCloser
+
 	cancel context.CancelFunc
 }
 
@@ -2732,7 +2741,7 @@ func orNone(s string) string {
 }
 
 func joinNamed(items []jiraNamed, sep string) string {
-	var names []string
+	names := make([]string, 0, len(items))
 	for _, i := range items {
 		names = append(names, i.Name)
 	}

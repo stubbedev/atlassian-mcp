@@ -25,7 +25,7 @@ func getTopCommitters(repoPath string, lookback, top int) []committer {
 	}
 	counts := map[string]*entry{}
 	order := 0
-	for _, line := range strings.Split(raw, "\n") {
+	for line := range strings.SplitSeq(raw, "\n") {
 		parts := strings.SplitN(line, "\t", 2)
 		name := parts[0]
 		if name == "" {
@@ -54,11 +54,10 @@ func getTopCommitters(repoPath string, lookback, top int) []committer {
 	for i := 1; i < len(list); i++ {
 		for j := i; j > 0; j-- {
 			a, b := list[j-1], list[j]
-			if b.c.commits > a.c.commits || (b.c.commits == a.c.commits && b.order < a.order) {
-				list[j-1], list[j] = list[j], list[j-1]
-			} else {
+			if b.c.commits < a.c.commits || (b.c.commits == a.c.commits && b.order >= a.order) {
 				break
 			}
+			list[j-1], list[j] = list[j], list[j-1]
 		}
 	}
 	var out []committer
@@ -78,7 +77,7 @@ func getDevContext(repoPath string) (toolResult, error) {
 		return textResult("No repo resolved. Pass repoPath, or connect a client that provides workspace roots (MCP roots)."), nil
 	}
 	if !isGitRepo(repoPath) {
-		return textResult(fmt.Sprintf("Not a git repository: %s", repoPath)), nil
+		return textResult("Not a git repository: " + repoPath), nil
 	}
 	var sections []string
 
@@ -192,9 +191,10 @@ func getDevContext(repoPath string) (toolResult, error) {
 	// Bitbucket — open PR for this branch.
 	if parsed != nil {
 		pr, err := bitbucket.findOpenPrForBranch(parsed.projectKey, parsed.repoSlug, branch)
-		if err != nil {
+		switch {
+		case err != nil:
 			sections = append(sections, fmt.Sprintf("── Bitbucket (%s/%s) ── (could not fetch PRs)", parsed.projectKey, parsed.repoSlug))
-		} else if pr != nil {
+		case pr != nil:
 			approved := 0
 			for _, r := range pr.Reviewers {
 				if r.Approved {
@@ -239,15 +239,16 @@ func getDevContext(repoPath string) (toolResult, error) {
 			if descSnippet != "" {
 				prLines = append(prLines, "", descSnippet)
 			}
-			if total > 0 && approved == total {
+			switch {
+			case total > 0 && approved == total:
 				prLines = append(prLines, "", fmt.Sprintf(`✓ All reviewers approved — ready to merge: bitbucket_mutate {prId: %d, action: "merge"}`, pr.ID))
-			} else if total > 0 {
+			case total > 0:
 				prLines = append(prLines, "", fmt.Sprintf("→ %d reviewer(s) pending — use bitbucket_get_pr {prId: %d} to see open comments", total-approved, pr.ID))
-			} else {
+			default:
 				prLines = append(prLines, "", fmt.Sprintf("→ No reviewers assigned — use bitbucket_mutate {prId: %d, update: {reviewers: [...]}} to add them", pr.ID))
 			}
 			sections = append(sections, strings.Join(prLines, "\n"))
-		} else {
+		default:
 			noPrHint := []string{
 				fmt.Sprintf(`── Bitbucket (%s/%s) ── No open PR for branch "%s"`, parsed.projectKey, parsed.repoSlug, branch),
 				fmt.Sprintf(`→ Create one: bitbucket_mutate {create: {title: "...", fromBranch: "%s"}}`, branch),

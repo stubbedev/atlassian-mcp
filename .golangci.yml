@@ -1,0 +1,157 @@
+# golangci-lint v2 config — as strict as this codebase can honestly be.
+# `just lint` gates CI on it; `just lint-fix` autofixes what the linters can.
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    # correctness
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - asasalint
+    - asciicheck
+    - bidichk
+    - bodyclose
+    - canonicalheader
+    - durationcheck
+    - embeddedstructfieldcheck
+    - errchkjson
+    - errname
+    - errorlint
+    - fatcontext
+    - gocheckcompilerdirectives
+    - gochecksumtype
+    - goprintffuncname
+    - gosec
+    - iotamixing
+    - makezero
+    - mirror
+    - nilnesserr
+    - noctx
+    - reassign
+    - rowserrcheck
+    - sqlclosecheck
+    - unconvert
+    - unparam
+    - wastedassign
+    # modernization
+    - copyloopvar
+    - exptostd
+    - intrange
+    - modernize
+    - perfsprint
+    - prealloc
+    - recvcheck
+    - usestdlibvars
+    - usetesting
+    # style
+    - dupword
+    - errname
+    - gocritic
+    - godot
+    - misspell
+    - nolintlint
+    - predeclared
+    - revive
+    - thelper
+    - whitespace
+
+  settings:
+    staticcheck:
+      # ST1005 (lowercase, unpunctuated error strings) is off: these errors are
+      # user-facing tool results, and sentence style is this codebase's
+      # convention. Everything else in staticcheck is on.
+      checks: ["all", "-ST1005"]
+    gocritic: {}
+    revive:
+      severity: warning
+      rules:
+        - name: blank-imports
+        - name: bool-literal-in-expr
+        - name: constant-logical-expr
+        - name: context-as-argument
+        # deep-exit is off: this is a binary whose startup helpers exit(1) on
+        # fatal misconfiguration — there is no caller to return to.
+        - name: context-keys-type
+        - name: dot-imports
+        - name: early-return
+        - name: empty-block
+        - name: error-naming
+        - name: error-return
+        # error-strings is off on purpose: tool errors are user-facing tool
+        # results and sentence style is this codebase's convention (same call
+        # as -ST1005 in staticcheck).
+        - name: errorf
+        - name: exported
+        - name: increment-decrement
+        - name: indent-error-flow
+        - name: package-comments
+        - name: range
+        - name: receiver-naming
+        - name: redefines-builtin-id
+        - name: superfluous-else
+        - name: time-naming
+        - name: unexported-return
+        - name: unreachable-code
+        - name: unused-parameter
+        - name: var-declaration
+        - name: var-naming
+        - name: waitgroup-by-value
+    misspell:
+      locale: US
+    godot:
+      scope: declarations
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    gosec:
+      excludes:
+        # G104: unhandled errors — errcheck covers this properly.
+        # G204: subprocesses run user-configured binaries (git, ffmpeg,
+        #   ImageMagick) with server-built arguments; variable binary paths are
+        #   the feature, not a finding.
+        # G304/G703: reading user-supplied paths (attachments, --config, ~
+        #   expansion) is what the tools are for.
+        - G104
+        - G204
+        - G304
+        - G703
+
+    # Deliberately NOT enabled, with reasons — reconsider these when the
+    # codebase changes:
+    #   nilnil: jiraGet/bbDecode return (nil, nil) for an empty response body
+    #     by design (documented at both); a sentinel error would ripple through
+    #     every "if v == nil { not found }" caller.
+    #   nilerr: the same convention — an empty or unparseable response body, a
+    #     cancelled elicitation and an invalid tools/call argument are all
+    #     valid outcomes that surface as a nil-error result, not as errors.
+    #   contextcheck: the HTTP layer takes its own per-request timeout instead
+    #     of threading the SDK's context through every client method; changing
+    #     that is a real refactor, not a lint fix.
+
+  exclusions:
+    rules:
+      # Test helpers legitimately re-use *testing.T as a context value and
+      # build fixtures with fixed crypto material.
+      - path: _test\.go
+        linters:
+          - gosec
+          - unparam
+    paths:
+      - node_modules
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  uniq-by-line: false

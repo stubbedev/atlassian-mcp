@@ -1,6 +1,9 @@
+// Command atlassian-mcp is an MCP server exposing self-hosted Jira and
+// Bitbucket Server (tickets, pull requests, review threads, git context).
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -49,7 +52,7 @@ func textResult(s string) toolResult {
 	return toolResult{Content: []contentBlock{{Type: "text", Text: s}}}
 }
 
-var errUnknownTool = fmt.Errorf("unknown tool")
+var errUnknownTool = errors.New("unknown tool")
 
 // ── Globals ──────────────────────────────────────────────────────────────────
 
@@ -60,6 +63,7 @@ var (
 
 func main() {
 	config := loadConfig()
+	markAITextEnabled = config.MarkAIText
 	if config.Jira != nil {
 		jira = NewJiraClient(config.Jira.URL, config.Jira.Token)
 	}
@@ -98,8 +102,8 @@ func httpAddr() string {
 			}
 			return def
 		}
-		if strings.HasPrefix(a, "--http=") {
-			if v := strings.TrimPrefix(a, "--http="); v != "" {
+		if after, ok := strings.CutPrefix(a, "--http="); ok {
+			if v := after; v != "" {
 				return v
 			}
 			return def
@@ -137,12 +141,10 @@ func buildInstructions(config Config) string {
 		var id identity
 		var wg sync.WaitGroup
 		if jira != nil {
-			wg.Add(1)
-			go func() { defer wg.Done(); id.jira, _ = jira.whoami() }()
+			wg.Go(func() { id.jira, _ = jira.whoami() })
 		}
 		if bitbucket != nil {
-			wg.Add(1)
-			go func() { defer wg.Done(); id.bb, _ = bitbucket.whoami() }()
+			wg.Go(func() { id.bb, _ = bitbucket.whoami() })
 		}
 		wg.Wait()
 		idCh <- id
@@ -212,6 +214,14 @@ func buildInstructions(config Config) string {
 	w("- Reading a file for a PR review: pass `bitbucket_get_file prId=<id>` and it reads the PR source branch; every response names the path and ref it came from.")
 	w("- `complete_work` refuses to merge while reviewers have not approved or a build failed (force=true overrides).")
 	b.WriteString("- Bitbucket reviewers: usernames are verified, and an update that would drop an existing reviewer is rejected unless you pass `update.replaceReviewers=true`.")
+	w("")
+	w("- Every Jira ticket description/comment and Bitbucket PR description/comment you post gets a bold [AI] attribution line appended automatically — never add your own.")
+	w("")
+	w("## Writing style")
+	w("- Smallest output that still communicates, everywhere: tickets, comments, PR descriptions, review replies.")
+	w("- Jira tickets are simple specs: what is wrong or needed, repro steps or acceptance criteria, a fenced code example when code is the point — nothing else.")
+	w("- Brief, well-formatted text: short paragraphs, lists for enumerations, fenced code with a language for anything the reader runs or reads as code.")
+	w("- No chit-chat: no greetings, no apologies, no restating the ticket/PR/diff back at its reader, no \"let me know\" closers.")
 
 	return b.String()
 }

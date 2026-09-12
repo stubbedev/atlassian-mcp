@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -39,7 +40,7 @@ func (c *BitbucketClient) addPrComment(session *sessionState, args map[string]an
 	if hasReply {
 		for _, k := range anchorKeys {
 			if has(args, k) {
-				return toolResult{}, fmt.Errorf("Replies must target an existing comment thread only. Omit filePath/line and other anchor fields when replying.")
+				return toolResult{}, errors.New("Replies must target an existing comment thread only. Omit filePath/line and other anchor fields when replying.")
 			}
 		}
 	}
@@ -83,14 +84,14 @@ func (c *BitbucketClient) addPrComment(session *sessionState, args map[string]an
 	hasText := has(args, "text")
 	hasSuggestion := has(args, "suggestion")
 	if !hasText && !hasSuggestion {
-		return toolResult{}, fmt.Errorf("Either text or suggestion is required when adding a comment.")
+		return toolResult{}, errors.New("Either text or suggestion is required when adding a comment.")
 	}
 
 	commentText := argString(args, "text")
 	if hasSuggestion {
 		suggestion := strings.TrimSpace(argString(args, "suggestion"))
 		if suggestion == "" {
-			return toolResult{}, fmt.Errorf("suggestion must not be empty.")
+			return toolResult{}, errors.New("suggestion must not be empty.")
 		}
 		suggestionBlock := "```suggestion\n" + suggestion + "\n```"
 		prefix := strings.TrimSpace(argString(args, "text"))
@@ -112,7 +113,7 @@ func (c *BitbucketClient) addPrComment(session *sessionState, args map[string]an
 	}
 
 	if argString(args, "severity") == "BLOCKER" {
-		return toolResult{}, fmt.Errorf("Adding a comment never creates a task. Omit severity (comments post as NORMAL). To create a task, use bitbucket_pr_tasks (action=create) — only when the user explicitly asks for one.")
+		return toolResult{}, errors.New("Adding a comment never creates a task. Omit severity (comments post as NORMAL). To create a task, use bitbucket_pr_tasks (action=create) — only when the user explicitly asks for one.")
 	}
 	validText, err := validateCommentText(commentText)
 	if err != nil {
@@ -128,6 +129,7 @@ func (c *BitbucketClient) addPrComment(session *sessionState, args map[string]an
 			return toolResult{}, err
 		}
 	}
+	validText = appendAIMarkerMarkdown(validText)
 	body := map[string]any{"text": validText}
 	if sev := argString(args, "severity"); sev != "" {
 		body["severity"] = sev
@@ -147,7 +149,7 @@ func (c *BitbucketClient) addPrComment(session *sessionState, args map[string]an
 	hasInline := has(args, "filePath") || has(args, "line")
 	if hasInline {
 		if !has(args, "filePath") || !has(args, "line") {
-			return toolResult{}, fmt.Errorf("filePath and line must be provided together for inline comments.")
+			return toolResult{}, errors.New("filePath and line must be provided together for inline comments.")
 		}
 		filePath := argString(args, "filePath")
 		line := argInt(args, "line")
@@ -254,8 +256,8 @@ func (c *BitbucketClient) addPrComment(session *sessionState, args map[string]an
 	path := fmt.Sprintf("%s/pull-requests/%d/comments", c.rp(pk, rs), prID)
 	created, err := bbDecode[bbComment](c, "POST", path, body)
 	if err != nil {
-		_, hasFrom := mapHas(inlineAnchor, "fromHash")
-		_, hasTo := mapHas(inlineAnchor, "toHash")
+		hasFrom := hasKey(inlineAnchor, "fromHash")
+		hasTo := hasKey(inlineAnchor, "toHash")
 		if inlineAnchor == nil || !strings.Contains(err.Error(), "Bitbucket 409") || !hasFrom || !hasTo {
 			return toolResult{}, err
 		}
@@ -388,25 +390,27 @@ func (c *BitbucketClient) duplicateComment(pk, rs string, prID int, text string)
 	if err != nil || data == nil {
 		return 0, err
 	}
-	var activities []bbActivity
+	activities := make([]bbActivity, 0, len(data.Values))
 	activities = append(activities, data.Values...)
 	for _, cmt := range uniqueCommentsFromActivities(activities) {
 		if cmt.Deleted || cmt.Author == nil || cmt.Author.Name != me {
 			continue
 		}
-		if strings.TrimSpace(cmt.Text) == want {
+		// The attribution marker is stripped on both sides: a comment posted
+		// earlier carries it, the incoming text does not yet.
+		if stripAIMarker(cmt.Text) == want {
 			return cmt.ID, nil
 		}
 	}
 	return 0, nil
 }
 
-func mapHas(m map[string]any, k string) (any, bool) {
+func hasKey(m map[string]any, k string) bool {
 	if m == nil {
-		return nil, false
+		return false
 	}
-	v, ok := m[k]
-	return v, ok
+	_, ok := m[k]
+	return ok
 }
 
 func (c *BitbucketClient) updatePrComment(args map[string]any, repoRoot string) (toolResult, error) {
@@ -422,7 +426,7 @@ func (c *BitbucketClient) updatePrComment(args map[string]any, repoRoot string) 
 	hasThreadResolved := has(args, "threadResolved")
 	attachments := argStrSlice(args, "attachments")
 	if !hasText && stateArg == "" && severityArg == "" && !hasThreadResolved && len(attachments) == 0 {
-		return toolResult{}, fmt.Errorf("At least one field is required: text, state, severity, threadResolved, or attachments")
+		return toolResult{}, errors.New("At least one field is required: text, state, severity, threadResolved, or attachments")
 	}
 
 	current, err := bbDecode[bbComment](c, "GET", fmt.Sprintf("%s/pull-requests/%d/comments/%d", c.rp(pk, rs), prID, commentID), nil)
@@ -441,10 +445,10 @@ func (c *BitbucketClient) updatePrComment(args map[string]any, repoRoot string) 
 		targetSeverity = currentSeverity
 	}
 	if stateArg != "" && targetSeverity != "BLOCKER" {
-		return toolResult{}, fmt.Errorf("state is only supported for BLOCKER comments (tasks). Use threadResolved for normal comment threads.")
+		return toolResult{}, errors.New("state is only supported for BLOCKER comments (tasks). Use threadResolved for normal comment threads.")
 	}
 	if hasThreadResolved && targetSeverity == "BLOCKER" {
-		return toolResult{}, fmt.Errorf("threadResolved is only supported for normal comments. Use state for BLOCKER comment tasks.")
+		return toolResult{}, errors.New("threadResolved is only supported for normal comments. Use state for BLOCKER comment tasks.")
 	}
 
 	commentPath := fmt.Sprintf("%s/pull-requests/%d/comments/%d", c.rp(pk, rs), prID, commentID)
@@ -473,9 +477,10 @@ func (c *BitbucketClient) updatePrComment(args map[string]any, repoRoot string) 
 				return toolResult{}, err
 			}
 		}
+		newText = appendAIMarkerMarkdown(newText)
 	}
 
-	buildBody := func(version int) (map[string]any, error) {
+	buildBody := func(version int) map[string]any {
 		body := map[string]any{"version": version}
 		if newText != "" {
 			body["text"] = newText
@@ -489,13 +494,10 @@ func (c *BitbucketClient) updatePrComment(args map[string]any, repoRoot string) 
 		if hasThreadResolved {
 			body["threadResolved"] = argBool(args, "threadResolved")
 		}
-		return body, nil
+		return body
 	}
 
-	firstBody, err := buildBody(current.Version)
-	if err != nil {
-		return toolResult{}, err
-	}
+	firstBody := buildBody(current.Version)
 	updated, err := bbDecode[bbComment](c, "PUT", commentPath, firstBody)
 	if err != nil {
 		if !strings.Contains(err.Error(), "Bitbucket 409") {
@@ -505,11 +507,7 @@ func (c *BitbucketClient) updatePrComment(args map[string]any, repoRoot string) 
 		if lerr != nil || latest == nil {
 			return toolResult{}, err
 		}
-		retryBody, berr := buildBody(latest.Version)
-		if berr != nil {
-			return toolResult{}, berr
-		}
-		updated, err = bbDecode[bbComment](c, "PUT", commentPath, retryBody)
+		updated, err = bbDecode[bbComment](c, "PUT", commentPath, buildBody(latest.Version))
 		if err != nil {
 			return toolResult{}, err
 		}
@@ -626,7 +624,7 @@ func (c *BitbucketClient) mutatePrTask(action string, args map[string]any, repoR
 	if action == "create" {
 		text := argString(args, "text")
 		if text == "" {
-			return toolResult{}, fmt.Errorf("text is required to create a task.")
+			return toolResult{}, errors.New("text is required to create a task.")
 		}
 		body := map[string]any{"text": text}
 		switch {
@@ -635,7 +633,7 @@ func (c *BitbucketClient) mutatePrTask(action string, args map[string]any, repoR
 		case prID != nil:
 			body["anchor"] = map[string]any{"id": *prID, "type": "PULL_REQUEST"}
 		default:
-			return toolResult{}, fmt.Errorf("Provide prId or commentId to anchor the task.")
+			return toolResult{}, errors.New("Provide prId or commentId to anchor the task.")
 		}
 		created, err := bbDecode[bbTask](c, "POST", "/tasks", body)
 		if err != nil {
@@ -648,7 +646,7 @@ func (c *BitbucketClient) mutatePrTask(action string, args map[string]any, repoR
 	}
 
 	if taskID == nil {
-		return toolResult{}, fmt.Errorf("taskId is required for resolve/reopen/delete.")
+		return toolResult{}, errors.New("taskId is required for resolve/reopen/delete.")
 	}
 
 	if action == "delete" {

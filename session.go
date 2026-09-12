@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -223,7 +224,7 @@ func (s *sessionState) resolveRepo(repoPathArg string) string {
 func parseRootList(values ...string) []rootEntry {
 	var list []rootEntry
 	for _, v := range values {
-		for _, part := range strings.Split(v, ",") {
+		for part := range strings.SplitSeq(v, ",") {
 			part = expandHome(strings.TrimSpace(part))
 			if part == "" {
 				continue
@@ -256,7 +257,8 @@ func fileURIToPath(uri string) string {
 		return ""
 	}
 	p := u.Path
-	// Windows: file:///C:/x → /C:/x → C:/x
+	// On Windows, "file:///C:/x" parses to "/C:/x"; strip the leading slash
+	// so the drive letter starts the path.
 	if len(p) >= 3 && p[0] == '/' && p[2] == ':' {
 		p = p[1:]
 	}
@@ -270,7 +272,7 @@ type elicitResult struct {
 	Content map[string]any `json:"content"`
 }
 
-var errNoElicitation = fmt.Errorf("client does not support elicitation")
+var errNoElicitation = errors.New("client does not support elicitation")
 
 func elicit(s Session, message string, schema map[string]any) (*elicitResult, error) {
 	if s == nil || !s.elicitationSupported() {

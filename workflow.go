@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -40,7 +41,7 @@ func startWork(session *sessionState, args map[string]any, repoRoot string) (too
 	issueKey := argString(args, "issueKey")
 	query := argString(args, "query")
 	if issueKey == "" && query == "" {
-		return toolResult{}, fmt.Errorf("Provide issueKey (e.g. FOO-123) or query (free-text search).")
+		return toolResult{}, errors.New("Provide issueKey (e.g. FOO-123) or query (free-text search).")
 	}
 
 	if issueKey == "" && query != "" {
@@ -78,7 +79,7 @@ func startWork(session *sessionState, args map[string]any, repoRoot string) (too
 				return textResult(fmt.Sprintf("Found %d tickets matching %q:\n%s\n\nRe-run start_work with the desired issueKey.", len(candidates), query, strings.Join(list, "\n"))), nil
 			}
 			if res.Action == "cancel" || res.Action == "decline" || (res.Content != nil && res.Content["ticket"] == "__cancel__") {
-				return textResult("Cancelled."), nil
+				return textResult("Canceled."), nil
 			}
 			if res.Content != nil {
 				if t, ok := res.Content["ticket"].(string); ok {
@@ -86,13 +87,13 @@ func startWork(session *sessionState, args map[string]any, repoRoot string) (too
 				}
 			}
 			if issueKey == "" || issueKey == "__cancel__" {
-				return textResult("Cancelled."), nil
+				return textResult("Canceled."), nil
 			}
 		}
 	}
 
 	if issueKey == "" {
-		return toolResult{}, fmt.Errorf("Could not resolve issue key.")
+		return toolResult{}, errors.New("Could not resolve issue key.")
 	}
 
 	summary, status, issueType, err := jira.getIssueFields(issueKey)
@@ -105,7 +106,7 @@ func startWork(session *sessionState, args map[string]any, repoRoot string) (too
 	}
 	repoPath := repoRoot
 	if repoPath == "" {
-		return toolResult{}, fmt.Errorf("No repo resolved for branch creation. Pass repoPath, or connect a client that provides workspace roots.")
+		return toolResult{}, errors.New("No repo resolved for branch creation. Pass repoPath, or connect a client that provides workspace roots.")
 	}
 
 	remote, err := checkRemoteBranch(branchName, repoPath)
@@ -124,10 +125,11 @@ func startWork(session *sessionState, args map[string]any, repoRoot string) (too
 			}
 			contextLines = append(contextLines, commit)
 		}
-		messageLines := []string{
+		messageLines := make([]string, 0, 2+len(contextLines))
+		messageLines = append(messageLines,
 			fmt.Sprintf("Branch %q already exists on remote.", branchName),
 			fmt.Sprintf("Ticket: %s — %s", issueKey, summary),
-		}
+		)
 		messageLines = append(messageLines, contextLines...)
 		message := strings.Join(messageLines, "\n")
 
@@ -151,12 +153,12 @@ func startWork(session *sessionState, args map[string]any, repoRoot string) (too
 			return textResult(strings.Join([]string{
 				message, "",
 				"Options:",
-				fmt.Sprintf("  • Check out existing: git checkout --track origin/%s", branchName),
+				"  • Check out existing: git checkout --track origin/" + branchName,
 				"  • Use a different name: re-run start_work with branchName set",
 			}, "\n")), nil
 		}
 		if res.Action == "cancel" || res.Action == "decline" {
-			return textResult("Cancelled."), nil
+			return textResult("Canceled."), nil
 		}
 		if res.Action == "accept" {
 			chosen, _ := res.Content["action"].(string)
@@ -165,11 +167,11 @@ func startWork(session *sessionState, args map[string]any, repoRoot string) (too
 				checkout := checkoutRemoteBranch(branchName, repoPath)
 				return textResult(message + "\n\n" + checkout.Content[0].Text), nil
 			case "cancel":
-				return textResult("Cancelled."), nil
+				return textResult("Canceled."), nil
 			}
 			return textResult(message + "\n\nRe-run start_work with a custom branchName to proceed."), nil
 		}
-		return textResult("Cancelled."), nil
+		return textResult("Canceled."), nil
 	}
 
 	branchResult := createBranch(branchName, argString(args, "baseBranch"), repoPath, argBool(args, "push"))
@@ -220,22 +222,22 @@ func completeWork(args map[string]any, repoRoot string) (toolResult, error) {
 	var lines []string
 
 	issueKey := argString(args, "issueKey")
-	resolvedPrID := 0
+	var resolvedPrID int
 	hasPrID := has(args, "prId")
 	if hasPrID {
 		resolvedPrID = argInt(args, "prId")
 	} else {
 		if repoPath == "" {
-			return toolResult{}, fmt.Errorf("No repo resolved. Provide prId, or pass repoPath / connect a client that provides workspace roots.")
+			return toolResult{}, errors.New("No repo resolved. Provide prId, or pass repoPath / connect a client that provides workspace roots.")
 		}
 		branch := safeGit(repoPath, "", "rev-parse", "--abbrev-ref", "HEAD")
 		if branch == "" || branch == "HEAD" {
-			return toolResult{}, fmt.Errorf("Could not determine current branch. Provide prId or run from a checked-out branch.")
+			return toolResult{}, errors.New("Could not determine current branch. Provide prId or run from a checked-out branch.")
 		}
 		remote := safeGit(repoPath, "", "remote", "get-url", "origin")
 		parsed := parseBitbucketRemote(remote)
 		if parsed == nil {
-			return toolResult{}, fmt.Errorf("Could not parse Bitbucket remote URL. Provide projectKey/repoSlug explicitly.")
+			return toolResult{}, errors.New("Could not parse Bitbucket remote URL. Provide projectKey/repoSlug explicitly.")
 		}
 		pk := argString(args, "projectKey")
 		if pk == "" {

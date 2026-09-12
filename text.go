@@ -16,10 +16,7 @@ func pageText(text string, offset, limit int, offsetArg, limitArg string) string
 	if offset > len(text) {
 		offset = len(text)
 	}
-	end := offset + limit
-	if end > len(text) {
-		end = len(text)
-	}
+	end := min(offset+limit, len(text))
 	chunk := text[offset:end]
 	remaining := len(text) - end
 	if remaining == 0 {

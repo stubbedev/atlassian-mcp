@@ -42,7 +42,7 @@ func argInt(m map[string]any, k string) int {
 		return v
 	case string:
 		var i int
-		fmt.Sscanf(v, "%d", &i)
+		_, _ = fmt.Sscanf(v, "%d", &i)
 		return i
 	}
 	return 0

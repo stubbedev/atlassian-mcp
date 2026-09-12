@@ -56,9 +56,11 @@ func buildServer(instructions string) *mcp.Server {
 	srv := mcp.NewServer(
 		&mcp.Implementation{Name: "atlassian-mcp", Version: Version},
 		&mcp.ServerOptions{
-			Instructions:            instructions,
-			HasTools:                true,
-			RootsListChangedHandler: handleRootsListChanged,
+			Instructions: instructions,
+			Capabilities: &mcp.ServerCapabilities{
+				Tools: &mcp.ToolCapabilities{ListChanged: true},
+			},
+			RootsListChangedHandler: handleRootsListChanged, //nolint:staticcheck // SEP-2577 deprecation window; roots stay this server's repo-discovery path until a replacement lands
 		},
 	)
 	for _, raw := range toolList() {
@@ -158,7 +160,7 @@ func sessionFor(ss *mcp.ServerSession, extra *mcp.RequestExtra) *sessionState {
 	return st
 }
 
-// handleRootsListChanged invalidates the cached roots for the signalling client.
+// handleRootsListChanged invalidates the cached roots for the signaling client.
 func handleRootsListChanged(_ context.Context, req *mcp.RootsListChangedRequest) {
 	if req.Session == nil {
 		return
@@ -183,7 +185,7 @@ func sdkSend(ss *mcp.ServerSession) func(method string, params any) (json.RawMes
 			if !rootsUsable(ss) {
 				return nil, errRootsUnavailable
 			}
-			res, err := ss.ListRoots(ctx, &mcp.ListRootsParams{})
+			res, err := ss.ListRoots(ctx, &mcp.ListRootsParams{}) //nolint:staticcheck // SEP-2577 deprecation window; roots stay this server's repo-discovery path until a replacement lands
 			if err != nil {
 				return nil, err
 			}
@@ -298,9 +300,12 @@ func sweepSessions() {
 var rootHeaders = []string{"X-Repo-Root", "X-Mcp-Roots", "X-Mcp-Root", "Mcp-Roots", "Mcp-Root"}
 
 func rootsFromHeaders(h http.Header) []rootEntry {
-	var list []rootEntry
+	list := make([]rootEntry, 0, len(rootHeaders))
 	for _, name := range rootHeaders {
 		list = append(list, parseRootList(h.Values(name)...)...)
+	}
+	if len(list) == 0 {
+		return nil
 	}
 	return list
 }
@@ -348,5 +353,5 @@ func rootsAllowed(ip *mcp.InitializeParams) bool {
 	if ip == nil || ip.Capabilities == nil || ip.ProtocolVersion >= rootsRemovedFrom {
 		return false
 	}
-	return ip.Capabilities.RootsV2 != nil
+	return ip.Capabilities.RootsV2 != nil //nolint:staticcheck // SEP-2577 deprecation window; roots stay this server's repo-discovery path until a replacement lands
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -16,12 +17,14 @@ type ServiceConfig struct {
 // Config is the top-level resolved configuration. A nil field means that
 // service is not configured (or, for Bitbucket, disabled for this cwd).
 type Config struct {
-	Jira      *ServiceConfig
-	Bitbucket *ServiceConfig
+	Jira       *ServiceConfig
+	Bitbucket  *ServiceConfig
+	MarkAIText bool
 }
 
 type configFile struct {
-	Jira struct {
+	MarkAIText *bool `json:"markAIText"`
+	Jira       struct {
 		URL   string `json:"url"`
 		Token string `json:"token"`
 	} `json:"jira"`
@@ -53,8 +56,8 @@ func getConfigPath() string {
 			p, _ := filepath.Abs(expandHome(args[i+1]))
 			return p
 		}
-		if strings.HasPrefix(a, "--config=") {
-			p, _ := filepath.Abs(expandHome(strings.TrimPrefix(a, "--config=")))
+		if after, ok := strings.CutPrefix(a, "--config="); ok {
+			p, _ := filepath.Abs(expandHome(after))
 			return p
 		}
 	}
@@ -109,13 +112,13 @@ func fileExists(path string) bool {
 
 // loadDotEnv loads KEY=VALUE pairs from a .env file in cwd into the process
 // environment without overwriting variables that are already set. Mirrors the
-// dotenv behaviour of the previous TypeScript implementation.
+// dotenv behavior of the previous TypeScript implementation.
 func loadDotEnv() {
 	raw, err := os.ReadFile(".env")
 	if err != nil {
 		return
 	}
-	for _, line := range strings.Split(string(raw), "\n") {
+	for line := range strings.SplitSeq(string(raw), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
@@ -190,6 +193,19 @@ func loadConfig() Config {
 			missing = append(missing, "bitbucket.token (or BITBUCKET_ACCESS_TOKEN)")
 		}
 		logf("Bitbucket disabled: missing %s", strings.Join(missing, ", "))
+	}
+
+	// AI text marking defaults to on; an explicit value in the config file
+	// wins, then the env var. Pointer so "markAIText": false is honored.
+	cfg.MarkAIText = true
+	if file != nil && file.MarkAIText != nil {
+		cfg.MarkAIText = *file.MarkAIText
+	} else if env := strings.TrimSpace(os.Getenv("ATLASSIAN_MCP_MARK_AI_TEXT")); env != "" {
+		if b, err := strconv.ParseBool(env); err == nil {
+			cfg.MarkAIText = b
+		} else {
+			logf("ATLASSIAN_MCP_MARK_AI_TEXT=%q is not a boolean — leaving AI text marking enabled", env)
+		}
 	}
 
 	return cfg

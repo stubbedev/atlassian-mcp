@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -184,15 +186,6 @@ type bbPaged[T any] struct {
 	Start         int  `json:"start"`
 }
 
-type bbTaskCount struct {
-	Open     int `json:"open"`
-	Resolved int `json:"resolved"`
-	Values   []struct {
-		State string `json:"state"`
-		Count int    `json:"count"`
-	} `json:"values"`
-}
-
 type bitbucketRemote struct {
 	projectKey string
 	repoSlug   string
@@ -235,16 +228,16 @@ func formatBBDate(ms int64) string {
 	return time.UnixMilli(ms).UTC().Format("2006-01-02")
 }
 
-func capTextBB(value string, max int) string {
-	if max <= 0 {
+func capTextBB(value string, limit int) string {
+	if limit <= 0 {
 		return value
 	}
 	r := []rune(value)
-	if len(r) <= max {
+	if len(r) <= limit {
 		return value
 	}
-	more := len(r) - max
-	return fmt.Sprintf("%s\n... (truncated, %d more chars — pass fullDescription=true for the rest)", string(r[:max]), more)
+	more := len(r) - limit
+	return fmt.Sprintf("%s\n... (truncated, %d more chars — pass fullDescription=true for the rest)", string(r[:limit]), more)
 }
 
 type attachmentRef struct {
@@ -526,10 +519,10 @@ func formatBitbucketError(status int, method, path, details string) string {
 func validateCommentText(textValue string) (string, error) {
 	trimmed := strings.TrimSpace(textValue)
 	if trimmed == "" {
-		return "", fmt.Errorf("Bitbucket comment text must not be empty.")
+		return "", errors.New("Bitbucket comment text must not be empty.")
 	}
 	if emojiRe.MatchString(trimmed) {
-		return "", fmt.Errorf("Bitbucket comments must not include emoji. Use concise plain text only.")
+		return "", errors.New("Bitbucket comments must not include emoji. Use concise plain text only.")
 	}
 	return trimmed, nil
 }
@@ -542,11 +535,11 @@ func validateSuggestionPlacement(textValue string) error {
 	}
 	loc := suggestionBlockRe.FindStringIndex(textValue)
 	if loc == nil {
-		return fmt.Errorf("Invalid suggestion block format. Use the suggestion field to post code suggestions.")
+		return errors.New("Invalid suggestion block format. Use the suggestion field to post code suggestions.")
 	}
 	trailing := strings.TrimSpace(textValue[loc[1]:])
 	if len(trailing) > 0 {
-		return fmt.Errorf("When using ```suggestion```, do not add text after the closing code fence. Put any explanation before the suggestion block or use the suggestion field.")
+		return errors.New("When using ```suggestion```, do not add text after the closing code fence. Put any explanation before the suggestion block or use the suggestion field.")
 	}
 	return nil
 }
@@ -568,7 +561,10 @@ func (c *BitbucketClient) doRequest(apiBase, method, path string, body any) ([]b
 	reqURL := c.baseURL + apiBase + path
 	var reader io.Reader
 	if body != nil {
-		b, _ := json.Marshal(body)
+		b, err := json.Marshal(body)
+		if err != nil {
+			return nil, 0, err
+		}
 		reader = bytes.NewReader(b)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -584,7 +580,7 @@ func (c *BitbucketClient) doRequest(apiBase, method, path string, body any) ([]b
 	if err != nil {
 		return nil, 0, err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	raw, _ := io.ReadAll(res.Body)
 	return raw, res.StatusCode, nil
 }
@@ -622,7 +618,7 @@ func bbDecode[T any](c *BitbucketClient, method, path string, body any) (*T, err
 func (c *BitbucketClient) requestText(path string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/rest/api/1.0"+path, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/rest/api/1.0"+path, nil)
 	if err != nil {
 		return "", err
 	}
@@ -631,7 +627,7 @@ func (c *BitbucketClient) requestText(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	raw, _ := io.ReadAll(res.Body)
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		return "", fmt.Errorf("%s", formatBitbucketError(res.StatusCode, "GET", path, parseBitbucketErrorDetails(string(raw))))
@@ -674,7 +670,7 @@ func (c *BitbucketClient) getCurrentUsername() (string, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/rest/api/1.0/application-properties", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/rest/api/1.0/application-properties", nil)
 	if err != nil {
 		return "", err
 	}
@@ -685,11 +681,11 @@ func (c *BitbucketClient) getCurrentUsername() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer res.Body.Close()
-	io.Copy(io.Discard, res.Body)
-	username := res.Header.Get("X-AUSERNAME")
+	defer func() { _ = res.Body.Close() }()
+	_, _ = io.Copy(io.Discard, res.Body)
+	username := res.Header.Get("X-Ausername")
 	if username == "" {
-		return "", fmt.Errorf("Could not determine current Bitbucket user. Check token permissions.")
+		return "", errors.New("Could not determine current Bitbucket user. Check token permissions.")
 	}
 	c.currentUsername = username
 	return username, nil
@@ -756,7 +752,7 @@ func (c *BitbucketClient) resolveProjectAndRepo(projectKey, repoSlug, repoRoot s
 		return projectKey, repoSlug, nil
 	}
 	if repoRoot == "" {
-		return "", "", fmt.Errorf("Could not determine projectKey/repoSlug — provide them explicitly, pass repoPath, or connect a client that provides workspace roots.")
+		return "", "", errors.New("Could not determine projectKey/repoSlug — provide them explicitly, pass repoPath, or connect a client that provides workspace roots.")
 	}
 	remote := safeGit(repoRoot, "", "remote", "get-url", "origin")
 	if remote != "" {
@@ -775,7 +771,7 @@ func (c *BitbucketClient) resolveProjectAndRepo(projectKey, repoSlug, repoRoot s
 			return pk, rs, nil
 		}
 	}
-	return "", "", fmt.Errorf("Could not determine projectKey/repoSlug — provide them explicitly or run from a directory with a Bitbucket remote")
+	return "", "", errors.New("Could not determine projectKey/repoSlug — provide them explicitly or run from a directory with a Bitbucket remote")
 }
 
 func (c *BitbucketClient) findOpenPrForBranch(projectKey, repoSlug, branch string) (*bbPullRequest, error) {
@@ -826,21 +822,21 @@ func (c *BitbucketClient) defaultBranchName(projectKey, repoSlug string) string 
 	return data.DisplayID
 }
 
-func (c *BitbucketClient) getDefaultBranchRef(projectKey, repoSlug, repoRoot string) (string, error) {
+func (c *BitbucketClient) getDefaultBranchRef(projectKey, repoSlug, repoRoot string) string {
 	data, err := bbDecode[struct {
 		DisplayID string `json:"displayId"`
 	}](c, "GET", c.rp(projectKey, repoSlug)+"/default-branch", nil)
 	if err == nil && data != nil && data.DisplayID != "" {
-		return "refs/heads/" + data.DisplayID, nil
+		return "refs/heads/" + data.DisplayID
 	}
 	head := ""
 	if repoRoot != "" {
 		head = safeGit(repoRoot, "", "rev-parse", "--abbrev-ref", "origin/HEAD")
 	}
-	if strings.HasPrefix(head, "origin/") {
-		return "refs/heads/" + strings.TrimPrefix(head, "origin/"), nil
+	if after, ok := strings.CutPrefix(head, "origin/"); ok {
+		return "refs/heads/" + after
 	}
-	return "refs/heads/master", nil
+	return "refs/heads/master"
 }
 
 // ── search dispatcher (bitbucket_search) ─────────────────────────────────────
@@ -892,9 +888,9 @@ func (c *BitbucketClient) usersPath(projectKey, repoSlug, query string, limit, s
 	if query != "" {
 		params.Set("filter", query)
 	}
-	params.Set("limit", fmt.Sprint(limit))
+	params.Set("limit", strconv.Itoa(limit))
 	if start != 0 {
-		params.Set("start", fmt.Sprint(start))
+		params.Set("start", strconv.Itoa(start))
 	}
 	switch {
 	case projectKey != "" && repoSlug != "":
@@ -909,6 +905,7 @@ func (c *BitbucketClient) usersPath(projectKey, repoSlug, query string, limit, s
 // permEntry decodes either a bare user or a {user, permission} wrapper.
 type permEntry struct {
 	bbUser
+
 	User *bbUser `json:"user"`
 }
 
@@ -984,8 +981,8 @@ func (c *BitbucketClient) listPullRequests(projectKey, repoSlug, repoRoot, state
 	}
 	qs := url.Values{}
 	qs.Set("state", state)
-	qs.Set("limit", fmt.Sprint(limit))
-	qs.Set("start", fmt.Sprint(start))
+	qs.Set("limit", strconv.Itoa(limit))
+	qs.Set("start", strconv.Itoa(start))
 	if fromBranch != "" {
 		qs.Set("at", toBranchRef(fromBranch))
 		qs.Set("direction", "OUTGOING")
@@ -1009,8 +1006,8 @@ func (c *BitbucketClient) listPullRequests(projectKey, repoSlug, repoRoot, state
 
 func (c *BitbucketClient) myPrs(limit, start int, role string) (toolResult, error) {
 	qs := url.Values{}
-	qs.Set("limit", fmt.Sprint(limit))
-	qs.Set("start", fmt.Sprint(start))
+	qs.Set("limit", strconv.Itoa(limit))
+	qs.Set("start", strconv.Itoa(start))
 	qs.Set("state", "OPEN")
 	if role != "" {
 		qs.Set("role", strings.ToUpper(role))
@@ -1061,7 +1058,7 @@ func (c *BitbucketClient) getPullRequest(projectKey, repoSlug, repoRoot string, 
 }
 
 func joinReviewers(reviewers []bbReviewer) string {
-	var parts []string
+	parts := make([]string, 0, len(reviewers))
 	for _, r := range reviewers {
 		mark := ""
 		if r.Approved {
@@ -1088,7 +1085,7 @@ func (c *BitbucketClient) getPrOverview(session *sessionState, args map[string]a
 		descriptionCap = argInt(args, "descriptionMaxChars")
 	}
 
-	prID := 0
+	var prID int
 	if has(args, "prId") {
 		prID = argInt(args, "prId")
 	} else {
@@ -1099,7 +1096,7 @@ func (c *BitbucketClient) getPrOverview(session *sessionState, args map[string]a
 			}
 		}
 		if branch == "" || branch == "HEAD" {
-			return toolResult{}, fmt.Errorf("Provide prId or fromBranch, or run from a checked-out branch.")
+			return toolResult{}, errors.New("Provide prId or fromBranch, or run from a checked-out branch.")
 		}
 		found, err := c.findOpenPrForBranch(pk, rs, branch)
 		if err != nil {
@@ -1195,7 +1192,7 @@ func (c *BitbucketClient) getPrOverview(session *sessionState, args map[string]a
 			}
 			sections = append(sections, fmt.Sprintf("Build status (%s):\n%s", short, strings.Join(statusLines, "\n")))
 		} else {
-			sections = append(sections, fmt.Sprintf("Build status: none reported for %s", short))
+			sections = append(sections, "Build status: none reported for "+short)
 		}
 	}
 
@@ -1229,12 +1226,12 @@ func (c *BitbucketClient) getPrOverview(session *sessionState, args map[string]a
 			commentsSeverity = "ALL"
 		}
 		if commentsSeverity == "BLOCKER" && commentsState == "PENDING" {
-			return toolResult{}, fmt.Errorf("commentsState=PENDING is not valid when commentsSeverity=BLOCKER. Use OPEN, RESOLVED, or ALL.")
+			return toolResult{}, errors.New("commentsState=PENDING is not valid when commentsSeverity=BLOCKER. Use OPEN, RESOLVED, or ALL.")
 		}
 		if commentsSeverity == "BLOCKER" {
 			qs := url.Values{}
-			qs.Set("limit", fmt.Sprint(commentsLimit))
-			qs.Set("start", fmt.Sprint(commentsStart))
+			qs.Set("limit", strconv.Itoa(commentsLimit))
+			qs.Set("start", strconv.Itoa(commentsStart))
 			if commentsState != "ALL" {
 				qs.Set("state", commentsState)
 			}
@@ -1325,8 +1322,8 @@ func buildIcon(state string) string {
 }
 
 func firstLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return s[:i]
+	if before, _, ok := strings.Cut(s, "\n"); ok {
+		return before
 	}
 	return s
 }
@@ -1337,8 +1334,8 @@ func (c *BitbucketClient) getBranches(projectKey, repoSlug, repoRoot, filter str
 		return toolResult{}, err
 	}
 	qs := url.Values{}
-	qs.Set("limit", fmt.Sprint(limit))
-	qs.Set("start", fmt.Sprint(start))
+	qs.Set("limit", strconv.Itoa(limit))
+	qs.Set("start", strconv.Itoa(start))
 	if filter != "" {
 		qs.Set("filterText", filter)
 	}
@@ -1391,8 +1388,7 @@ func (c *BitbucketClient) getFile(args map[string]any, repoRoot string) (toolRes
 	if ref != "" {
 		qs = "?at=" + url.QueryEscape(ref)
 	} else {
-		defaultRef, derr := c.getDefaultBranchRef(pk, rs, repoRoot)
-		if derr == nil {
+		if defaultRef := c.getDefaultBranchRef(pk, rs, repoRoot); defaultRef != "" {
 			ref = strings.TrimPrefix(defaultRef, "refs/heads/")
 		}
 		origin = " (repository default branch — pass ref or prId to read the branch under review)"
@@ -1430,7 +1426,7 @@ func (c *BitbucketClient) getAttachment(args map[string]any, repoRoot string) (t
 	}
 	id := strings.TrimSpace(argString(args, "attachmentId"))
 	if id == "" {
-		return toolResult{}, fmt.Errorf("attachmentId is required.")
+		return toolResult{}, errors.New("attachmentId is required.")
 	}
 	saveTo := argString(args, "saveTo")
 	timeout := 60 * time.Second
@@ -1440,7 +1436,7 @@ func (c *BitbucketClient) getAttachment(args map[string]any, repoRoot string) (t
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	reqURL := c.baseURL + "/rest/api/1.0" + c.rp(pk, rs) + "/attachments/" + url.PathEscape(id)
-	req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return toolResult{}, err
 	}
@@ -1449,14 +1445,14 @@ func (c *BitbucketClient) getAttachment(args map[string]any, repoRoot string) (t
 	if err != nil {
 		return toolResult{}, err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		raw, _ := io.ReadAll(res.Body)
 		return toolResult{}, fmt.Errorf("%s", formatBitbucketError(res.StatusCode, "GET", c.rp(pk, rs)+"/attachments/"+id, parseBitbucketErrorDetails(string(raw))))
 	}
 
 	filename := "attachment-" + id
-	if cd := res.Header.Get("content-disposition"); cd != "" {
+	if cd := res.Header.Get("Content-Disposition"); cd != "" {
 		if m := contentDispositionRe.FindStringSubmatch(cd); m != nil {
 			if dec, derr := url.QueryUnescape(m[1]); derr == nil {
 				filename = dec
@@ -1466,12 +1462,12 @@ func (c *BitbucketClient) getAttachment(args map[string]any, repoRoot string) (t
 		}
 	}
 	mimeType := "application/octet-stream"
-	if ct := res.Header.Get("content-type"); ct != "" {
+	if ct := res.Header.Get("Content-Type"); ct != "" {
 		mimeType = strings.TrimSpace(strings.Split(ct, ";")[0])
 	}
 	var declaredLength int64
-	if cl := res.Header.Get("content-length"); cl != "" {
-		fmt.Sscanf(cl, "%d", &declaredLength)
+	if cl := res.Header.Get("Content-Length"); cl != "" {
+		_, _ = fmt.Sscanf(cl, "%d", &declaredLength)
 	}
 
 	if saveTo != "" {
@@ -1480,7 +1476,7 @@ func (c *BitbucketClient) getAttachment(args map[string]any, repoRoot string) (t
 		if err != nil {
 			return toolResult{}, err
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		if _, err := io.Copy(f, res.Body); err != nil {
 			return toolResult{}, err
 		}

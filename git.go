@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"os"
@@ -44,7 +45,7 @@ var safeBranchRe = regexp.MustCompile(`^[a-zA-Z0-9/_.\-]+$`)
 
 // gitIn runs git in cwd and returns trimmed stdout, or an error.
 func gitIn(cwd string, args ...string) (string, error) {
-	cmd := exec.Command(gitBin(), args...)
+	cmd := exec.CommandContext(context.Background(), gitBin(), args...)
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
@@ -62,19 +63,6 @@ func safeGit(cwd string, fallback string, args ...string) string {
 		return fallback
 	}
 	return out
-}
-
-// safeExecGit runs git in the process cwd, returning "" on error.
-func safeExecGit(args ...string) string {
-	return safeGit("", "", args...)
-}
-
-func currentGitRemote() string {
-	return safeExecGit("remote", "get-url", "origin")
-}
-
-func currentGitBranch() string {
-	return safeExecGit("rev-parse", "--abbrev-ref", "HEAD")
 }
 
 func remoteMatchesBitbucketInstance(remote, bitbucketURL string) bool {
@@ -213,10 +201,10 @@ func gitGetContext(args map[string]any, repoPath string) toolResult {
 	if argBool(args, "includeDiff") && status != "" {
 		diff := safeGit(repoPath, "", "diff", "HEAD")
 		if diff != "" {
-			const max = 6000
+			const maxDiffChars = 6000
 			body := diff
-			if len(diff) > max {
-				body = diff[:max] + fmt.Sprintf("\n\n... (truncated, %d more chars — re-call with fromRef=HEAD and maxChars/charOffset to page through it)", len(diff)-max)
+			if len(diff) > maxDiffChars {
+				body = diff[:maxDiffChars] + fmt.Sprintf("\n\n... (truncated, %d more chars — re-call with fromRef=HEAD and maxChars/charOffset to page through it)", len(diff)-maxDiffChars)
 			}
 			lines = append(lines, "", "── Uncommitted diff ──", body)
 		}
@@ -319,8 +307,8 @@ func checkRemoteBranch(branchName, repoPath string) (remoteBranchInfo, error) {
 // answer for this repository, and only then a guess.
 func getDefaultBranch(repoPath string) string {
 	head := safeGit(repoPath, "", "rev-parse", "--abbrev-ref", "origin/HEAD")
-	if strings.HasPrefix(head, "origin/") {
-		return strings.TrimPrefix(head, "origin/")
+	if after, ok := strings.CutPrefix(head, "origin/"); ok {
+		return after
 	}
 	if bitbucket != nil {
 		if parsed := parseBitbucketRemote(safeGit(repoPath, "", "remote", "get-url", "origin")); parsed != nil {
@@ -390,7 +378,7 @@ func createBranch(branchName, baseBranch, repoPath string, push bool) toolResult
 
 func splitNonEmpty(s, sep string) []string {
 	var out []string
-	for _, p := range strings.Split(s, sep) {
+	for p := range strings.SplitSeq(s, sep) {
 		if p != "" {
 			out = append(out, p)
 		}

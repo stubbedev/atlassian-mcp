@@ -98,7 +98,7 @@ func markdownToJiraWiki(text string) (string, bool) {
 
 	text = placeholderR.ReplaceAllStringFunc(text, func(m string) string {
 		var i int
-		fmt.Sscanf(m, "\x00mdc%d\x00", &i)
+		_, _ = fmt.Sscanf(m, "\x00mdc%d\x00", &i)
 		if i < 0 || i >= len(blocks) {
 			return m
 		}
@@ -371,9 +371,6 @@ func listDepth(indent string) int {
 		}
 		width++
 	}
-	depth := width/2 + 1
-	if depth > 6 {
-		depth = 6
-	}
+	depth := min(width/2+1, 6)
 	return depth
 }

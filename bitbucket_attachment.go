@@ -66,7 +66,7 @@ func (c *BitbucketClient) uploadAttachment(projectKey, repoSlug, path string) (b
 	if err != nil {
 		return bbUploadedAttachment{}, fmt.Errorf("cannot open attachment %s: %w", path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
@@ -84,7 +84,7 @@ func (c *BitbucketClient) uploadAttachment(projectKey, repoSlug, path string) (b
 	apiPath := c.rp(projectKey, repoSlug) + "/attachments"
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/rest/api/1.0"+apiPath, &buf)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/rest/api/1.0"+apiPath, &buf)
 	if err != nil {
 		return bbUploadedAttachment{}, err
 	}
@@ -95,7 +95,7 @@ func (c *BitbucketClient) uploadAttachment(projectKey, repoSlug, path string) (b
 	if err != nil {
 		return bbUploadedAttachment{}, err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	raw, _ := io.ReadAll(res.Body)
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		return bbUploadedAttachment{}, fmt.Errorf("%s", formatBitbucketError(res.StatusCode, "POST", apiPath, parseBitbucketErrorDetails(string(raw))))
