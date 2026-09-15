@@ -28,6 +28,12 @@ func runTool(session *sessionState, name string, args map[string]any) (toolResul
 		}
 		return getAttachmentDispatch(session, args)
 
+	case "attach_files":
+		if jira == nil && bitbucket == nil {
+			return toolResult{}, errUnknownTool
+		}
+		return attachFiles(session, args)
+
 	// ── Jira ─────────────────────────────────────────────────────────────
 	case "start_work":
 		if jira == nil {

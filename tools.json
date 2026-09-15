@@ -55,6 +55,28 @@
         "required": ["attachmentId"]
       },
       "annotations": { "title": "Fetch attachment", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": true }
+    },
+    {
+      "name": "attach_files",
+      "description": "Open the upload panel so the user can attach files to a Jira issue or a Bitbucket PR. Call it with ONLY the target (issueKey, or prId plus optional commentId): the host renders a picker in the chat where the user chooses, drags or pastes files, and the panel uploads them itself — one call is the whole interaction, do not call it again to \"finish\" the upload. You cannot see those files and MUST NOT populate files; that argument is filled in by the panel. This is how a file reaches a tracker on a host where this server cannot read the filesystem (Claude Desktop runs extensions in a sandbox), or when the file exists only in the user's chat or clipboard. When you already have a readable path or an http(s) URL, prefer jira_mutate / bitbucket_mutate / bitbucket_comment attachments — those need no user interaction. Requires a host that supports MCP Apps; on other hosts nothing renders, so fall back to the attachments arguments.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "issueKey": { "type": "string", "description": "Jira issue to attach to, e.g. KON-123. Mutually exclusive with prId." },
+          "prId": { "type": "number", "description": "Bitbucket PR to attach to. Files upload to the repo and are referenced from the PR description. Mutually exclusive with issueKey." },
+          "commentId": { "type": "number", "description": "Attach to this PR comment instead of the PR description (requires prId)." },
+          "projectKey": { "type": "string", "description": "Bitbucket project key. Auto-detected from the repo when omitted." },
+          "repoSlug": { "type": "string", "description": "Bitbucket repository slug. Auto-detected from the repo when omitted." },
+          "repoPath": { "type": "string", "description": "Absolute path to the working tree, when Bitbucket auto-detection needs help." },
+          "files": { "type": "array", "items": { "type": "string" }, "description": "Filled in by the upload panel, never by you: each entry is a data: URI carrying one file's bytes." }
+        },
+        "required": []
+      },
+      "annotations": { "title": "Attach files", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true },
+      "_meta": {
+        "ui": { "resourceUri": "ui://atlassian-mcp/upload" },
+        "ui/resourceUri": "ui://atlassian-mcp/upload"
+      }
     }
   ],
   "jira": [
@@ -220,7 +242,7 @@
           "attachments": {
             "type": "array",
             "items": { "type": "string" },
-            "description": "Local file paths to upload as attachments on the issue (works for both newly-created and existing issues)."
+            "description": "Files to upload as attachments on the issue (works for both newly-created and existing issues). Attachment sources: an absolute local file path, an http(s) URL (downloaded by the server — URLs on the configured Jira/Bitbucket hosts are fetched with your token, so an attachment on one service can be re-attached to the other), or a data:<mime>;base64,<...> URI for bytes you already hold as text. Local paths only work when this server shares a filesystem with the file; in a sandboxed host (Claude Desktop extensions) use a URL or data: URI instead, or attach_files for a file only the user can reach."
           },
           "link": {
             "type": "object",
@@ -319,7 +341,7 @@
     },
     {
       "name": "bitbucket_mutate",
-      "description": "Create, update, approve/unapprove, mark needs_work, decline, or merge a PR — in one call. Auto-targets the open PR for the current branch when prId is omitted. needs_work sets your reviewer status to \"Needs work\" (Bitbucket Server's changes-requested signal); revert with action=unapprove. Local files (screenshots, logs) reach a PR via create.attachments / update.attachments — uploaded to the repo and referenced from the description.",
+      "description": "Create, update, approve/unapprove, mark needs_work, decline, or merge a PR — in one call. Auto-targets the open PR for the current branch when prId is omitted. needs_work sets your reviewer status to \"Needs work\" (Bitbucket Server's changes-requested signal); revert with action=unapprove. Files reach a PR via create.attachments / update.attachments — uploaded to the repo and referenced from the description. Each entry is a local path, an http(s) URL the server downloads, or a data: URI; for a file only the user can reach, use attach_files.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -346,7 +368,7 @@
                 "description": "Reviewer usernames (not display names). Each is verified against Bitbucket and the call is rejected with candidates if one does not resolve."
               },
               "pickReviewers": { "type": "boolean", "description": "Show an interactive reviewer picker before creating the PR (lists users with repo access)" },
-              "attachments": { "type": "array", "items": { "type": "string" }, "description": "Local file paths (screenshots, logs) to upload as repo attachments and reference from the description. A path that already appears in description is replaced in place by the attachment markup, keeping the markdown caption; anything unreferenced is appended. The result lists each attachment id and its ![name](attachment:<id>) markup, so a later call can reference a file this one uploaded." }
+              "attachments": { "type": "array", "items": { "type": "string" }, "description": "Files (screenshots, logs) to upload as repo attachments and reference from the description. Attachment sources: an absolute local file path, an http(s) URL (downloaded by the server — URLs on the configured Jira/Bitbucket hosts are fetched with your token, so an attachment on one service can be re-attached to the other), or a data:<mime>;base64,<...> URI for bytes you already hold as text. Local paths only work when this server shares a filesystem with the file; in a sandboxed host (Claude Desktop extensions) use a URL or data: URI instead, or attach_files for a file only the user can reach. A source that already appears in description is replaced in place by the attachment markup, keeping the markdown caption; anything unreferenced is appended. The result lists each attachment id and its ![name](attachment:<id>) markup, so a later call can reference a file this one uploaded." }
             },
             "required": ["title"]
           },
@@ -362,7 +384,7 @@
                 "description": "Reviewer usernames. This replaces the reviewer set, so include everyone who should stay — dropping or clearing existing reviewers is rejected unless replaceReviewers=true."
               },
               "replaceReviewers": { "type": "boolean", "description": "Allow update.reviewers to remove reviewers who are currently on the PR. Only set this when the user asked for a reviewer to be removed." },
-              "attachments": { "type": "array", "items": { "type": "string" }, "description": "Local file paths to upload as repo attachments and reference from the description. Without update.description they are appended to the PR's current description; a path already present in the text is replaced in place. The result lists each attachment id and its ![name](attachment:<id>) markup." }
+              "attachments": { "type": "array", "items": { "type": "string" }, "description": "Files to upload as repo attachments and reference from the description. Attachment sources: an absolute local file path, an http(s) URL (downloaded by the server — URLs on the configured Jira/Bitbucket hosts are fetched with your token, so an attachment on one service can be re-attached to the other), or a data:<mime>;base64,<...> URI for bytes you already hold as text. Local paths only work when this server shares a filesystem with the file; in a sandboxed host (Claude Desktop extensions) use a URL or data: URI instead, or attach_files for a file only the user can reach. Without update.description they are appended to the PR's current description; a source already present in the text is replaced in place. The result lists each attachment id and its ![name](attachment:<id>) markup." }
             }
           }
         }
@@ -371,7 +393,7 @@
     },
     {
       "name": "bitbucket_comment",
-      "description": "Add, update, or delete a PR comment. action defaults to \"add\"; a reply is action=add with commentId. Posts COMMENTS, never tasks: severity=BLOCKER is rejected on add — use bitbucket_pr_tasks (action=create) for a task, and only when the user explicitly asks. For code changes use an inline comment with suggestion whenever exact replacement code exists. Keep comments maximally concise — say the thing, show the code, stop; no greetings, no restating the diff, no closers. No emojis (rejected). Enforced server-side, so you do not have to track it: one reply per thread per author (update your existing reply instead), no duplicate of a comment you already posted, no new top-level comment on a PR you authored (pass asAuthor=true only if the user asked for one), explanatory text only before a suggestion block, and bare \"#123\" references rewritten into clickable comment links. Inline comments anchor to the commits bitbucket_get_pr last showed you for that PR — remembered per session, remapped onto current head if the branch advanced — so fromHash/toHash are only needed to override that. Local files (screenshots, logs) reach a comment via attachments — uploaded to the repo and referenced from the text.",
+      "description": "Add, update, or delete a PR comment. action defaults to \"add\"; a reply is action=add with commentId. Posts COMMENTS, never tasks: severity=BLOCKER is rejected on add — use bitbucket_pr_tasks (action=create) for a task, and only when the user explicitly asks. For code changes use an inline comment with suggestion whenever exact replacement code exists. Keep comments maximally concise — say the thing, show the code, stop; no greetings, no restating the diff, no closers. No emojis (rejected). Enforced server-side, so you do not have to track it: one reply per thread per author (update your existing reply instead), no duplicate of a comment you already posted, no new top-level comment on a PR you authored (pass asAuthor=true only if the user asked for one), explanatory text only before a suggestion block, and bare \"#123\" references rewritten into clickable comment links. Inline comments anchor to the commits bitbucket_get_pr last showed you for that PR — remembered per session, remapped onto current head if the branch advanced — so fromHash/toHash are only needed to override that. Files reach a comment via attachments — uploaded to the repo and referenced from the text. Each entry is a local path, an http(s) URL the server downloads, or a data: URI; for a file only the user can reach, use attach_files.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -399,7 +421,7 @@
           "severity": { "type": "string", "enum": ["NORMAL", "BLOCKER"], "description": "Comment severity. Leave unset — comments default to NORMAL. BLOCKER turns the comment into a task and is REJECTED on add; only pass BLOCKER on update to escalate an existing comment when the user explicitly asks. To create a task, use bitbucket_pr_tasks instead." },
           "asAuthor": { "type": "boolean", "description": "Allow a new top-level comment on a PR you authored. Only set this when the user explicitly asked you to comment on your own PR; replies never need it." },
           "pending": { "type": "boolean", "description": "Add only. Post the comment as a PENDING draft-review comment instead of publishing it immediately — it stays unpublished until the user publishes the review from the Bitbucket UI. Only set this when the user EXPLICITLY asks for a pending/draft/unpublished comment; default published behaviour otherwise." },
-          "attachments": { "type": "array", "items": { "type": "string" }, "description": "Local file paths (screenshots, logs) to upload as repo attachments and reference from the comment. On update without text they are appended to the comment's current text; a path already present in text is replaced in place by the attachment markup. The result lists each attachment id and its ![name](attachment:<id>) markup." }
+          "attachments": { "type": "array", "items": { "type": "string" }, "description": "Files (screenshots, logs) to upload as repo attachments and reference from the comment. Attachment sources: an absolute local file path, an http(s) URL (downloaded by the server — URLs on the configured Jira/Bitbucket hosts are fetched with your token, so an attachment on one service can be re-attached to the other), or a data:<mime>;base64,<...> URI for bytes you already hold as text. Local paths only work when this server shares a filesystem with the file; in a sandboxed host (Claude Desktop extensions) use a URL or data: URI instead, or attach_files for a file only the user can reach. On update without text they are appended to the comment's current text; a source already present in text is replaced in place by the attachment markup. The result lists each attachment id and its ![name](attachment:<id>) markup." }
         },
         "required": ["prId"]
       },

@@ -28,7 +28,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 |---|---|
 | `jira_search` | Discover resources: `issues`, `projects`, `issue_types`, `boards`, `sprints`, `board_overview`, `versions`, `components`, `fields`, or `users` via `resource` param |
 | `jira_get` | Full details for one issue: summary, description, status, sprint, transitions, comments, and attachment list |
-| `jira_mutate` | Create, update, transition, comment (`commentAction`: `add` / `update` / `delete`), upload local files as attachments, link, add to sprint, log work, change issue type, set any custom field by name (`create.customFields` / `update.customFields`), or manage a fix version (`version.action`: `create` / `update` / `release` / `archive` / `delete`) — several in one call. Markdown in any text field is converted to Jira wiki markup |
+| `jira_mutate` | Create, update, transition, comment (`commentAction`: `add` / `update` / `delete`), upload attachments from a local path, URL, or `data:` URI, link, add to sprint, log work, change issue type, set any custom field by name (`create.customFields` / `update.customFields`), or manage a fix version (`version.action`: `create` / `update` / `release` / `archive` / `delete`) — several in one call. Markdown in any text field is converted to Jira wiki markup |
 
 ### Bitbucket
 
@@ -36,8 +36,8 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 |---|---|
 | `bitbucket_search` | Discover resources: `pull_requests` (default), `repos`, `branches`, or `users` via `resource` param; `mine=true` for your inbox, narrowed with `role=author` / `reviewer` / `participant` |
 | `bitbucket_get_pr` | Full PR details: metadata, commits, comments, blockers, build status, optional diff, and any attachments referenced from the description or comments |
-| `bitbucket_mutate` | Create/update a PR, or perform lifecycle actions: `approve`, `unapprove`, `needs_work`, `merge`, `decline`. Reviewer names are verified against Bitbucket, and an update that would drop existing reviewers needs `update.replaceReviewers=true`. `create.attachments` / `update.attachments` upload local files (screenshots, logs) to the repo and reference them from the description |
-| `bitbucket_comment` | Add, update, or delete a PR comment; for code changes use `suggestion` so Bitbucket shows Apply suggestion. Enforced here: one reply per thread, no new top-level comment on your own PR (`asAuthor=true` to override), `#123` references rewritten as links. `pending=true` posts an unpublished draft-review comment. `attachments` uploads local files and references them from the comment |
+| `bitbucket_mutate` | Create/update a PR, or perform lifecycle actions: `approve`, `unapprove`, `needs_work`, `merge`, `decline`. Reviewer names are verified against Bitbucket, and an update that would drop existing reviewers needs `update.replaceReviewers=true`. `create.attachments` / `update.attachments` upload files (local path, URL, or `data:` URI) to the repo and reference them from the description |
+| `bitbucket_comment` | Add, update, or delete a PR comment; for code changes use `suggestion` so Bitbucket shows Apply suggestion. Enforced here: one reply per thread, no new top-level comment on your own PR (`asAuthor=true` to override), `#123` references rewritten as links. `pending=true` posts an unpublished draft-review comment. `attachments` uploads files (local path, URL, or `data:` URI) and references them from the comment |
 | `bitbucket_get_file` | Raw file content at a branch, tag, or commit — or pass `prId` to read the PR source branch. Every response names the path and ref it came from, and pages via `maxChars`/`charOffset` |
 | `bitbucket_pr_tasks` | Manage PR tasks (checklist items): `list`, `create`, `resolve`, `reopen`, `delete` |
 
@@ -46,6 +46,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 | Tool | Description |
 |---|---|
 | `get_attachment` | Fetch an attachment by ID from Jira (`source=jira`, IDs from `jira_get`) or Bitbucket (`source=bitbucket`, IDs from `bitbucket_get_pr`). Images, videos, animated images (GIF/APNG/animated WebP), audio, and PDFs are decoded inline so the model can see/hear them; text/JSON inline. Oversized or non-renderable attachments are auto-saved to a temp file and the path is returned. `saveTo=/absolute/path` streams the original to disk |
+| `attach_files` | Open an upload panel in the chat so the user can pick, drag or **paste** files onto a Jira issue or Bitbucket PR. The panel runs in the host (MCP Apps) and uploads directly, so it works where this server cannot read the filesystem — notably sandboxed Claude Desktop extensions. Degrades to a text answer on hosts without MCP Apps |
 
 ### Resources
 
@@ -527,6 +528,74 @@ Client config for an already-running HTTP server (Claude Code example):
 ```bash
 claude mcp add --transport http atlassian http://127.0.0.1:7337/mcp
 ```
+
+### Attachment upload sources
+
+Every `attachments` argument — `jira_mutate`, `bitbucket_mutate` (`create`/`update`) and
+`bitbucket_comment` — takes *sources*, not only paths. Each entry is one of:
+
+| Source | Example | Notes |
+| --- | --- | --- |
+| Local file path | `/tmp/shot.png`, `file:///tmp/shot.png` | Requires the server to share a filesystem with the file |
+| `http(s)` URL | `https://example.com/diagram.png` | Downloaded by the server. Filename comes from `Content-Disposition`, else the URL's last path segment, with an extension filled in from `Content-Type` |
+| `data:` URI | `data:text/plain;name=run.log;base64,Ym9vbQ==` | Bytes inlined in the argument. `;name=` titles the file; without it the name is derived from the media type |
+
+A URL whose host matches the configured Jira or Bitbucket instance is fetched **with your token**,
+so an attachment that already lives on one service can be re-attached to the other by URL. Tokens
+are never sent to any other host. Downloads are capped at 250 MB.
+
+For Bitbucket, a source that already appears in the description or comment text is replaced in place
+by the attachment markup — that works for URLs too, so writing `![the widget](https://…/shot.png)`
+and passing the same URL in `attachments` keeps your caption and swaps in the uploaded file.
+
+**Sandboxed hosts.** Claude Desktop runs extensions in an OS sandbox that blocks arbitrary
+filesystem paths but still allows outbound HTTPS, so local paths generally fail there while URL and
+`data:` sources work. The error for an unreadable path says so. This also applies to chaining with
+another MCP server: a screenshot another server saved to *its* temp directory is not reachable
+from this one under a sandbox, though it is when both run unsandboxed (as in Claude Code).
+
+> Files a user attaches to the chat itself still cannot be uploaded from these arguments: MCP has
+> no mechanism for passing conversation attachments to a server, and the model cannot re-emit image
+> bytes it was shown. Use [`attach_files`](#the-upload-panel-mcp-apps) — the user re-picks or pastes
+> the file into a panel that uploads it directly — or give this server a URL or a readable path.
+
+### The upload panel (MCP Apps)
+
+`attach_files` opens a file picker **inside the chat**. It exists because neither of the
+other routes works everywhere:
+
+- a local path needs this server to share a filesystem with the file, which a sandboxed
+  host (Claude Desktop extensions) does not allow;
+- a file the user drops into the conversation never reaches an MCP server at all — the
+  protocol has no client-to-server file transfer, and the model cannot re-emit bytes it
+  was shown. [SEP-2631](https://github.com/modelcontextprotocol/modelcontextprotocol/issues/2631)
+  would add one; it is still a draft.
+
+[MCP Apps](https://github.com/modelcontextprotocol/ext-apps) routes around both. The tool
+declares a `ui://` resource, the host renders it as an iframe, and that iframe is an
+ordinary browser: its file picker, drop target and paste handler sit outside the server's
+sandbox. It hands the bytes back as `data:` URIs through `tools/call`, which is the same
+source format the `attachments` arguments take.
+
+```
+attach_files { issueKey: "KON-123" }        →  panel renders in the chat
+  user picks / drops / pastes               →  FileReader
+  panel calls attach_files { files: [...] } →  data: URI → upload
+```
+
+The model passes only the target (`issueKey`, or `prId` with an optional `commentId`); it
+never fills in `files` and never sees the file contents. Files are capped at 12 MB each,
+since the bytes ride the JSON-RPC channel as base64 — anything larger should go up by URL.
+
+Support is negotiated: hosts advertise MCP Apps through the `io.modelcontextprotocol/ui`
+extension at `initialize`. Where it is absent — **Claude Code today** — `attach_files`
+returns a plain instruction to use a path or URL instead, and every other tool behaves
+exactly as before.
+
+The panel is one self-contained HTML document, because the host serves it under
+`default-src 'none'`: no CDN, no second resource, no build step. The MCP Apps browser SDK
+is vendored into `ui/vendor/ext-apps.js` by `scripts/vendor-ext-apps.sh` (re-run it to
+bump the version) and spliced into the page when the resource is read.
 
 ### Attachment decoding pipeline
 

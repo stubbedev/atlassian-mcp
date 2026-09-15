@@ -15,6 +15,11 @@ import (
 type clientCaps struct {
 	roots       bool
 	elicitation bool
+	// apps reports MCP Apps support, negotiated via the
+	// "io.modelcontextprotocol/ui" extension. The apps spec asks servers to
+	// check it before offering a UI-backed tool, so attach_files degrades to a
+	// text answer on hosts (Claude Code today) that render no widget.
+	apps bool
 }
 
 // Session represents one client connection. It provides the server→client
@@ -26,6 +31,7 @@ type Session interface {
 	sendRequest(method string, params any) (json.RawMessage, error)
 	elicitationSupported() bool
 	rootsSupported() bool
+	appsSupported() bool
 	// repoRoot returns the session's primary workspace path (first git-repo root
 	// from roots/list), cached for the session; "" if unavailable.
 	repoRoot() string
@@ -100,6 +106,7 @@ func (s *sessionState) sendRequest(method string, params any) (json.RawMessage, 
 	return s.send(method, params)
 }
 func (s *sessionState) elicitationSupported() bool { return s.caps.elicitation }
+func (s *sessionState) appsSupported() bool        { return s != nil && s.caps.apps }
 func (s *sessionState) rootsSupported() bool       { return s.caps.roots }
 func (s *sessionState) isStdio() bool              { return s.stdio }
 

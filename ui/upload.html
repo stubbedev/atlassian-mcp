@@ -1,0 +1,424 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Attach files</title>
+<style>
+  /* shadcn/ui's design system, hand-compiled. The host serves this widget under
+     a `default-src 'none'` CSP (ext-apps 2026-01-26), so Tailwind, Radix and a
+     CDN are all unreachable and a build step would put npm in the path of a
+     single static Go binary. What is portable is the system itself: these are
+     shadcn's own default tokens, radius scale and component recipes. */
+  :root {
+    --radius: 0.625rem;
+    --background: oklch(1 0 0);
+    --foreground: oklch(0.145 0 0);
+    --card: oklch(1 0 0);
+    --card-foreground: oklch(0.145 0 0);
+    --primary: oklch(0.205 0 0);
+    --primary-foreground: oklch(0.985 0 0);
+    --secondary: oklch(0.97 0 0);
+    --secondary-foreground: oklch(0.205 0 0);
+    --muted: oklch(0.97 0 0);
+    --muted-foreground: oklch(0.556 0 0);
+    --accent: oklch(0.97 0 0);
+    --accent-foreground: oklch(0.205 0 0);
+    --destructive: oklch(0.577 0.245 27.325);
+    --success: oklch(0.596 0.145 163.225);
+    --border: oklch(0.922 0 0);
+    --input: oklch(0.922 0 0);
+    --ring: oklch(0.708 0 0);
+
+    --radius-sm: calc(var(--radius) - 4px);
+    --radius-md: calc(var(--radius) - 2px);
+    --radius-lg: var(--radius);
+  }
+  .dark {
+    --background: oklch(0.145 0 0);
+    --foreground: oklch(0.985 0 0);
+    --card: oklch(0.205 0 0);
+    --card-foreground: oklch(0.985 0 0);
+    --primary: oklch(0.922 0 0);
+    --primary-foreground: oklch(0.205 0 0);
+    --secondary: oklch(0.269 0 0);
+    --secondary-foreground: oklch(0.985 0 0);
+    --muted: oklch(0.269 0 0);
+    --muted-foreground: oklch(0.708 0 0);
+    --accent: oklch(0.269 0 0);
+    --accent-foreground: oklch(0.985 0 0);
+    --destructive: oklch(0.704 0.191 22.216);
+    --success: oklch(0.696 0.17 162.48);
+    --border: oklch(1 0 0 / 10%);
+    --input: oklch(1 0 0 / 15%);
+    --ring: oklch(0.556 0 0);
+  }
+
+  *, *::before, *::after { box-sizing: border-box; border: 0 solid var(--border); }
+  html { color-scheme: light; }
+  html.dark { color-scheme: dark; }
+
+  body {
+    margin: 0;
+    padding: 4px;
+    background: var(--background);
+    color: var(--foreground);
+    font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    font-size: 0.875rem;
+    line-height: 1.25rem;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Card */
+  .card {
+    background: var(--card);
+    color: var(--card-foreground);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    padding: 1rem;
+  }
+  .card-header { display: flex; flex-direction: column; gap: 0.375rem; }
+  .card-title { font-size: 0.875rem; font-weight: 600; letter-spacing: -0.01em; margin: 0; }
+  .card-description { font-size: 0.8125rem; color: var(--muted-foreground); margin: 0; }
+
+  /* Badge */
+  .badge {
+    display: inline-flex; align-items: center; gap: 0.25rem;
+    border-radius: 0.375rem; border: 1px solid transparent;
+    background: var(--secondary); color: var(--secondary-foreground);
+    padding: 0.125rem 0.5rem; font-size: 0.75rem; font-weight: 500;
+    line-height: 1rem; white-space: nowrap;
+  }
+
+  /* Dropzone — an Input's resting state, grown to a drop target */
+  .dropzone {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 0.5rem; padding: 1.75rem 1rem; text-align: center;
+    border: 1px dashed var(--input); border-radius: var(--radius-md);
+    background: var(--background); cursor: pointer;
+    transition: color .15s, background-color .15s, border-color .15s, box-shadow .15s;
+  }
+  .dropzone:hover { background: var(--accent); }
+  .dropzone:focus-visible { outline: none; border-color: var(--ring); box-shadow: 0 0 0 3px color-mix(in oklch, var(--ring) 50%, transparent); }
+  .dropzone.over {
+    border-color: var(--ring); border-style: solid; background: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in oklch, var(--ring) 50%, transparent);
+  }
+  .dropzone svg { width: 1.5rem; height: 1.5rem; color: var(--muted-foreground); stroke-width: 1.5; }
+  .dropzone-title { font-weight: 500; }
+  .dropzone-title .accent { text-decoration: underline; text-underline-offset: 3px; }
+  .dropzone-hint { font-size: 0.75rem; color: var(--muted-foreground); }
+
+  /* File rows */
+  .files { display: flex; flex-direction: column; gap: 0.375rem; list-style: none; margin: 0; padding: 0; }
+  .file {
+    display: flex; align-items: center; gap: 0.625rem;
+    border: 1px solid var(--border); border-radius: var(--radius-md);
+    padding: 0.5rem 0.625rem; background: var(--background);
+  }
+  .file.invalid { border-color: var(--destructive); background: color-mix(in oklch, var(--destructive) 6%, var(--background)); }
+  .file-icon { flex: none; width: 1rem; height: 1rem; color: var(--muted-foreground); stroke-width: 1.5; }
+  .file.invalid .file-icon { color: var(--destructive); }
+  .file-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; font-size: 0.8125rem; }
+  .file-sub { font-size: 0.75rem; color: var(--muted-foreground); }
+  .file.invalid .file-sub { color: var(--destructive); }
+
+  /* Button */
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
+    white-space: nowrap; border-radius: var(--radius-md);
+    font-size: 0.875rem; font-weight: 500; line-height: 1.25rem;
+    height: 2.25rem; padding: 0 1rem; cursor: pointer;
+    transition: background-color .15s, color .15s, box-shadow .15s, opacity .15s;
+  }
+  .btn:focus-visible { outline: none; box-shadow: 0 0 0 3px color-mix(in oklch, var(--ring) 50%, transparent); }
+  .btn:disabled { pointer-events: none; opacity: 0.5; }
+  .btn svg { width: 1rem; height: 1rem; stroke-width: 2; }
+  .btn-primary { background: var(--primary); color: var(--primary-foreground); }
+  .btn-primary:hover { background: color-mix(in oklch, var(--primary) 90%, transparent); }
+  .btn-ghost { background: transparent; color: var(--foreground); height: 1.75rem; width: 1.75rem; padding: 0; flex: none; }
+  .btn-ghost:hover { background: var(--accent); color: var(--accent-foreground); }
+
+  .card-footer { display: flex; align-items: center; gap: 0.75rem; }
+
+  /* Status line */
+  .status { font-size: 0.8125rem; color: var(--muted-foreground); display: flex; align-items: center; gap: 0.375rem; min-width: 0; }
+  .status.success { color: var(--success); }
+  .status.error { color: var(--destructive); }
+  .status svg { width: 0.875rem; height: 0.875rem; flex: none; stroke-width: 2; }
+  .status span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .spinner { animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+
+  [hidden] { display: none !important; }
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border-width: 0;
+  }
+</style>
+
+<div class="card">
+  <div class="card-header">
+    <h2 class="card-title">
+      Attach files
+      <span class="badge" id="target" hidden></span>
+    </h2>
+    <p class="card-description">Files upload straight from here — Claude never sees their contents.</p>
+  </div>
+
+  <div class="dropzone" id="drop" tabindex="0" role="button" aria-label="Choose files to attach">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M12 13v8" /><path d="M4 14.9A7 7 0 1 1 15.7 8h1.8a5 5 0 0 1 3.5 8.6" />
+      <path d="m8 17 4-4 4 4" />
+    </svg>
+    <div class="dropzone-title"><span class="accent">Click to choose</span>, drop, or paste</div>
+    <div class="dropzone-hint">Screenshots, logs, PDFs — anything the tracker accepts</div>
+  </div>
+  <input type="file" id="picker" multiple class="sr-only" tabindex="-1" aria-hidden="true" />
+
+  <ul class="files" id="list" hidden></ul>
+
+  <div class="card-footer">
+    <button class="btn btn-primary" id="send" disabled>Upload</button>
+    <div class="status" id="status" role="status" aria-live="polite"></div>
+  </div>
+</div>
+
+<!-- The MCP Apps SDK, vendored (scripts/vendor-ext-apps.sh) and inlined by the
+     resource handler: the host serves this document under `default-src 'none'`,
+     so there is no CDN and no second resource to fetch. -->
+<script>/*@ext-apps@*/</script>
+
+<script>
+  const { App } = globalThis.McpExtApps;
+
+  // Bytes ride the JSON-RPC channel as base64, inflating ~4/3 and buffered
+  // whole at both ends. Anything bigger belongs on a URL.
+  const MAX_FILE_BYTES = 12 * 1024 * 1024;
+
+  const ICON = {
+    file: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/>',
+    alert: '<circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/>',
+    check: '<path d="M20 6 9 17l-5-5"/>',
+    spin: '<path d="M21 12a9 9 0 1 1-6.219-8.56"/>',
+    x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+  };
+
+  function icon(paths, cls) {
+    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" ' +
+      'stroke-linejoin="round" aria-hidden="true"' + (cls ? ' class="' + cls + '"' : '') + '>' + paths + '</svg>';
+  }
+
+  // ── host bridge ────────────────────────────────────────────────────────
+
+  const app = new App(
+    { name: "atlassian-mcp-upload", version: "1" },
+    {},
+    { autoResize: true }, // the panel grows a row per file; let the SDK resize it
+  );
+  let toolArgs = {};
+
+  app.ontoolinput = (params) => {
+    toolArgs = (params && params.arguments) || {};
+    renderTarget();
+  };
+  app.onhostcontextchanged = (ctx) => applyTheme(ctx && ctx.theme);
+
+  function applyTheme(theme) {
+    // Fall back to the OS preference only when the host names no theme, and
+    // never let a missing matchMedia take the whole script down with it.
+    let dark = theme === "dark";
+    if (!theme) {
+      dark = typeof window.matchMedia === "function" &&
+        window.matchMedia("(prefers-color-scheme: dark)").matches;
+    }
+    document.documentElement.classList.toggle("dark", dark);
+  }
+
+  function renderTarget() {
+    const el = document.getElementById("target");
+    const label = toolArgs.issueKey
+      ? toolArgs.issueKey
+      : toolArgs.prId
+        ? "PR #" + toolArgs.prId + (toolArgs.commentId ? " \u00b7 comment " + toolArgs.commentId : "")
+        : "";
+    el.textContent = label;
+    el.hidden = !label;
+  }
+
+  // ── files ──────────────────────────────────────────────────────────────
+
+  let files = [];
+  const listEl = document.getElementById("list");
+  const sendEl = document.getElementById("send");
+  const statusEl = document.getElementById("status");
+
+  function fmtBytes(n) {
+    if (n < 1024) return n + " B";
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+    return (n / (1024 * 1024)).toFixed(1) + " MB";
+  }
+
+  function add(fileList) {
+    for (const f of fileList) {
+      if (files.some((x) => x.file === f)) continue;
+      files.push({ name: f.name || "pasted-image", file: f, ok: f.size <= MAX_FILE_BYTES });
+    }
+    render();
+  }
+
+  function render() {
+    listEl.replaceChildren();
+    files.forEach((entry, i) => {
+      const li = document.createElement("li");
+      li.className = entry.ok ? "file" : "file invalid";
+      li.innerHTML =
+        icon(entry.ok ? ICON.file : ICON.alert, "file-icon") +
+        '<div class="file-meta"><div class="file-name"></div><div class="file-sub"></div></div>';
+      li.querySelector(".file-name").textContent = entry.name;
+      li.querySelector(".file-sub").textContent = entry.ok
+        ? fmtBytes(entry.file.size)
+        : fmtBytes(entry.file.size) + " \u2014 over the " + fmtBytes(MAX_FILE_BYTES) + " limit";
+
+      const rm = document.createElement("button");
+      rm.className = "btn btn-ghost";
+      rm.type = "button";
+      rm.title = "Remove " + entry.name;
+      rm.setAttribute("aria-label", "Remove " + entry.name);
+      rm.innerHTML = icon(ICON.x);
+      rm.addEventListener("click", () => {
+        files.splice(i, 1);
+        render();
+      });
+      li.append(rm);
+      listEl.append(li);
+    });
+    listEl.hidden = files.length === 0;
+
+    const usable = files.filter((f) => f.ok).length;
+    sendEl.disabled = usable === 0;
+    sendEl.textContent = usable > 1 ? "Upload " + usable + " files" : "Upload";
+
+    if (files.some((f) => !f.ok)) {
+      setStatus("Oversized files must go up by URL instead.", "error");
+    } else {
+      setStatus("");
+    }
+  }
+
+  function setStatus(text, kind) {
+    statusEl.className = "status" + (kind ? " " + kind : "");
+    if (!text) {
+      statusEl.replaceChildren();
+      return;
+    }
+    const mark = kind === "error" ? ICON.alert : kind === "success" ? ICON.check : null;
+    statusEl.innerHTML = (mark ? icon(mark) : kind === "busy" ? icon(ICON.spin, "spinner") : "") + "<span></span>";
+    statusEl.querySelector("span").textContent = text;
+  }
+
+  // Filenames ride inside the data: URI header, where ";" and "," are
+  // structural — keep to what the server's sanitizer accepts anyway.
+  function safeName(name) {
+    return ((name || "attachment").replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 80)) || "attachment";
+  }
+
+  function toDataURI(entry) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error("could not read " + entry.name));
+      reader.onload = () => {
+        // readAsDataURL yields "data:<mime>;base64,<data>" with no filename —
+        // splice ";name=" in so the server titles the upload correctly.
+        const uri = String(reader.result);
+        const comma = uri.indexOf(",");
+        const mime = uri.slice("data:".length, comma).replace(/;base64$/, "") ||
+          entry.file.type || "application/octet-stream";
+        resolve("data:" + mime + ";name=" + safeName(entry.name) + ";base64," + uri.slice(comma + 1));
+      };
+      reader.readAsDataURL(entry.file);
+    });
+  }
+
+  // ── wiring ─────────────────────────────────────────────────────────────
+
+  const drop = document.getElementById("drop");
+  const picker = document.getElementById("picker");
+
+  drop.addEventListener("click", () => picker.click());
+  drop.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      picker.click();
+    }
+  });
+  picker.addEventListener("change", () => {
+    add(picker.files);
+    picker.value = "";
+  });
+
+  for (const type of ["dragenter", "dragover"]) {
+    drop.addEventListener(type, (e) => {
+      e.preventDefault();
+      drop.classList.add("over");
+    });
+  }
+  drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+  drop.addEventListener("drop", (e) => {
+    e.preventDefault();
+    drop.classList.remove("over");
+    if (e.dataTransfer && e.dataTransfer.files.length) add(e.dataTransfer.files);
+  });
+
+  // Paste is the whole point on Desktop: a screenshot on the clipboard has no
+  // path to hand over, but it does arrive here as a File.
+  window.addEventListener("paste", (e) => {
+    if (e.clipboardData && e.clipboardData.files.length) {
+      e.preventDefault();
+      add(e.clipboardData.files);
+    }
+  });
+
+  sendEl.addEventListener("click", async () => {
+    const usable = files.filter((f) => f.ok);
+    if (!usable.length) return;
+    sendEl.disabled = true;
+    setStatus("Encoding\u2026", "busy");
+    try {
+      const encoded = [];
+      for (const entry of usable) encoded.push(await toDataURI(entry));
+      setStatus("Uploading\u2026", "busy");
+      const result = await app.callServerTool({
+        name: "attach_files",
+        arguments: Object.assign({}, toolArgs, { files: encoded }),
+      });
+      const text = ((result && result.content) || [])
+        .filter((c) => c.type === "text")
+        .map((c) => c.text)
+        .join("\n");
+      if (result && result.isError) {
+        setStatus(text || "Upload failed.", "error");
+        sendEl.disabled = false;
+        return;
+      }
+      files = [];
+      render();
+      setStatus(text || "Uploaded.", "success");
+    } catch (err) {
+      setStatus(String((err && err.message) || err), "error");
+      sendEl.disabled = false;
+    }
+  });
+
+  applyTheme(null);
+  app
+    .connect()
+    .then(() => {
+      const ctx = app.getHostContext();
+      applyTheme(ctx && ctx.theme);
+    })
+    .catch((err) => setStatus("Could not reach the host: " + err.message, "error"));
+</script>

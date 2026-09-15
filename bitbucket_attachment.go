@@ -25,7 +25,7 @@ type bbUploadedAttachment struct {
 	ID   json.Number `json:"id"`
 	URL  string      `json:"url"`
 	Name string      `json:"name"`
-	path string
+	ref  string      // the source as the caller spelled it, for markup splicing
 }
 
 // link is what goes in the markdown link target.
@@ -45,13 +45,20 @@ func (a bbUploadedAttachment) markup() string {
 	return bang + "[" + a.Name + "](" + a.link() + ")"
 }
 
-// uploadAttachments POSTs each local file to the repo attachments endpoint.
-// One request per file: Bitbucket takes several files per request but returns
-// them in an array that two files with the same base name make ambiguous.
-func (c *BitbucketClient) uploadAttachments(projectKey, repoSlug string, paths []string) ([]bbUploadedAttachment, error) {
-	out := make([]bbUploadedAttachment, 0, len(paths))
-	for _, p := range paths {
-		a, err := c.uploadAttachment(projectKey, repoSlug, p)
+// uploadAttachments resolves each source (local path, URL, data: URI) and POSTs
+// it to the repo attachments endpoint. One request per file: Bitbucket takes
+// several files per request but returns them in an array that two files with
+// the same base name make ambiguous.
+func (c *BitbucketClient) uploadAttachments(projectKey, repoSlug string, sources []string) ([]bbUploadedAttachment, error) {
+	resolved, err := resolveAttachmentSources(sources)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseAttachments(resolved)
+
+	out := make([]bbUploadedAttachment, 0, len(resolved))
+	for _, r := range resolved {
+		a, err := c.uploadAttachment(projectKey, repoSlug, r)
 		if err != nil {
 			return nil, err
 		}
@@ -60,17 +67,16 @@ func (c *BitbucketClient) uploadAttachments(projectKey, repoSlug string, paths [
 	return out, nil
 }
 
-func (c *BitbucketClient) uploadAttachment(projectKey, repoSlug, path string) (bbUploadedAttachment, error) {
-	abs, _ := filepath.Abs(path)
-	f, err := os.Open(abs)
+func (c *BitbucketClient) uploadAttachment(projectKey, repoSlug string, src resolvedAttachment) (bbUploadedAttachment, error) {
+	f, err := os.Open(src.path)
 	if err != nil {
-		return bbUploadedAttachment{}, fmt.Errorf("cannot open attachment %s: %w", path, err)
+		return bbUploadedAttachment{}, fmt.Errorf("cannot open attachment %s: %w", src.label(), err)
 	}
 	defer func() { _ = f.Close() }()
 
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
-	part, err := w.CreateFormFile("files", filepath.Base(abs))
+	part, err := w.CreateFormFile("files", src.name)
 	if err != nil {
 		return bbUploadedAttachment{}, err
 	}
@@ -100,12 +106,12 @@ func (c *BitbucketClient) uploadAttachment(projectKey, repoSlug, path string) (b
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		return bbUploadedAttachment{}, fmt.Errorf("%s", formatBitbucketError(res.StatusCode, "POST", apiPath, parseBitbucketErrorDetails(string(raw))))
 	}
-	return parseUploadedAttachment(raw, abs)
+	return parseUploadedAttachment(raw, src)
 }
 
 // parseUploadedAttachment reads the upload response, which wraps the file in an
 // "attachments" array on current versions and returns it bare on older ones.
-func parseUploadedAttachment(raw []byte, path string) (bbUploadedAttachment, error) {
+func parseUploadedAttachment(raw []byte, src resolvedAttachment) (bbUploadedAttachment, error) {
 	var wrapped struct {
 		Attachments []bbUploadedAttachment `json:"attachments"`
 	}
@@ -113,23 +119,23 @@ func parseUploadedAttachment(raw []byte, path string) (bbUploadedAttachment, err
 	if json.Unmarshal(raw, &wrapped) == nil && len(wrapped.Attachments) > 0 {
 		a = wrapped.Attachments[0]
 	} else if err := json.Unmarshal(raw, &a); err != nil {
-		return a, fmt.Errorf("cannot read attachment upload response for %s: %w", filepath.Base(path), err)
+		return a, fmt.Errorf("cannot read attachment upload response for %s: %w", src.name, err)
 	}
 	if a.ID.String() == "" && a.URL == "" {
-		return a, fmt.Errorf("attachment upload for %s returned no id", filepath.Base(path))
+		return a, fmt.Errorf("attachment upload for %s returned no id", src.name)
 	}
 	if a.Name == "" {
-		a.Name = filepath.Base(path)
+		a.Name = src.name
 	}
-	a.path = path
+	a.ref = src.ref
 	return a, nil
 }
 
-// attachToText uploads paths and returns text with each local path that appears
-// in it swapped for the attachment markup. Anything not referenced is appended,
-// so a file passed without a mention still shows up.
-func (c *BitbucketClient) attachToText(projectKey, repoSlug, text string, paths []string) (string, []bbUploadedAttachment, error) {
-	uploaded, err := c.uploadAttachments(projectKey, repoSlug, paths)
+// attachToText uploads the sources and returns text with each source reference
+// that appears in it swapped for the attachment markup. Anything not referenced
+// is appended, so a file passed without a mention still shows up.
+func (c *BitbucketClient) attachToText(projectKey, repoSlug, text string, sources []string) (string, []bbUploadedAttachment, error) {
+	uploaded, err := c.uploadAttachments(projectKey, repoSlug, sources)
 	if err != nil {
 		return text, nil, err
 	}
@@ -151,11 +157,11 @@ func (c *BitbucketClient) attachToText(projectKey, repoSlug, text string, paths 
 	return text, uploaded, nil
 }
 
-// spliceAttachmentRef rewrites a local path already in the text: inside a
+// spliceAttachmentRef rewrites a source reference already in the text: inside a
 // markdown link target only the target is swapped (the caption survives),
-// otherwise the bare path becomes the full markup.
+// otherwise the bare reference becomes the full markup.
 func spliceAttachmentRef(text string, a bbUploadedAttachment) (string, bool) {
-	for _, cand := range pathCandidates(a.path) {
+	for _, cand := range refCandidates(a.ref) {
 		if target := "](" + cand + ")"; strings.Contains(text, target) {
 			return strings.ReplaceAll(text, target, "]("+a.link()+")"), true
 		}
@@ -166,13 +172,24 @@ func spliceAttachmentRef(text string, a bbUploadedAttachment) (string, bool) {
 	return text, false
 }
 
-// pathCandidates lists the spellings of a file the text may use, longest first
-// so a relative path is never matched inside the absolute one.
-func pathCandidates(abs string) []string {
-	out := []string{abs}
-	if cwd, err := os.Getwd(); err == nil {
-		if rel, err := filepath.Rel(cwd, abs); err == nil && rel != abs && !strings.HasPrefix(rel, "..") {
-			out = append(out, rel)
+// refCandidates lists the spellings of a source the text may use, longest first
+// so a relative path is never matched inside the absolute one. A URL has only
+// the one spelling; inlined bytes have none, so they are always appended.
+func refCandidates(ref string) []string {
+	if ref == "" {
+		return nil
+	}
+	out := []string{ref}
+	if !hasHTTPScheme(ref) {
+		if abs, err := filepath.Abs(ref); err == nil {
+			if abs != ref {
+				out = append(out, abs)
+			}
+			if cwd, err := os.Getwd(); err == nil {
+				if rel, err := filepath.Rel(cwd, abs); err == nil && rel != abs && !strings.HasPrefix(rel, "..") {
+					out = append(out, rel)
+				}
+			}
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool { return len(out[i]) > len(out[j]) })

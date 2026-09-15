@@ -2552,29 +2552,38 @@ func (c *JiraClient) mutateVersion(args map[string]any, repoRoot string) (toolRe
 	return textResult("Updated version " + label + "."), nil
 }
 
-// uploadAttachments POSTs one or more local files to an issue's attachments
-// endpoint as multipart/form-data. Jira requires the X-Atlassian-Token header
-// and the "file" form field; multiple files ride one request. Returns the
-// uploaded base filenames.
-func (c *JiraClient) uploadAttachments(issueKey string, paths []string) ([]string, error) {
+// uploadAttachments POSTs one or more attachment sources to an issue's
+// attachments endpoint as multipart/form-data. Jira requires the
+// X-Atlassian-Token header and the "file" form field; multiple files ride one
+// request. Sources are resolved (local path, URL, data: URI) first. Returns the
+// uploaded filenames.
+func (c *JiraClient) uploadAttachments(issueKey string, sources []string) ([]string, error) {
+	resolved, err := resolveAttachmentSources(sources)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseAttachments(resolved)
+
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
-	names := make([]string, 0, len(paths))
-	for _, p := range paths {
-		abs, _ := filepath.Abs(p)
-		f, err := os.Open(abs)
-		if err != nil {
-			return nil, fmt.Errorf("cannot open attachment %s: %w", p, err)
-		}
-		defer func() { _ = f.Close() }()
-		part, err := w.CreateFormFile("file", filepath.Base(abs))
-		if err != nil {
+	names := make([]string, 0, len(resolved))
+	for _, r := range resolved {
+		if err := func() error {
+			f, err := os.Open(r.path)
+			if err != nil {
+				return fmt.Errorf("cannot open attachment %s: %w", r.label(), err)
+			}
+			defer func() { _ = f.Close() }()
+			part, err := w.CreateFormFile("file", r.name)
+			if err != nil {
+				return err
+			}
+			_, err = io.Copy(part, f)
+			return err
+		}(); err != nil {
 			return nil, err
 		}
-		if _, err := io.Copy(part, f); err != nil {
-			return nil, err
-		}
-		names = append(names, filepath.Base(abs))
+		names = append(names, r.name)
 	}
 	if err := w.Close(); err != nil {
 		return nil, err

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -336,12 +337,12 @@ func TestToolListGating(t *testing.T) {
 		t.Errorf("git-only should be 1 tool, got %d", got)
 	}
 	jira = &JiraClient{}
-	if got := len(toolList()); got != 7 {
-		t.Errorf("git+context+jira should be 7 tools, got %d", got)
+	if got := len(toolList()); got != 8 {
+		t.Errorf("git+context+jira should be 8 tools, got %d", got)
 	}
 	bitbucket = &BitbucketClient{}
-	if got := len(toolList()); got != 14 {
-		t.Errorf("all should be 14 tools, got %d", got)
+	if got := len(toolList()); got != 15 {
+		t.Errorf("all should be 15 tools, got %d", got)
 	}
 	jira, bitbucket = nil, nil
 }
@@ -1008,5 +1009,278 @@ func TestAppendAIMarkerMarkdown(t *testing.T) {
 	}
 	if got := stripAIMarker(want); got != sugg {
 		t.Errorf("stripAIMarker: got %q, want %q", got, sugg)
+	}
+}
+
+// ── attachment sources ───────────────────────────────────────────────────────
+
+func TestResolveAttachmentSourceLocalAndDataURI(t *testing.T) {
+	dir := t.TempDir()
+	local := filepath.Join(dir, "notes.txt")
+	if err := os.WriteFile(local, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := resolveAttachmentSource(local)
+	if err != nil {
+		t.Fatalf("local: %v", err)
+	}
+	defer releaseAttachments([]resolvedAttachment{r})
+	if r.name != "notes.txt" || r.tmp {
+		t.Errorf("local resolved = %+v", r)
+	}
+
+	// A data: URI carries its own bytes, so it works with no filesystem at all —
+	// the transport a sandboxed host is left with.
+	d, err := resolveAttachmentSource("data:text/plain;name=run.log;base64," + base64.StdEncoding.EncodeToString([]byte("boom")))
+	if err != nil {
+		t.Fatalf("data URI: %v", err)
+	}
+	defer releaseAttachments([]resolvedAttachment{d})
+	if d.name != "run.log" || !d.tmp {
+		t.Fatalf("data resolved = %+v", d)
+	}
+	got, err := os.ReadFile(d.path)
+	if err != nil || string(got) != "boom" {
+		t.Errorf("data bytes = %q, %v", got, err)
+	}
+
+	// An unnamed data: URI gets an extension from its media type.
+	png, err := resolveAttachmentSource("data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte("\x89PNG")))
+	if err != nil {
+		t.Fatalf("png data URI: %v", err)
+	}
+	defer releaseAttachments([]resolvedAttachment{png})
+	if png.name != "attachment.png" {
+		t.Errorf("png name = %q", png.name)
+	}
+
+	// A path that does not exist must name the sandbox as a likely cause.
+	_, err = resolveAttachmentSource(filepath.Join(dir, "missing.png"))
+	if err == nil || !strings.Contains(err.Error(), "sandboxed") {
+		t.Errorf("missing path error = %v", err)
+	}
+}
+
+func TestResolveAttachmentSourceURL(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/named":
+			w.Header().Set("Content-Disposition", `attachment; filename="diagram.png"`)
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write([]byte("bytes"))
+		case "/1234": // Bitbucket-style: a bare id, type only in the header.
+			w.Header().Set("Content-Type", "image/jpeg")
+			_, _ = w.Write([]byte("bytes"))
+		case "/secret":
+			if r.Header.Get("Authorization") != "Bearer jira-token" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			w.Header().Set("Content-Type", "text/plain")
+			_, _ = w.Write([]byte("ok"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte("nope"))
+		}
+	}))
+	defer srv.Close()
+
+	r, err := resolveAttachmentSource(srv.URL + "/named")
+	if err != nil {
+		t.Fatalf("named: %v", err)
+	}
+	defer releaseAttachments([]resolvedAttachment{r})
+	if r.name != "diagram.png" || !r.tmp || r.ref != srv.URL+"/named" {
+		t.Errorf("named resolved = %+v", r)
+	}
+
+	bare, err := resolveAttachmentSource(srv.URL + "/1234")
+	if err != nil {
+		t.Fatalf("bare: %v", err)
+	}
+	defer releaseAttachments([]resolvedAttachment{bare})
+	if bare.name != "1234.jpg" {
+		t.Errorf("bare name = %q, want an extension from Content-Type", bare.name)
+	}
+
+	// A URL on the configured Jira host is fetched with the token, so an
+	// attachment already in Jira can be re-attached elsewhere.
+	prev := jira
+	jira = NewJiraClient(srv.URL, "jira-token")
+	defer func() { jira = prev }()
+	auth, err := resolveAttachmentSource(srv.URL + "/secret")
+	if err != nil {
+		t.Fatalf("authenticated: %v", err)
+	}
+	defer releaseAttachments([]resolvedAttachment{auth})
+
+	// A host we are not configured for gets no token, and the failure says so.
+	if _, err := resolveAttachmentSource(srv.URL + "/gone"); err == nil || !strings.Contains(err.Error(), "404") {
+		t.Errorf("missing URL error = %v", err)
+	}
+}
+
+func TestAttachToTextSplicesURLSources(t *testing.T) {
+	var uploads []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/shot.png" {
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write([]byte("bytes"))
+			return
+		}
+		_, hdr, err := r.FormFile("files")
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		uploads = append(uploads, hdr.Filename)
+		_, _ = fmt.Fprintf(w, `{"attachments":[{"id":%d,"url":"attachment:%d","name":%q}]}`, len(uploads), len(uploads), hdr.Filename)
+	}))
+	defer srv.Close()
+
+	c := NewBitbucketClient(srv.URL, "t")
+	url := srv.URL + "/shot.png"
+	text, uploaded, err := c.attachToText("ENG", "api", "Before:\n\n![the widget]("+url+")", []string{url})
+	if err != nil {
+		t.Fatalf("attachToText: %v", err)
+	}
+	if len(uploaded) != 1 || uploaded[0].Name != "shot.png" {
+		t.Fatalf("uploaded = %+v", uploaded)
+	}
+	if want := "Before:\n\n![the widget](attachment:1)"; text != want {
+		t.Errorf("text = %q, want %q", text, want)
+	}
+}
+
+// ── upload widget (MCP Apps) ─────────────────────────────────────────────────
+
+func TestUploadWidgetAssembles(t *testing.T) {
+	html := uploadWidget()
+	if strings.Contains(html, extAppsMarker) {
+		t.Error("marker survived — the SDK was not spliced in")
+	}
+	// The vendored bundle must be present and expose the global the widget
+	// reaches for, or the panel loads and then does nothing.
+	if !strings.Contains(html, "globalThis.McpExtApps=") {
+		t.Error("vendored ext-apps bundle missing from the served widget")
+	}
+	if !strings.Contains(html, "globalThis.McpExtApps;") {
+		t.Error("widget does not read the McpExtApps global")
+	}
+	// Inlining breaks the moment the bundle contains a closing script tag.
+	if n := strings.Count(strings.ToLower(html), "</script>"); n != 2 {
+		t.Errorf("expected exactly 2 closing script tags, got %d — a stray one would truncate the document", n)
+	}
+	if !strings.Contains(html, `"attach_files"`) {
+		t.Error("widget does not call back into attach_files")
+	}
+	if len(html) < len(extAppsJS) {
+		t.Error("served widget is smaller than the bundle it embeds")
+	}
+}
+
+func TestAttachFilesTargetValidation(t *testing.T) {
+	prevJira, prevBB := jira, bitbucket
+	jira, bitbucket = &JiraClient{}, &BitbucketClient{}
+	defer func() { jira, bitbucket = prevJira, prevBB }()
+
+	if _, err := attachFiles(nil, map[string]any{}); err == nil ||
+		!strings.Contains(err.Error(), "issueKey") {
+		t.Errorf("no target should be rejected, got %v", err)
+	}
+	if _, err := attachFiles(nil, map[string]any{"issueKey": "KON-1", "prId": float64(2)}); err == nil ||
+		!strings.Contains(err.Error(), "not both") {
+		t.Errorf("two targets should be rejected, got %v", err)
+	}
+
+	// A target and no files, on a host that renders widgets, is the model
+	// opening the panel: it must not upload, and must warn the model off
+	// filling in `files` itself.
+	appsHost := &sessionState{caps: clientCaps{apps: true}}
+	res, err := attachFiles(appsHost, map[string]any{"issueKey": "KON-1"})
+	if err != nil {
+		t.Fatalf("opening the panel: %v", err)
+	}
+	if text := res.Content[0].Text; !strings.Contains(text, "KON-1") ||
+		!strings.Contains(text, "Upload panel open") ||
+		!strings.Contains(text, "do not fill in") {
+		t.Errorf("panel-open result = %q", text)
+	}
+
+	// Same call on a host without MCP Apps (Claude Code today) must degrade to
+	// an answer the model can act on, not a panel that never appears.
+	res, err = attachFiles(&sessionState{}, map[string]any{"issueKey": "KON-1"})
+	if err != nil {
+		t.Fatalf("degraded path: %v", err)
+	}
+	if text := res.Content[0].Text; !strings.Contains(text, "does not support MCP Apps") ||
+		!strings.Contains(text, "attachments") {
+		t.Errorf("degraded result = %q", text)
+	}
+}
+
+func TestAppsCapabilityNegotiation(t *testing.T) {
+	mime := []any{"text/html;profile=mcp-app"}
+	cases := []struct {
+		name string
+		ext  map[string]any
+		want bool
+	}{
+		{"absent", nil, false},
+		{"other extensions only", map[string]any{"vendor/other": map[string]any{}}, false},
+		{"named but no mime types", map[string]any{uiExtensionKey: map[string]any{}}, false},
+		{"unsupported mime type", map[string]any{uiExtensionKey: map[string]any{"mimeTypes": []any{"text/plain"}}}, false},
+		{"negotiated", map[string]any{uiExtensionKey: map[string]any{"mimeTypes": mime}}, true},
+	}
+	for _, c := range cases {
+		if got := appsCapability(c.ext); got != c.want {
+			t.Errorf("%s: appsCapability = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestAttachFilesRequiresConfiguredService(t *testing.T) {
+	prevJira, prevBB := jira, bitbucket
+	jira, bitbucket = nil, &BitbucketClient{}
+	defer func() { jira, bitbucket = prevJira, prevBB }()
+
+	if _, err := attachFiles(nil, map[string]any{"issueKey": "KON-1"}); err == nil ||
+		!strings.Contains(err.Error(), "Jira is not configured") {
+		t.Errorf("Jira target without Jira should be rejected, got %v", err)
+	}
+}
+
+// TestWidgetDataURIFormat pins the exact string the upload panel emits. The
+// panel builds it in JavaScript and this parses it in Go, so nothing but a test
+// holds the two halves together — a change to either side breaks here first.
+func TestWidgetDataURIFormat(t *testing.T) {
+	// Captured from the widget driven against a stub host: a 4-byte PNG picked
+	// as "shot.png".
+	const fromWidget = "data:image/png;name=shot.png;base64,AQIDBA=="
+
+	r, err := resolveAttachmentSource(fromWidget)
+	if err != nil {
+		t.Fatalf("widget data URI: %v", err)
+	}
+	defer releaseAttachments([]resolvedAttachment{r})
+	if r.name != "shot.png" {
+		t.Errorf("name = %q, want shot.png", r.name)
+	}
+	got, err := os.ReadFile(r.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []byte{1, 2, 3, 4}; !reflect.DeepEqual(got, want) {
+		t.Errorf("bytes = %v, want %v", got, want)
+	}
+	// The panel names a pasted screenshot rather than sending an empty one.
+	p, err := resolveAttachmentSource("data:image/png;name=pasted-image;base64,CQk=")
+	if err != nil {
+		t.Fatalf("pasted image: %v", err)
+	}
+	defer releaseAttachments([]resolvedAttachment{p})
+	if p.name != "pasted-image" {
+		t.Errorf("pasted name = %q", p.name)
 	}
 }

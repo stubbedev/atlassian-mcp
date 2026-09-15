@@ -86,7 +86,34 @@ func buildServer(instructions string) *mcp.Server {
 		Description: "Live branch state, linked Jira tickets, and the open PR for the current repo/branch. Re-read any time for fresh state — same content as the get_dev_context tool.",
 		MIMEType:    "text/markdown",
 	}, devContextResourceHandler)
+
+	// The MCP Apps upload panel. Hosts that implement MCP Apps (Claude Desktop
+	// does, for MCPB-packaged servers too) fetch this when attach_files runs and
+	// render it as an iframe in the chat; hosts that do not simply ignore the
+	// tool's _meta and the tool still works with paths and URLs.
+	if jira != nil || bitbucket != nil {
+		srv.AddResource(&mcp.Resource{
+			URI:         uploadWidgetURI,
+			Name:        "upload-panel",
+			Title:       "Attach files",
+			Description: "File picker, drop target and paste handler for attaching files to a Jira issue or Bitbucket PR. Rendered by attach_files.",
+			MIMEType:    appResourceMIMEType,
+		}, uploadWidgetHandler)
+	}
 	return srv
+}
+
+// appResourceMIMEType marks an HTML resource as an MCP Apps UI surface
+// (ext-apps 2026-01-26). The profile parameter is what tells a host to render
+// the resource in an iframe instead of showing it as text.
+const appResourceMIMEType = "text/html;profile=mcp-app"
+
+func uploadWidgetHandler(_ context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+	return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{{
+		URI:      req.Params.URI,
+		MIMEType: appResourceMIMEType,
+		Text:     uploadWidget(),
+	}}}, nil
 }
 
 // devContextResourceHandler serves the dev-context resource: it resolves the
@@ -146,6 +173,7 @@ func sessionFor(ss *mcp.ServerSession, extra *mcp.RequestExtra) *sessionState {
 		caps := clientCaps{roots: true}
 		if ip := ss.InitializeParams(); ip != nil && ip.Capabilities != nil {
 			caps.elicitation = ip.Capabilities.Elicitation != nil
+			caps.apps = appsCapability(ip.Capabilities.Extensions)
 		}
 		st = &sessionState{stdio: !httpMode, caps: caps, send: sdkSend(ss)}
 		sessions[id] = st
@@ -158,6 +186,29 @@ func sessionFor(ss *mcp.ServerSession, extra *mcp.RequestExtra) *sessionState {
 		}
 	}
 	return st
+}
+
+// uiExtensionKey is how a host advertises MCP Apps support at initialize
+// (apps spec 2026-01-26, "Client<>Server Capability Negotiation").
+const uiExtensionKey = "io.modelcontextprotocol/ui"
+
+// appsCapability reports whether the client can render this server's UI
+// resources: it must name the extension AND accept the app MIME type.
+func appsCapability(extensions map[string]any) bool {
+	settings, ok := extensions[uiExtensionKey].(map[string]any)
+	if !ok {
+		return false
+	}
+	types, ok := settings["mimeTypes"].([]any)
+	if !ok {
+		return false
+	}
+	for _, t := range types {
+		if s, ok := t.(string); ok && strings.EqualFold(strings.TrimSpace(s), appResourceMIMEType) {
+			return true
+		}
+	}
+	return false
 }
 
 // handleRootsListChanged invalidates the cached roots for the signaling client.
