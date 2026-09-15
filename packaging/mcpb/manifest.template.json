@@ -72,7 +72,8 @@
     "mark_ai_text": {
       "type": "boolean",
       "title": "Mark AI-written text",
-      "description": "Append a bold [AI] line to Jira and Bitbucket text this server posts, so readers can tell AI writing from yours.",
+      "description": "Append a bold [AI] line to Jira and Bitbucket text this server posts, so readers can tell AI writing from yours. On by default; uncheck to post unmarked.",
+      "default": true,
       "required": false
     }
   },
