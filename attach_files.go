@@ -1,47 +1,34 @@
 package main
 
 import (
-	"bytes"
 	_ "embed"
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 )
 
-// attach_files is the way a file reaches Jira or Bitbucket from a host where
-// this server cannot see the filesystem — Claude Desktop runs extensions in an
-// OS sandbox, so a path the user names is unreadable here and a file they drop
-// in the chat never reaches a server at all (MCP has no client→server file
-// transfer; SEP-2631 is still draft).
+// attach_files exists for the file that has no path to pass. A screenshot the
+// user pasted or dragged into the conversation is not on disk anywhere this
+// server could look, and MCP has no client→server file transfer to carry it
+// (SEP-2631 would; it is still draft). Asking the user to save it somewhere and
+// type the path is the workaround this replaces. It also covers a path the
+// server turns out not to be allowed to read, on hosts that confine it.
 //
-// The way around both is MCP Apps: the tool declares a ui:// resource, the host
-// renders it as an iframe in the chat, and that iframe is an ordinary browser —
-// its file picker, drop target and paste handler are outside our sandbox. It
-// hands the bytes back as data: URIs through tools/call, which resolveAttachmentSources
-// already understands.
+// MCP Apps is the way in: the tool declares a ui:// resource, the host renders
+// it as an iframe in the chat, and that iframe is an ordinary browser — its file
+// picker, drop target and paste handler need no path and no filesystem access on
+// our side. It hands the bytes back as data: URIs through tools/call, which
+// resolveAttachmentSources already understands.
+//
+// The page is self-contained: the host serves it under `default-src 'none'`, so
+// there is no CDN and no second resource to fetch. It carries its own ~2 KB MCP
+// Apps bridge rather than the official SDK, which needs ~400 KB of zod to
+// validate messages this page already treats as untrusted.
 //
 //go:embed ui/upload.html
-var uploadWidgetRaw []byte
+var uploadWidgetHTML []byte
 
-// The MCP Apps SDK, vendored by scripts/vendor-ext-apps.sh. It is spliced into
-// the widget rather than linked: the host serves the document under
-// `default-src 'none'`, so a CDN is unreachable and a second resource is not
-// fetchable either.
-//
-//go:embed ui/vendor/ext-apps.js
-var extAppsJS []byte
-
-const extAppsMarker = "/*@ext-apps@*/"
-
-// uploadWidget is the served document, assembled once.
-var uploadWidget = sync.OnceValue(func() string {
-	if !bytes.Contains(uploadWidgetRaw, []byte(extAppsMarker)) {
-		logf("upload widget is missing the %s marker — the MCP Apps SDK will not load", extAppsMarker)
-		return string(uploadWidgetRaw)
-	}
-	return string(bytes.Replace(uploadWidgetRaw, []byte(extAppsMarker), extAppsJS, 1))
-})
+func uploadWidget() string { return string(uploadWidgetHTML) }
 
 const uploadWidgetURI = "ui://atlassian-mcp/upload"
 

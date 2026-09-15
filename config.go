@@ -2,8 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -34,15 +37,22 @@ type configFile struct {
 	} `json:"bitbucket"`
 }
 
+// readJSONFile loads the config file, logging why it did not when it did not.
+// The reason matters on hosts that confine the server: "permission denied" on a
+// file that is plainly there is the clearest evidence of a filesystem sandbox,
+// and stderr is the only channel a GUI client gives us to say so.
 func readJSONFile(path string) *configFile {
 	raw, err := os.ReadFile(path)
 	if err != nil {
+		logf("Config file %s could not be read: %v", path, err)
 		return nil
 	}
 	var cf configFile
 	if err := json.Unmarshal(raw, &cf); err != nil {
+		logf("Config file %s is not valid JSON: %v", path, err)
 		return nil
 	}
+	logf("Config file: %s", path)
 	return &cf
 }
 
@@ -136,15 +146,72 @@ func loadDotEnv() {
 	}
 }
 
+// mcpbPlaceholderRe matches an MCP Bundle manifest substitution that the host
+// never filled in, e.g. "${user_config.jira_url}".
+var mcpbPlaceholderRe = regexp.MustCompile(`^\$\{[A-Za-z0-9_.]+\}$`)
+
+// manifestEnvVars are the variables the .mcpb manifest wires to user_config
+// fields. Claude Desktop substitutes a blank field with the literal
+// "${user_config.x}" rather than an empty string, so anything reading these
+// raw would take a placeholder for a real value — a blank Jira URL became
+// POST "${user_config.jira_url}/rest/api/2/..." and failed with "unsupported
+// protocol scheme". Blank is supposed to mean "fall back to the config file",
+// so clear them before any of it is read.
+var manifestEnvVars = []string{
+	"JIRA_URL", "JIRA_ACCESS_TOKEN",
+	"BITBUCKET_URL", "BITBUCKET_ACCESS_TOKEN",
+	"ATLASSIAN_MCP_REPO_ROOT", "ATLASSIAN_MCP_GIT_PATH", "ATLASSIAN_MCP_MARK_AI_TEXT",
+	"ATLASSIAN_MCP_CONFIG", "ATLASSIAN_MCP_HTTP_TOKEN",
+	"ATLASSIAN_MCP_FFMPEG_PATH", "ATLASSIAN_MCP_FFPROBE_PATH",
+}
+
+// clearUnsubstitutedEnv unsets manifest variables still holding a placeholder.
+func clearUnsubstitutedEnv() {
+	var cleared []string
+	for _, k := range manifestEnvVars {
+		if mcpbPlaceholderRe.MatchString(strings.TrimSpace(os.Getenv(k))) {
+			_ = os.Unsetenv(k)
+			cleared = append(cleared, k)
+		}
+	}
+	if len(cleared) > 0 {
+		logf("Ignoring unfilled extension settings (%s) — treating them as blank. Fill them in the extension's settings, or leave them blank to use a config file.", strings.Join(cleared, ", "))
+	}
+}
+
+// invalidServiceURL describes what is wrong with a configured service URL, or
+// "" when it is usable. An empty URL is not an error here — it means the
+// service is simply not configured.
+func invalidServiceURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Sprintf("%q is not a valid URL: %v", raw, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Sprintf("%q needs an http:// or https:// prefix", raw)
+	}
+	if u.Host == "" {
+		return fmt.Sprintf("%q has no host", raw)
+	}
+	return ""
+}
+
 // loadConfig resolves configuration from the config file then environment
 // variables. A service is enabled only when both url and token are present;
 // a partial configuration logs which piece is missing, matching config.ts.
 func loadConfig() Config {
+	clearUnsubstitutedEnv()
 	loadDotEnv()
 
 	var file *configFile
 	if path := getConfigPath(); path != "" {
 		file = readJSONFile(path)
+	} else {
+		logf("No config file found (looked for --config/ATLASSIAN_MCP_CONFIG, ~/.atlassian-mcp.json, $XDG_CONFIG_HOME/atlassian-mcp/config.json, ./.atlassian-mcp.json); using environment variables only.")
 	}
 
 	pick := func(fileVal, env string) string {
@@ -168,6 +235,18 @@ func loadConfig() Config {
 	}
 
 	cfg := Config{}
+
+	// A URL that is not absolute http(s) would otherwise surface much later as
+	// net/http's "unsupported protocol scheme", naming the request rather than
+	// the setting that was wrong.
+	if bad := invalidServiceURL(jiraURL); bad != "" {
+		logf("Jira disabled: %s", bad)
+		jiraURL = ""
+	}
+	if bad := invalidServiceURL(bbURL); bad != "" {
+		logf("Bitbucket disabled: %s", bad)
+		bbURL = ""
+	}
 
 	if jiraURL != "" && jiraToken != "" {
 		cfg.Jira = &ServiceConfig{URL: strings.TrimRight(jiraURL, "/"), Token: jiraToken}

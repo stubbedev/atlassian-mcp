@@ -1055,9 +1055,10 @@ func TestResolveAttachmentSourceLocalAndDataURI(t *testing.T) {
 		t.Errorf("png name = %q", png.name)
 	}
 
-	// A path that does not exist must name the sandbox as a likely cause.
+	// An unreadable path must name the alternatives that need no filesystem.
 	_, err = resolveAttachmentSource(filepath.Join(dir, "missing.png"))
-	if err == nil || !strings.Contains(err.Error(), "sandboxed") {
+	if err == nil || !strings.Contains(err.Error(), "data:") ||
+		!strings.Contains(err.Error(), "confined") {
 		t.Errorf("missing path error = %v", err)
 	}
 }
@@ -1155,28 +1156,27 @@ func TestAttachToTextSplicesURLSources(t *testing.T) {
 
 // ── upload widget (MCP Apps) ─────────────────────────────────────────────────
 
-func TestUploadWidgetAssembles(t *testing.T) {
+func TestUploadWidgetIsSelfContained(t *testing.T) {
 	html := uploadWidget()
-	if strings.Contains(html, extAppsMarker) {
-		t.Error("marker survived — the SDK was not spliced in")
+	// The host serves this under `default-src 'none'`: an external script or
+	// stylesheet would silently never load.
+	for _, bad := range []string{"<script src=", "<link rel=\"stylesheet\"", "https://cdn", "/*@ext-apps@*/"} {
+		if strings.Contains(html, bad) {
+			t.Errorf("widget must not reference %q — nothing external can load under the host CSP", bad)
+		}
 	}
-	// The vendored bundle must be present and expose the global the widget
-	// reaches for, or the panel loads and then does nothing.
-	if !strings.Contains(html, "globalThis.McpExtApps=") {
-		t.Error("vendored ext-apps bundle missing from the served widget")
-	}
-	if !strings.Contains(html, "globalThis.McpExtApps;") {
-		t.Error("widget does not read the McpExtApps global")
-	}
-	// Inlining breaks the moment the bundle contains a closing script tag.
-	if n := strings.Count(strings.ToLower(html), "</script>"); n != 2 {
-		t.Errorf("expected exactly 2 closing script tags, got %d — a stray one would truncate the document", n)
+	// The bridge has to speak the protocol the host expects.
+	for _, want := range []string{"ui/initialize", "ui/notifications/initialized", "ui/notifications/tool-input", "tools/call", "2026-01-26"} {
+		if !strings.Contains(html, want) {
+			t.Errorf("widget is missing %q", want)
+		}
 	}
 	if !strings.Contains(html, `"attach_files"`) {
 		t.Error("widget does not call back into attach_files")
 	}
-	if len(html) < len(extAppsJS) {
-		t.Error("served widget is smaller than the bundle it embeds")
+	// Dropping the vendored SDK was the point; keep it from creeping back.
+	if len(html) > 64*1024 {
+		t.Errorf("widget is %d bytes — it is meant to stay small and self-contained", len(html))
 	}
 }
 
@@ -1282,5 +1282,130 @@ func TestWidgetDataURIFormat(t *testing.T) {
 	defer releaseAttachments([]resolvedAttachment{p})
 	if p.name != "pasted-image" {
 		t.Errorf("pasted name = %q", p.name)
+	}
+}
+
+// ── config: unfilled .mcpb placeholders ──────────────────────────────────────
+
+// TestUnsubstitutedManifestEnvIsBlank covers the Claude Desktop install path:
+// a user_config field left blank arrives as the literal "${user_config.x}", not
+// as an empty string. Taken at face value it configured Jira with a bogus URL
+// and every call died with net/http's "unsupported protocol scheme".
+func TestUnsubstitutedManifestEnvIsBlank(t *testing.T) {
+	t.Setenv("JIRA_URL", "${user_config.jira_url}")
+	t.Setenv("JIRA_ACCESS_TOKEN", "${user_config.jira_token}")
+	t.Setenv("BITBUCKET_URL", "https://bb.example.com")
+	t.Setenv("BITBUCKET_ACCESS_TOKEN", "real-token")
+	t.Setenv("ATLASSIAN_MCP_REPO_ROOT", "${user_config.repo_root}")
+
+	clearUnsubstitutedEnv()
+
+	if v := os.Getenv("JIRA_URL"); v != "" {
+		t.Errorf("JIRA_URL = %q, want cleared", v)
+	}
+	if v := os.Getenv("ATLASSIAN_MCP_REPO_ROOT"); v != "" {
+		t.Errorf("ATLASSIAN_MCP_REPO_ROOT = %q, want cleared", v)
+	}
+	// A filled-in value must survive untouched.
+	if v := os.Getenv("BITBUCKET_URL"); v != "https://bb.example.com" {
+		t.Errorf("BITBUCKET_URL = %q, want it left alone", v)
+	}
+	if v := os.Getenv("BITBUCKET_ACCESS_TOKEN"); v != "real-token" {
+		t.Errorf("BITBUCKET_ACCESS_TOKEN = %q, want it left alone", v)
+	}
+}
+
+func TestPlaceholderMatching(t *testing.T) {
+	for _, s := range []string{"${user_config.jira_url}", "${user_config.repo_root}", "${__dirname}"} {
+		if !mcpbPlaceholderRe.MatchString(s) {
+			t.Errorf("%q should be recognized as an unfilled placeholder", s)
+		}
+	}
+	// Real values that merely resemble one must not be blanked.
+	for _, s := range []string{
+		"https://jira.example.com", "", "token-${weird", "$notaplaceholder",
+		"https://jira.example.com/${x}", "${a b}",
+	} {
+		if mcpbPlaceholderRe.MatchString(s) {
+			t.Errorf("%q must not be treated as a placeholder", s)
+		}
+	}
+}
+
+func TestInvalidServiceURLRejected(t *testing.T) {
+	cases := map[string]bool{
+		"https://jira.example.com": true,
+		"http://localhost:8080":    true,
+		"":                         true, // not configured, not an error
+		"jira.example.com":         false,
+		"${user_config.jira_url}":  false,
+		"ftp://jira.example.com":   false,
+		"https://":                 false,
+	}
+	for raw, ok := range cases {
+		if got := invalidServiceURL(raw) == ""; got != ok {
+			t.Errorf("invalidServiceURL(%q) usable = %v, want %v (%s)", raw, got, ok, invalidServiceURL(raw))
+		}
+	}
+}
+
+// TestBlankExtensionFieldsFallBackToConfigFile is the whole Claude Desktop
+// story end to end: install the extension, leave the URL/token fields blank,
+// and the server must pick up ~/.atlassian-mcp.json — which is what the install
+// dialog promises. Before placeholders were cleared, the literal
+// "${user_config.jira_url}" counted as "set" and shadowed the file.
+func TestBlankExtensionFieldsFallBackToConfigFile(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "atlassian-mcp.json")
+	cfg := `{
+	  "jira":      { "url": "https://jira.example.com", "token": "jira-secret" },
+	  "bitbucket": { "url": "https://bb.example.com",   "token": "bb-secret"   }
+	}`
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Exactly what Claude Desktop passes for an all-blank install dialog.
+	t.Setenv("ATLASSIAN_MCP_CONFIG", cfgPath)
+	t.Setenv("JIRA_URL", "${user_config.jira_url}")
+	t.Setenv("JIRA_ACCESS_TOKEN", "${user_config.jira_token}")
+	t.Setenv("BITBUCKET_URL", "${user_config.bitbucket_url}")
+	t.Setenv("BITBUCKET_ACCESS_TOKEN", "${user_config.bitbucket_token}")
+
+	got := loadConfig()
+	if got.Jira == nil {
+		t.Fatal("Jira not configured — the config file was not picked up")
+	}
+	if got.Jira.URL != "https://jira.example.com" || got.Jira.Token != "jira-secret" {
+		t.Errorf("Jira = %+v, want the config file's values", *got.Jira)
+	}
+	if got.Bitbucket == nil {
+		t.Fatal("Bitbucket not configured")
+	}
+	if got.Bitbucket.URL != "https://bb.example.com" || got.Bitbucket.Token != "bb-secret" {
+		t.Errorf("Bitbucket = %+v, want the config file's values", *got.Bitbucket)
+	}
+}
+
+// A filled-in dialog field still wins over the config file for that field,
+// while the others keep falling back.
+func TestFilledExtensionFieldOverridesConfigFile(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "atlassian-mcp.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"jira":{"url":"https://from-file.example.com","token":"file-token"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ATLASSIAN_MCP_CONFIG", cfgPath)
+	t.Setenv("JIRA_URL", "${user_config.jira_url}")
+	t.Setenv("JIRA_ACCESS_TOKEN", "${user_config.jira_token}")
+	t.Setenv("BITBUCKET_URL", "https://typed-in.example.com")
+	t.Setenv("BITBUCKET_ACCESS_TOKEN", "typed-token")
+
+	got := loadConfig()
+	if got.Jira == nil || got.Jira.URL != "https://from-file.example.com" {
+		t.Errorf("Jira should come from the file, got %+v", got.Jira)
+	}
+	if got.Bitbucket == nil || got.Bitbucket.URL != "https://typed-in.example.com" {
+		t.Errorf("Bitbucket should come from the dialog, got %+v", got.Bitbucket)
 	}
 }

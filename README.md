@@ -548,28 +548,33 @@ For Bitbucket, a source that already appears in the description or comment text 
 by the attachment markup — that works for URLs too, so writing `![the widget](https://…/shot.png)`
 and passing the same URL in `attachments` keeps your caption and swaps in the uploaded file.
 
-**Sandboxed hosts.** Claude Desktop runs extensions in an OS sandbox that blocks arbitrary
-filesystem paths but still allows outbound HTTPS, so local paths generally fail there while URL and
-`data:` sources work. The error for an unreadable path says so. This also applies to chaining with
-another MCP server: a screenshot another server saved to *its* temp directory is not reachable
-from this one under a sandbox, though it is when both run unsandboxed (as in Claude Code).
+**Confined hosts.** A host may run this server sandboxed, in which case a path it was not granted
+comes back as a permission error while URL and `data:` sources keep working — neither needs the
+filesystem. The startup log names the config file it read, or the error it got trying, which is the
+quickest way to tell whether the filesystem is restricted on your setup. The same applies to
+chaining with another MCP server: a screenshot another server wrote to *its* temp directory is only
+reachable here if this process is allowed to read that path.
 
-> Files a user attaches to the chat itself still cannot be uploaded from these arguments: MCP has
-> no mechanism for passing conversation attachments to a server, and the model cannot re-emit image
+> Files a user attaches to the chat itself cannot be uploaded from these arguments: MCP has no
+> mechanism for passing conversation attachments to a server, and the model cannot re-emit image
 > bytes it was shown. Use [`attach_files`](#the-upload-panel-mcp-apps) — the user re-picks or pastes
 > the file into a panel that uploads it directly — or give this server a URL or a readable path.
 
 ### The upload panel (MCP Apps)
 
-`attach_files` opens a file picker **inside the chat**. It exists because neither of the
-other routes works everywhere:
+`attach_files` opens a file picker **inside the chat**. It exists for the file that has no
+path to pass:
 
-- a local path needs this server to share a filesystem with the file, which a sandboxed
-  host (Claude Desktop extensions) does not allow;
-- a file the user drops into the conversation never reaches an MCP server at all — the
-  protocol has no client-to-server file transfer, and the model cannot re-emit bytes it
-  was shown. [SEP-2631](https://github.com/modelcontextprotocol/modelcontextprotocol/issues/2631)
-  would add one; it is still a draft.
+- a screenshot the user pasted or dragged into the conversation is not on disk anywhere
+  this server could look, and MCP has no client-to-server file transfer to carry it — the
+  model cannot re-emit bytes it was shown.
+  [SEP-2631](https://github.com/modelcontextprotocol/modelcontextprotocol/issues/2631)
+  would add one; it is still a draft;
+- and a local path only works if the server is both on the same machine *and* permitted to
+  read it, which a host that confines the server may not allow.
+
+Where a readable path or a URL does exist, the `attachments` arguments remain the better
+route — no user interaction at all.
 
 [MCP Apps](https://github.com/modelcontextprotocol/ext-apps) routes around both. The tool
 declares a `ui://` resource, the host renders it as an iframe, and that iframe is an
@@ -588,14 +593,19 @@ never fills in `files` and never sees the file contents. Files are capped at 12 
 since the bytes ride the JSON-RPC channel as base64 — anything larger should go up by URL.
 
 Support is negotiated: hosts advertise MCP Apps through the `io.modelcontextprotocol/ui`
-extension at `initialize`. Where it is absent — **Claude Code today** — `attach_files`
-returns a plain instruction to use a path or URL instead, and every other tool behaves
-exactly as before.
+extension at `initialize`. Where it is absent — **Claude Code today** — the whole surface is
+hidden rather than merely degraded: `attach_files` is filtered out of `tools/list`, the
+widget is filtered out of `resources/list`, and reading it is refused (a client that fetched
+it anyway would take a few hundred KB of inlined SDK into its context for a page it cannot
+draw). Such a host sees exactly the tools it saw before, and is told to ask for a path or
+URL instead.
 
-The panel is one self-contained HTML document, because the host serves it under
-`default-src 'none'`: no CDN, no second resource, no build step. The MCP Apps browser SDK
-is vendored into `ui/vendor/ext-apps.js` by `scripts/vendor-ext-apps.sh` (re-run it to
-bump the version) and spliced into the page when the resource is read.
+The panel is one self-contained HTML document (`ui/upload.html`, ~19 KB), because the host
+serves it under `default-src 'none'`: no CDN, no second resource, no build step. It carries
+its own ~2 KB MCP Apps bridge rather than the official browser SDK — a view only needs one
+`ui/initialize` round trip, an `initialized` notification, `tool-input` notifications in and
+`tools/call` requests out, and the SDK brings ~400 KB of zod to validate messages this page
+already treats as untrusted. Bundling it with esbuild makes it larger, not smaller.
 
 ### Attachment decoding pipeline
 

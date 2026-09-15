@@ -181,6 +181,19 @@ func (s *sessionState) loadRoots() []rootEntry {
 		}
 	}
 
+	// Log what the client actually advertised, once. GUI hosts differ widely in
+	// whether they expose a workspace at all, and this is the only way to find
+	// out what a given one hands over without attaching a debugger to it.
+	if len(list) == 0 {
+		logf("Client advertised no workspace roots; repo tools need ATLASSIAN_MCP_REPO_ROOT or an explicit repoPath.")
+	} else {
+		paths := make([]string, 0, len(list))
+		for _, e := range list {
+			paths = append(paths, e.path)
+		}
+		logf("Client workspace roots: %s", strings.Join(paths, ", "))
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.rootsDone { // another concurrent caller already resolved

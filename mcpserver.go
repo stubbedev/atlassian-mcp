@@ -63,6 +63,12 @@ func buildServer(instructions string) *mcp.Server {
 			RootsListChangedHandler: handleRootsListChanged, //nolint:staticcheck // SEP-2577 deprecation window; roots stay this server's repo-discovery path until a replacement lands
 		},
 	)
+	// attach_files is a UI tool: on a host that renders no widget it would be a
+	// dead end, so it is filtered out of tools/list per session rather than
+	// merely failing when called. One server serves many sessions over HTTP, so
+	// this cannot be decided at registration time.
+	srv.AddReceivingMiddleware(hideAppOnlyTools)
+
 	for _, raw := range toolList() {
 		var t mcp.Tool
 		if err := json.Unmarshal(raw, &t); err != nil {
@@ -144,6 +150,13 @@ func toolHandler(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResu
 			return errResult("invalid arguments: " + err.Error()), nil
 		}
 	}
+	firstCallMeta.Do(func() {
+		if len(req.Params.Meta) > 0 {
+			logf("First tools/call _meta: %s", compactJSON(map[string]any(req.Params.Meta)))
+		} else {
+			logf("First tools/call carried no _meta — the host sends no per-call conversation identifier.")
+		}
+	})
 	res, err := runTool(sessionFor(req.Session, req.Extra), req.Params.Name, args)
 	if err != nil {
 		var re *rpcError
@@ -177,6 +190,7 @@ func sessionFor(ss *mcp.ServerSession, extra *mcp.RequestExtra) *sessionState {
 		}
 		st = &sessionState{stdio: !httpMode, caps: caps, send: sdkSend(ss)}
 		sessions[id] = st
+		logClientIdentity(ss, id)
 	}
 	sessMu.Unlock()
 
@@ -187,6 +201,112 @@ func sessionFor(ss *mcp.ServerSession, extra *mcp.RequestExtra) *sessionState {
 	}
 	return st
 }
+
+// appOnlyTools are tools that do nothing useful without an MCP Apps host.
+var appOnlyTools = map[string]bool{"attach_files": true}
+
+// hideAppOnlyTools keeps the MCP Apps surface out of sight on hosts that cannot
+// render it: the picker tool is dropped from tools/list, and the widget is
+// dropped from resources/list and refused by resources/read — a client that
+// fetched it anyway would pour a few hundred KB of inlined SDK into its context
+// for a page it can never draw.
+func hideAppOnlyTools(next mcp.MethodHandler) mcp.MethodHandler {
+	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+		switch method {
+		case "tools/list", "resources/list", "resources/read":
+		default:
+			return next(ctx, method, req)
+		}
+		ss, _ := req.GetSession().(*mcp.ServerSession)
+		if ss != nil && sessionFor(ss, nil).appsSupported() {
+			return next(ctx, method, req)
+		}
+		// Refuse the read before it runs, rather than filtering the payload out.
+		if method == "resources/read" {
+			if p, ok := req.GetParams().(*mcp.ReadResourceParams); ok && p != nil && p.URI == uploadWidgetURI {
+				return nil, fmt.Errorf("resource %s is only available to clients that support MCP Apps", uploadWidgetURI)
+			}
+			return next(ctx, method, req)
+		}
+		res, err := next(ctx, method, req)
+		if err != nil {
+			return res, err
+		}
+		// Copy rather than mutate: results may be shared across sessions.
+		switch listed := res.(type) {
+		case *mcp.ListToolsResult:
+			kept := make([]*mcp.Tool, 0, len(listed.Tools))
+			for _, t := range listed.Tools {
+				if t != nil && appOnlyTools[t.Name] {
+					continue
+				}
+				kept = append(kept, t)
+			}
+			out := *listed
+			out.Tools = kept
+			return &out, nil
+		case *mcp.ListResourcesResult:
+			kept := make([]*mcp.Resource, 0, len(listed.Resources))
+			for _, r := range listed.Resources {
+				if r != nil && r.URI == uploadWidgetURI {
+					continue
+				}
+				kept = append(kept, r)
+			}
+			out := *listed
+			out.Resources = kept
+			return &out, nil
+		}
+		return res, err
+	}
+}
+
+// logClientIdentity records, once per session, everything the client told us
+// about itself. Whether a host can say *which conversation* a call came from
+// decides whether a server can reach that conversation's attached files on
+// disk, and no host documents what it sends — so log it and look.
+// See anthropics/claude-code#41836: clientInfo is generic and no conversation
+// id is sent today, which is why the upload panel exists.
+func logClientIdentity(ss *mcp.ServerSession, id string) {
+	name, version, meta := "unknown", "", map[string]any(nil)
+	if ip := ss.InitializeParams(); ip != nil {
+		if ip.ClientInfo != nil {
+			name, version = ip.ClientInfo.Name, ip.ClientInfo.Version
+		}
+		meta = ip.Meta
+	}
+	cwd, _ := os.Getwd()
+	apps := "no (attach_files and the upload panel are hidden)"
+	if ip := ss.InitializeParams(); ip != nil && ip.Capabilities != nil && appsCapability(ip.Capabilities.Extensions) {
+		apps = "yes"
+	}
+	logf("Client: %s %s (mcp session id %q, transport %s, cwd %s)", name, version, id, transportLabel(), cwd)
+	logf("Client MCP Apps support: %s", apps)
+	if len(meta) > 0 {
+		logf("Client initialize _meta: %s", compactJSON(meta))
+	} else {
+		logf("Client initialize _meta: none — no conversation identifier offered.")
+	}
+}
+
+func transportLabel() string {
+	if httpMode {
+		return "http"
+	}
+	return "stdio"
+}
+
+func compactJSON(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprintf("%v", v)
+	}
+	return string(b)
+}
+
+// firstCallMeta reports the per-call _meta once per process. If a host ever
+// does pass a conversation id, this is where it would show up.
+var firstCallMeta sync.Once
 
 // uiExtensionKey is how a host advertises MCP Apps support at initialize
 // (apps spec 2026-01-26, "Client<>Server Capability Negotiation").

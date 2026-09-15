@@ -187,17 +187,92 @@
   </div>
 </div>
 
-<!-- The MCP Apps SDK, vendored (scripts/vendor-ext-apps.sh) and inlined by the
-     resource handler: the host serves this document under `default-src 'none'`,
-     so there is no CDN and no second resource to fetch. -->
-<script>/*@ext-apps@*/</script>
-
 <script>
-  const { App } = globalThis.McpExtApps;
-
+  // Minimal MCP Apps bridge (ext-apps 2026-01-26). The host speaks raw JSON-RPC
+  // 2.0 over postMessage, so this is the whole protocol surface a view needs:
+  // one ui/initialize round trip, an initialized notification, then tool-input
+  // notifications in and tools/call requests out. The official SDK does the
+  // same over its PostMessageTransport, but drags ~400 KB of zod along to
+  // validate messages this page already treats as untrusted.
+  const PROTOCOL_VERSION = "2026-01-26";
   // Bytes ride the JSON-RPC channel as base64, inflating ~4/3 and buffered
   // whole at both ends. Anything bigger belongs on a URL.
   const MAX_FILE_BYTES = 12 * 1024 * 1024;
+
+  const pending = new Map();
+  let nextId = 1;
+  let toolArgs = {};
+  let hostContext = null;
+
+  function post(msg) {
+    window.parent.postMessage(msg, "*");
+  }
+
+  function request(method, params) {
+    const id = nextId++;
+    // Register before posting: postMessage can be delivered synchronously, and
+    // a reply that lands before the entry exists is dropped and the promise
+    // never settles.
+    const settled = new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
+    post({ jsonrpc: "2.0", id, method, params });
+    return settled;
+  }
+
+  window.addEventListener("message", (event) => {
+    // Identify the peer by source, not origin: the host posts with "*", which
+    // is what the reference PostMessageTransport does for a view too.
+    if (event.source !== window.parent) return;
+    const msg = event.data;
+    if (!msg || msg.jsonrpc !== "2.0") return;
+
+    if (msg.id !== undefined && pending.has(msg.id)) {
+      const { resolve, reject } = pending.get(msg.id);
+      pending.delete(msg.id);
+      if (msg.error) reject(new Error(msg.error.message || "request failed"));
+      else resolve(msg.result);
+      return;
+    }
+    switch (msg.method) {
+      case "ui/notifications/tool-input":
+        toolArgs = (msg.params && msg.params.arguments) || {};
+        renderTarget();
+        break;
+      case "ui/notifications/host-context-changed":
+        hostContext = msg.params || null;
+        applyTheme(hostContext && hostContext.theme);
+        break;
+    }
+  });
+
+  // The host sizes the iframe from what the view reports, so a panel that grows
+  // a row per file has to say so or the rows fall outside the visible frame.
+  let lastHeight = 0;
+  function reportSize() {
+    const h = Math.ceil(document.documentElement.getBoundingClientRect().height);
+    if (h && h !== lastHeight) {
+      lastHeight = h;
+      post({ jsonrpc: "2.0", method: "ui/notifications/size-changed", params: { height: h } });
+    }
+  }
+
+  async function connect() {
+    const result = await request("ui/initialize", {
+      protocolVersion: PROTOCOL_VERSION,
+      appCapabilities: {},
+      appInfo: { name: "atlassian-mcp-upload", version: "1" },
+    });
+    post({ jsonrpc: "2.0", method: "ui/notifications/initialized" });
+    hostContext = (result && result.hostContext) || null;
+    applyTheme(hostContext && hostContext.theme);
+    if (typeof ResizeObserver === "function") {
+      new ResizeObserver(reportSize).observe(document.documentElement);
+    }
+    reportSize();
+  }
+
+  function callServerTool(name, args) {
+    return request("tools/call", { name, arguments: args });
+  }
 
   const ICON = {
     file: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/>',
@@ -213,19 +288,6 @@
   }
 
   // ── host bridge ────────────────────────────────────────────────────────
-
-  const app = new App(
-    { name: "atlassian-mcp-upload", version: "1" },
-    {},
-    { autoResize: true }, // the panel grows a row per file; let the SDK resize it
-  );
-  let toolArgs = {};
-
-  app.ontoolinput = (params) => {
-    toolArgs = (params && params.arguments) || {};
-    renderTarget();
-  };
-  app.onhostcontextchanged = (ctx) => applyTheme(ctx && ctx.theme);
 
   function applyTheme(theme) {
     // Fall back to the OS preference only when the host names no theme, and
@@ -391,10 +453,10 @@
       const encoded = [];
       for (const entry of usable) encoded.push(await toDataURI(entry));
       setStatus("Uploading\u2026", "busy");
-      const result = await app.callServerTool({
-        name: "attach_files",
-        arguments: Object.assign({}, toolArgs, { files: encoded }),
-      });
+      const result = await callServerTool(
+        "attach_files",
+        Object.assign({}, toolArgs, { files: encoded }),
+      );
       const text = ((result && result.content) || [])
         .filter((c) => c.type === "text")
         .map((c) => c.text)
@@ -414,11 +476,5 @@
   });
 
   applyTheme(null);
-  app
-    .connect()
-    .then(() => {
-      const ctx = app.getHostContext();
-      applyTheme(ctx && ctx.theme);
-    })
-    .catch((err) => setStatus("Could not reach the host: " + err.message, "error"));
+  connect().catch((err) => setStatus("Could not reach the host: " + err.message, "error"));
 </script>

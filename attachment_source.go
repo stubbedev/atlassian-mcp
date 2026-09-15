@@ -17,11 +17,10 @@ import (
 )
 
 // An attachments entry is a *source*, not necessarily a path on this machine.
-// Local paths only work when the server shares a filesystem with whoever named
-// the file, which is not the case in Claude Desktop: extensions run in an OS
-// sandbox that blocks arbitrary paths but still allows outbound HTTPS. So a URL
-// or a data: URI is the transport that works everywhere, and every upload path
-// resolves its sources through here before touching the multipart writer.
+// A local path only works when the server shares a filesystem with whoever named
+// the file and is allowed to read it — not a given on a host that confines the
+// server. A URL or a data: URI needs neither, so every upload path resolves its
+// sources through here before touching the multipart writer.
 
 const maxRemoteAttachmentBytes = maxVideoSourceBytes
 
@@ -100,10 +99,9 @@ func resolveLocalAttachment(p, ref string) (resolvedAttachment, error) {
 	}
 	info, err := os.Stat(abs)
 	if err != nil {
-		// A sandboxed client (Claude Desktop extensions, and any other host that
-		// confines the server) fails here for every path it did not grant, so
-		// point at the transports that do survive a sandbox.
-		return resolvedAttachment{}, fmt.Errorf("cannot read attachment %s: %w. If this server is sandboxed (e.g. a Claude Desktop extension) it cannot reach arbitrary local paths. %s", p, err, attachmentSourceHint)
+		// A permission error on a path that exists is how a filesystem sandbox
+		// shows up here, so name the alternatives that do not need one.
+		return resolvedAttachment{}, fmt.Errorf("cannot read attachment %s: %w. If this server runs confined (e.g. as a Claude Desktop extension) it may not be allowed to read this path. %s", p, err, attachmentSourceHint)
 	}
 	if info.IsDir() {
 		return resolvedAttachment{}, fmt.Errorf("cannot attach %s: it is a directory.", p)
