@@ -141,7 +141,7 @@
     },
     {
       "name": "jira_mutate",
-      "description": "One write path for Jira: create/update a ticket, transition status, assign, sprint, comment (add/update/delete via commentAction), attach files, link issues, log work, or manage a fix version — several of them in one call. Text fields take Jira wiki markup; markdown is converted for you, so a ``` fence or **bold** still renders correctly. A bold [AI] attribution line is appended to descriptions and comments automatically; never add your own. Be maximally concise: a ticket description is a simple spec (what is wrong or needed, repro steps or acceptance criteria, a fenced code example when code is the point) — no preamble, no filler.",
+      "description": "One write path for Jira: create/update a ticket, transition status, assign, sprint, comment (add/update/delete via commentAction), attach files, link issues, log work, delete an issue outright, or manage a fix version — several of them in one call. Text fields take Jira wiki markup; markdown is converted for you, so a ``` fence or **bold** still renders correctly. A bold [AI] attribution line is appended to descriptions and comments automatically; never add your own. Be maximally concise: a ticket description is a simple spec (what is wrong or needed, repro steps or acceptance criteria, a fenced code example when code is the point) — no preamble, no filler.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -232,6 +232,8 @@
               }
             }
           },
+          "delete": { "type": "boolean", "description": "Permanently delete the issue named by issueKey, together with its comments, attachments, worklogs and links. There is no undo and no other argument may be combined with it. This is for an issue that should never have existed — a ticket that is simply not wanted gets closed with transitionName instead. Ask the user first unless they asked for the deletion." },
+          "deleteSubtasks": { "type": "boolean", "description": "With delete: delete the issue's sub-tasks along with it. Jira refuses to delete a parent without this." },
           "sprintId": { "type": "number", "description": "Sprint ID to add the issue into (optional)" },
           "removeFromSprint": { "type": "boolean", "description": "Move the issue to the backlog (remove from any sprint)" },
           "transitionId": { "type": "string", "description": "Transition ID (optional if transitionName provided)" },
@@ -248,7 +250,7 @@
             "type": "object",
             "description": "Create an issue link, e.g. \"FOO-123 blocks BAR-456\"",
             "properties": {
-              "linkType": { "type": "string", "description": "Link type name, e.g. \"Blocks\", \"Relates to\", \"Duplicates\"" },
+              "linkType": { "type": "string", "description": "Link type as this Jira instance names it, e.g. \"Blocks\", \"Relates\", \"Duplicate\". The relationship phrase works too: \"relates to\", \"is blocked by\" — an inward phrase also points the link the other way. A name this instance does not have is rejected with the list of the ones it does, so retry from the error." },
               "targetIssueKey": { "type": "string", "description": "The other issue in the relationship" },
               "direction": { "type": "string", "enum": ["outward", "inward"], "description": "outward (default): issueKey → target; inward: target → issueKey" }
             },

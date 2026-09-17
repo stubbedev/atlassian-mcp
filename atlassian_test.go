@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1407,5 +1408,205 @@ func TestFilledExtensionFieldOverridesConfigFile(t *testing.T) {
 	}
 	if got.Bitbucket == nil || got.Bitbucket.URL != "https://typed-in.example.com" {
 		t.Errorf("Bitbucket should come from the dialog, got %+v", got.Bitbucket)
+	}
+}
+
+// jiraStub serves a Jira whose link types are the real ones from a Server
+// instance ("Relates", not "Relates to") and records every request path.
+func jiraStub(t *testing.T, handler func(w http.ResponseWriter, r *http.Request) bool) (*JiraClient, *[]string) {
+	t.Helper()
+	var calls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method+" "+r.URL.RequestURI())
+		if handler != nil && handler(w, r) {
+			return
+		}
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/issueLinkType"):
+			_, _ = w.Write([]byte(`{"issueLinkTypes":[
+				{"name":"Blocks","inward":"is blocked by","outward":"blocks"},
+				{"name":"Relates","inward":"relates to","outward":"relates to"}]}`))
+		case strings.HasSuffix(r.URL.Path, "/configuration"):
+			_, _ = w.Write([]byte(`{"issueLinkingEnabled":true}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"errorMessages":["Issue Does Not Exist"],"errors":{}}`))
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return NewJiraClient(srv.URL, "t"), &calls
+}
+
+func TestResolveLinkType(t *testing.T) {
+	c, _ := jiraStub(t, nil)
+	for _, tc := range []struct {
+		in       string
+		want     string
+		reversed bool
+	}{
+		{"Relates", "Relates", false},
+		{"relates to", "Relates", false}, // the phrase Jira shows, not the type name
+		{"BLOCKS", "Blocks", false},
+		{"blocks", "Blocks", false},
+		{"is blocked by", "Blocks", true}, // inward phrase reverses the link
+	} {
+		got, reversed, err := c.resolveLinkType(tc.in)
+		if err != nil || got != tc.want || reversed != tc.reversed {
+			t.Errorf("resolveLinkType(%q) = %q, %v, %v; want %q, %v", tc.in, got, reversed, err, tc.want, tc.reversed)
+		}
+	}
+	// An unknown name must be rejected here: Jira answers POST /issueLink with a
+	// bare 404 that reads as a missing issue.
+	_, _, err := c.resolveLinkType("Depends on")
+	if err == nil || !strings.Contains(err.Error(), "Blocks") || !strings.Contains(err.Error(), "Relates") {
+		t.Errorf("unknown link type should list the real ones, got %v", err)
+	}
+	// A lookup that cannot run leaves the decision to Jira.
+	blind := NewJiraClient("https://jira.example", "t")
+	blind.linkTypesCached = true
+	if got, _, err := blind.resolveLinkType("Whatever"); err != nil || got != "Whatever" {
+		t.Errorf("unknown link types should pass through, got %q, %v", got, err)
+	}
+}
+
+// TestCreatedIssueSurvivesLaterFailure pins the bug that produced a duplicate
+// ticket: create succeeded, the link step failed, and the error mentioned
+// neither the key nor the URL, so the issue looked like it had never been made.
+func TestCreatedIssueSurvivesLaterFailure(t *testing.T) {
+	c, calls := jiraStub(t, func(w http.ResponseWriter, r *http.Request) bool {
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/issue"):
+			_, _ = w.Write([]byte(`{"key":"KON-13542"}`))
+			return true
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/issueLink"):
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"errorMessages":["Issue Does Not Exist"],"errors":{}}`))
+			return true
+		}
+		return false
+	})
+	_, err := c.mutateIssue(map[string]any{
+		"create": map[string]any{"projectKey": "KON", "issueType": "Bug", "summary": "x"},
+		"link":   map[string]any{"linkType": "Relates", "targetIssueKey": "KON-13486"},
+	}, "")
+	if err == nil {
+		t.Fatal("a failed link step must still be an error")
+	}
+	for _, want := range []string{"KON-13542", "created issue", "/browse/KON-13542", "instead of creating it again"} {
+		if !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(want)) {
+			t.Errorf("error should carry %q so the caller does not re-create the issue: %s", want, err)
+		}
+	}
+	_ = calls
+}
+
+// A failure before anything was written stays a plain error — there is no key
+// to carry and no risk of a duplicate.
+func TestFailureBeforeAnyWriteStaysPlain(t *testing.T) {
+	c, _ := jiraStub(t, func(w http.ResponseWriter, r *http.Request) bool {
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/issueLink") {
+			w.WriteHeader(http.StatusNotFound)
+			return true
+		}
+		return false
+	})
+	_, err := c.mutateIssue(map[string]any{
+		"issueKey": "KON-1",
+		"link":     map[string]any{"linkType": "Relates", "targetIssueKey": "KON-2"},
+	}, "")
+	if err == nil || strings.Contains(err.Error(), "retry only the failed step") {
+		t.Errorf("nothing was written, so the error should be the bare Jira one: %v", err)
+	}
+}
+
+func TestLinkDirectionFollowsThePhrase(t *testing.T) {
+	var posted map[string]any
+	c, _ := jiraStub(t, func(w http.ResponseWriter, r *http.Request) bool {
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/issueLink") {
+			_ = json.NewDecoder(r.Body).Decode(&posted)
+			w.WriteHeader(http.StatusCreated)
+			return true
+		}
+		return false
+	})
+	if _, err := c.mutateIssue(map[string]any{
+		"issueKey": "KON-1",
+		"link":     map[string]any{"linkType": "is blocked by", "targetIssueKey": "KON-2"},
+	}, ""); err != nil {
+		t.Fatal(err)
+	}
+	name, _ := posted["type"].(map[string]any)["name"].(string)
+	outward, _ := posted["outwardIssue"].(map[string]any)["key"].(string)
+	inward, _ := posted["inwardIssue"].(map[string]any)["key"].(string)
+	if name != "Blocks" || outward != "KON-2" || inward != "KON-1" {
+		t.Errorf(`"KON-1 is blocked by KON-2" should post Blocks KON-2 → KON-1, got %s %s → %s`, name, outward, inward)
+	}
+}
+
+func TestDeleteIssue(t *testing.T) {
+	c, calls := jiraStub(t, func(w http.ResponseWriter, r *http.Request) bool {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/issue/KON-9"):
+			_, _ = w.Write([]byte(`{"key":"KON-9","fields":{"summary":"Created in error","issuetype":{"name":"Soft Bug"},"status":{"name":"Open"}}}`))
+			return true
+		case r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusNoContent)
+			return true
+		}
+		return false
+	})
+	res, err := c.mutateIssue(map[string]any{"issueKey": "KON-9", "delete": true}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := res.Content[0].Text
+	if !strings.Contains(text, "Deleted KON-9") || !strings.Contains(text, "Created in error") {
+		t.Errorf("the result should name what was destroyed, got %q", text)
+	}
+	if !strings.Contains(strings.Join(*calls, " "), "DELETE /rest/api/2/issue/KON-9") {
+		t.Errorf("expected a DELETE for the issue, got %v", *calls)
+	}
+	// deleteSubtasks reaches Jira as the query parameter it needs.
+	if _, err := c.mutateIssue(map[string]any{"issueKey": "KON-9", "delete": true, "deleteSubtasks": true}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(*calls, " "), "/issue/KON-9?deleteSubtasks=true") {
+		t.Errorf("deleteSubtasks should be sent to Jira, got %v", *calls)
+	}
+}
+
+func TestDeleteRefusesToShareACall(t *testing.T) {
+	c, _ := jiraStub(t, nil)
+	for _, extra := range []map[string]any{
+		{"create": map[string]any{"issueType": "Bug", "summary": "x"}},
+		{"comment": "bye"},
+		{"transitionName": "Close Ticket"},
+	} {
+		args := map[string]any{"issueKey": "KON-9", "delete": true}
+		maps.Copy(args, extra)
+		if _, err := c.mutateIssue(args, ""); err == nil || !strings.Contains(err.Error(), "cannot be combined") {
+			t.Errorf("delete alongside %v should be refused, got %v", extra, err)
+		}
+	}
+}
+
+// Jira refuses to delete a parent unless the sub-tasks go too; the caller should
+// be told the argument that fixes it rather than the raw Jira prose.
+func TestDeleteParentSuggestsDeleteSubtasks(t *testing.T) {
+	c, _ := jiraStub(t, func(w http.ResponseWriter, r *http.Request) bool {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/issue/KON-9"):
+			_, _ = w.Write([]byte(`{"key":"KON-9","fields":{"summary":"Parent","issuetype":{"name":"Story"},"status":{"name":"Open"}}}`))
+			return true
+		case r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"errorMessages":["The issue 'KON-9' has subtasks and subtasks must be deleted before the issue can be deleted."],"errors":{}}`))
+			return true
+		}
+		return false
+	})
+	_, err := c.mutateIssue(map[string]any{"issueKey": "KON-9", "delete": true}, "")
+	if err == nil || !strings.Contains(err.Error(), "deleteSubtasks: true") {
+		t.Errorf("expected the sub-task hint, got %v", err)
 	}
 }

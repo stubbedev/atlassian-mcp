@@ -28,7 +28,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 |---|---|
 | `jira_search` | Discover resources: `issues`, `projects`, `issue_types`, `boards`, `sprints`, `board_overview`, `versions`, `components`, `fields`, or `users` via `resource` param |
 | `jira_get` | Full details for one issue: summary, description, status, sprint, transitions, comments, and attachment list |
-| `jira_mutate` | Create, update, transition, comment (`commentAction`: `add` / `update` / `delete`), upload attachments from a local path, URL, or `data:` URI, link, add to sprint, log work, change issue type, set any custom field by name (`create.customFields` / `update.customFields`), or manage a fix version (`version.action`: `create` / `update` / `release` / `archive` / `delete`) — several in one call. Markdown in any text field is converted to Jira wiki markup |
+| `jira_mutate` | Create, update, transition, comment (`commentAction`: `add` / `update` / `delete`), upload attachments from a local path, URL, or `data:` URI, link, add to sprint, log work, change issue type, set any custom field by name (`create.customFields` / `update.customFields`), delete an issue (`delete=true`), or manage a fix version (`version.action`: `create` / `update` / `release` / `archive` / `delete`) — several in one call. Markdown in any text field is converted to Jira wiki markup |
 
 ### Bitbucket
 
@@ -77,6 +77,8 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 - "set fix version 9.1.0 on FOO-123" → `jira_mutate` with `update.fixVersion=9.1.0`
 - "create a task under epic FOO-100" → `jira_mutate` with `create.issueType=Task`, `create.parent=FOO-100` (auto-detects Epic and sets Epic Link)
 - "move FOO-123 under epic FOO-100" → `jira_mutate` with `update.epicLink=FOO-100`
+- "delete FOO-123" → `jira_mutate` with `delete=true` (irreversible; add `deleteSubtasks=true` for a parent). Closing the ticket is usually what is wanted instead
+- "FOO-123 relates to FOO-100" → `jira_mutate` with `link={linkType: "Relates", targetIssueKey: "FOO-100"}` — the phrase ("is blocked by") works too and sets the direction
 - "create an epic" → `jira_mutate` with `create.issueType=Epic` (Epic Name defaults to the summary)
 - "set story points to 5" → `jira_mutate` with `update.customFields={"Story Points": 5}` — values are plain (option label, username, date, array of labels); the server wraps them per the field schema
 - "what can I set on this ticket / on an Epic?" → `jira_search resource=fields` with `issueKey=FOO-123` (edit screen) or `project=FOO`+`issueType=Epic` (create screen): required and optional fields, value shapes, allowed values

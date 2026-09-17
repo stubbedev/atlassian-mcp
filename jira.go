@@ -410,6 +410,8 @@ type JiraClient struct {
 	projectsCached     bool
 	issueLinking       bool
 	issueLinkingCached bool
+	linkTypes          []jiraIssueLinkType
+	linkTypesCached    bool
 	fields             []jiraField
 	fieldsCached       bool
 	issueTypeCache     map[string]string
@@ -532,6 +534,70 @@ func (c *JiraClient) getIssueLinkingEnabled() (bool, error) {
 	c.issueLinking = cfg != nil && cfg.IssueLinkingEnabled
 	c.issueLinkingCached = true
 	return c.issueLinking, nil
+}
+
+// jiraIssueLinkType is one entry of /issueLinkType: the type name plus the two
+// phrases Jira shows on the issues at either end of the link.
+type jiraIssueLinkType struct {
+	Name    string `json:"name"`
+	Inward  string `json:"inward"`
+	Outward string `json:"outward"`
+}
+
+// issueLinkTypes returns /issueLinkType once per process, cached. A lookup that
+// cannot run yields nil, which resolveLinkType treats as "cannot tell".
+func (c *JiraClient) issueLinkTypes() []jiraIssueLinkType {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.linkTypesCached {
+		return c.linkTypes
+	}
+	data, err := jiraGet[struct {
+		IssueLinkTypes []jiraIssueLinkType `json:"issueLinkTypes"`
+	}](c, "/rest/api/2", "GET", "/issueLinkType", nil)
+	c.linkTypesCached = true
+	if err != nil {
+		logf("issue link type lookup failed, sending the name as given: %v", err)
+		return nil
+	}
+	if data != nil {
+		c.linkTypes = data.IssueLinkTypes
+	}
+	return c.linkTypes
+}
+
+// resolveLinkType maps whatever the caller called the relationship onto a type
+// this instance actually has. It matters because Jira answers POST /issueLink
+// with a bare 404 "Resource not found" when the type name is wrong, which reads
+// as a missing issue: "Relates to" is the phrase, the type is called "Relates".
+// Matching the inward phrase also reverses the link — "is blocked by" is the
+// Blocks type pointing the other way.
+func (c *JiraClient) resolveLinkType(name string) (canonical string, reversed bool, err error) {
+	name = strings.TrimSpace(name)
+	types := c.issueLinkTypes()
+	if name == "" || len(types) == 0 {
+		return name, false, nil
+	}
+	for _, t := range types {
+		if strings.EqualFold(t.Name, name) {
+			return t.Name, false, nil
+		}
+	}
+	for _, t := range types {
+		if strings.EqualFold(t.Outward, name) {
+			return t.Name, false, nil
+		}
+	}
+	for _, t := range types {
+		if strings.EqualFold(t.Inward, name) {
+			return t.Name, true, nil
+		}
+	}
+	available := make([]string, 0, len(types))
+	for _, t := range types {
+		available = append(available, fmt.Sprintf("%s (%s / %s)", t.Name, t.Outward, t.Inward))
+	}
+	return "", false, fmt.Errorf("Link type %q does not exist in this Jira. Available: %s.", name, strings.Join(available, ", "))
 }
 
 // fieldList returns /field once per process, cached.
@@ -2005,7 +2071,34 @@ func (c *JiraClient) boardOverview(args map[string]any) (toolResult, error) {
 	return textResult(strings.TrimRight(strings.Join(lines, "\n"), "\n \t")), nil
 }
 
-// mutateIssue handles jira_mutate: create/update/sprint/transition/comment/link/worklog.
+// deleteIssue removes an issue for good. Jira takes its comments, attachments,
+// worklogs and links with it and there is no undo, so the issue is read first:
+// the result then says what was destroyed rather than just echoing a key.
+func (c *JiraClient) deleteIssue(issueKey string, deleteSubtasks bool) (toolResult, error) {
+	summary, _, issueType, err := c.getIssueFields(issueKey)
+	if err != nil {
+		return toolResult{}, err
+	}
+	path := "/issue/" + url.PathEscape(issueKey)
+	if deleteSubtasks {
+		path += "?deleteSubtasks=true"
+	}
+	if _, err := c.api("DELETE", path, nil); err != nil {
+		// Jira refuses to delete a parent unless the sub-tasks go too, and says
+		// so in prose the caller should not have to parse.
+		if strings.Contains(strings.ToLower(err.Error()), "subtask") {
+			return toolResult{}, fmt.Errorf("%w Pass deleteSubtasks: true to delete %s together with its sub-tasks.", err, issueKey)
+		}
+		return toolResult{}, err
+	}
+	label := strings.TrimSpace(issueType + " " + summary)
+	if label != "" {
+		label = " (" + label + ")"
+	}
+	return textResult(fmt.Sprintf("Deleted %s%s. This cannot be undone.", issueKey, label)), nil
+}
+
+// mutateIssue handles jira_mutate: create/update/delete/sprint/transition/comment/link/worklog.
 func (c *JiraClient) mutateIssue(args map[string]any, repoRoot string) (toolResult, error) {
 	issueKey := strings.TrimSpace(argString(args, "issueKey"))
 	var actions []string
@@ -2016,7 +2109,7 @@ func (c *JiraClient) mutateIssue(args map[string]any, repoRoot string) (toolResu
 	if version := argMap(args, "version"); version != nil {
 		// Version work and issue work in one call would mean half the arguments
 		// silently doing nothing, so they are kept apart.
-		for _, k := range []string{"create", "update", "sprintId", "removeFromSprint", "transitionId", "transitionName", "comment", "commentAction", "commentId", "attachments", "link", "worklog"} {
+		for _, k := range []string{"create", "update", "delete", "sprintId", "removeFromSprint", "transitionId", "transitionName", "comment", "commentAction", "commentId", "attachments", "link", "worklog"} {
 			if has(args, k) {
 				return toolResult{}, fmt.Errorf("version cannot be combined with %s — call jira_mutate twice: once for the version, once for the issue.", k)
 			}
@@ -2029,6 +2122,20 @@ func (c *JiraClient) mutateIssue(args map[string]any, repoRoot string) (toolResu
 			}
 		}
 		return c.mutateVersion(version, repoRoot)
+	}
+
+	// Deletion is decided before anything is written: combined with create it
+	// would otherwise make the issue and then refuse the call.
+	if argBool(args, "delete") {
+		for _, k := range []string{"create", "update", "sprintId", "removeFromSprint", "transitionId", "transitionName", "comment", "commentAction", "commentId", "attachments", "link", "worklog"} {
+			if has(args, k) {
+				return toolResult{}, fmt.Errorf("delete cannot be combined with %s — the issue is gone, so the rest of the call would have nothing to act on.", k)
+			}
+		}
+		if issueKey == "" {
+			return toolResult{}, errors.New("delete needs the issueKey of the issue to remove.")
+		}
+		return c.deleteIssue(issueKey, argBool(args, "deleteSubtasks"))
 	}
 
 	if create := argMap(args, "create"); create != nil {
@@ -2047,10 +2154,22 @@ func (c *JiraClient) mutateIssue(args map[string]any, repoRoot string) (toolResu
 		return toolResult{}, errors.New("Provide issueKey, or provide create with issueType and summary.")
 	}
 
+	// Every step below runs against an issue that may have just been created.
+	// Returning a bare error there loses the key, and the caller — seeing only a
+	// failure — creates the issue a second time. fail keeps the key, the URL and
+	// what already went through in the error, so only the failed step is retried.
+	fail := func(step string, err error) error {
+		if len(actions) == 0 {
+			return err
+		}
+		return fmt.Errorf("%s: %s. Then %s failed: %w\n%s\nThe issue exists — retry only the failed step against %s instead of creating it again.",
+			issueKey, strings.Join(actions, ", "), step, err, c.issueURL(issueKey), issueKey)
+	}
+
 	if update := argMap(args, "update"); update != nil {
 		updated, err := c.updateIssueFieldsInternal(issueKey, update)
 		if err != nil {
-			return toolResult{}, err
+			return toolResult{}, fail("the field update", err)
 		}
 		if updated {
 			actions = append(actions, "updated fields")
@@ -2060,14 +2179,14 @@ func (c *JiraClient) mutateIssue(args map[string]any, repoRoot string) (toolResu
 	if has(args, "sprintId") {
 		sprintID := argInt(args, "sprintId")
 		if err := c.addIssuesToSprintInternal(sprintID, []string{issueKey}); err != nil {
-			return toolResult{}, err
+			return toolResult{}, fail(fmt.Sprintf("adding it to sprint %d", sprintID), err)
 		}
 		actions = append(actions, fmt.Sprintf("added to sprint %d", sprintID))
 	}
 
 	if argBool(args, "removeFromSprint") {
 		if _, err := c.agile("POST", "/backlog/issue", map[string]any{"issues": []string{issueKey}}); err != nil {
-			return toolResult{}, err
+			return toolResult{}, fail("the move to the backlog", err)
 		}
 		actions = append(actions, "moved to backlog")
 	}
@@ -2075,10 +2194,10 @@ func (c *JiraClient) mutateIssue(args map[string]any, repoRoot string) (toolResu
 	if argString(args, "transitionId") != "" || argString(args, "transitionName") != "" {
 		transitionID, err := c.resolveTransitionID(issueKey, argString(args, "transitionId"), argString(args, "transitionName"))
 		if err != nil {
-			return toolResult{}, err
+			return toolResult{}, fail("the transition", err)
 		}
 		if _, err := c.api("POST", "/issue/"+url.PathEscape(issueKey)+"/transitions", map[string]any{"transition": map[string]any{"id": transitionID}}); err != nil {
-			return toolResult{}, err
+			return toolResult{}, fail("the transition", err)
 		}
 		actions = append(actions, "transitioned via "+transitionID)
 	}
@@ -2095,7 +2214,7 @@ func (c *JiraClient) mutateIssue(args map[string]any, repoRoot string) (toolResu
 			"body":      argString(args, "comment"),
 		})
 		if err != nil {
-			return toolResult{}, err
+			return toolResult{}, fail("the comment", err)
 		}
 		if len(res.Content) > 0 && res.Content[0].Text != "" {
 			extras = append(extras, res.Content[0].Text)
@@ -2106,7 +2225,7 @@ func (c *JiraClient) mutateIssue(args map[string]any, repoRoot string) (toolResu
 	if paths := argStrSlice(args, "attachments"); len(paths) > 0 {
 		names, err := c.uploadAttachments(issueKey, paths)
 		if err != nil {
-			return toolResult{}, err
+			return toolResult{}, fail("the attachment upload", err)
 		}
 		actions = append(actions, "attached "+strings.Join(names, ", "))
 	}
@@ -2115,14 +2234,22 @@ func (c *JiraClient) mutateIssue(args map[string]any, repoRoot string) (toolResu
 	if link := argMap(args, "link"); link != nil {
 		enabled, err := c.getIssueLinkingEnabled()
 		if err != nil {
-			return toolResult{}, err
+			return toolResult{}, fail("the issue link", err)
 		}
 		if !enabled {
 			warnings = append(warnings, "issue linking is disabled in this Jira instance — add the link manually")
 		} else {
+			linkType, reversed, err := c.resolveLinkType(argString(link, "linkType"))
+			if err != nil {
+				return toolResult{}, fail("the issue link", err)
+			}
 			dir := argString(link, "direction")
 			if dir == "" {
+				// An explicit direction wins; otherwise the inward phrase sets it.
 				dir = "outward"
+				if reversed {
+					dir = "inward"
+				}
 			}
 			target := argString(link, "targetIssueKey")
 			outward, inward := issueKey, target
@@ -2130,13 +2257,13 @@ func (c *JiraClient) mutateIssue(args map[string]any, repoRoot string) (toolResu
 				outward, inward = target, issueKey
 			}
 			if _, err := c.api("POST", "/issueLink", map[string]any{
-				"type":         map[string]any{"name": argString(link, "linkType")},
+				"type":         map[string]any{"name": linkType},
 				"outwardIssue": map[string]any{"key": outward},
 				"inwardIssue":  map[string]any{"key": inward},
 			}); err != nil {
-				return toolResult{}, err
+				return toolResult{}, fail("the issue link", err)
 			}
-			actions = append(actions, fmt.Sprintf("linked %s → %s", argString(link, "linkType"), target))
+			actions = append(actions, fmt.Sprintf("linked %s → %s", linkType, target))
 		}
 	}
 
@@ -2150,7 +2277,7 @@ func (c *JiraClient) mutateIssue(args map[string]any, repoRoot string) (toolResu
 			wBody["started"] = started
 		}
 		if _, err := c.api("POST", "/issue/"+url.PathEscape(issueKey)+"/worklog", wBody); err != nil {
-			return toolResult{}, err
+			return toolResult{}, fail("the worklog", err)
 		}
 		actions = append(actions, "logged "+argString(worklog, "timeSpent"))
 	}
