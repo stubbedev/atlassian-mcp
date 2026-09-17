@@ -18,18 +18,29 @@ import (
 
 // Bitbucket Server stores attachments per repository, not per PR: a file is
 // uploaded once to the repo and then referenced from a description or comment
-// as ![name](attachment:<id>). Only that markup makes it visible, so every
+// as ![name](attachment:<repoId>/<id>). Only that markup makes it visible, so every
 // upload here also gets spliced into the text it belongs to.
 
 type bbUploadedAttachment struct {
-	ID   json.Number `json:"id"`
-	URL  string      `json:"url"`
-	Name string      `json:"name"`
-	ref  string      // the source as the caller spelled it, for markup splicing
+	ID    json.Number `json:"id"`
+	URL   string      `json:"url"`
+	Name  string      `json:"name"`
+	Links struct {
+		Attachment struct {
+			Href string `json:"href"`
+		} `json:"attachment"`
+	} `json:"links"`
+	ref string // the source as the caller spelled it, for markup splicing
 }
 
-// link is what goes in the markdown link target.
+// link is what goes in the markdown link target. Bitbucket's own markup is
+// attachment:<repoId>/<id>, handed back as links.attachment.href — the bare
+// attachment:<id> the id alone would spell renders to an empty src, so the
+// href is preferred and the absolute URL is the only fallback worth writing.
 func (a bbUploadedAttachment) link() string {
+	if h := a.Links.Attachment.Href; h != "" {
+		return h
+	}
 	if a.URL != "" {
 		return a.URL
 	}
@@ -87,10 +98,13 @@ func (c *BitbucketClient) uploadAttachment(projectKey, repoSlug string, src reso
 		return bbUploadedAttachment{}, err
 	}
 
+	// Uploads go to the web endpoint, not the REST one: /rest/api/1.0/.../
+	// attachments only serves and deletes a single attachment by id, and answers
+	// a POST to the collection with 405. Downloads still use REST (getAttachment).
 	apiPath := c.rp(projectKey, repoSlug) + "/attachments"
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/rest/api/1.0"+apiPath, &buf)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+apiPath, &buf)
 	if err != nil {
 		return bbUploadedAttachment{}, err
 	}

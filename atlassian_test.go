@@ -1610,3 +1610,21 @@ func TestDeleteParentSuggestsDeleteSubtasks(t *testing.T) {
 		t.Errorf("expected the sub-task hint, got %v", err)
 	}
 }
+
+// Bitbucket 8.x answers the upload with links.attachment.href, the only spelling
+// its markup renderer resolves — attachment:<id> built from the bare id renders
+// to an empty src, so the href has to win over both fallbacks.
+func TestParseUploadedAttachmentPrefersAttachmentHref(t *testing.T) {
+	raw := []byte(`{"attachments":[{"id":"826","url":"https://git.example.com/projects/P/repos/r/attachments/826","links":{"attachment":{"href":"attachment:1324/826"}}}]}`)
+	a, err := parseUploadedAttachment(raw, resolvedAttachment{name: "clip.mp4"})
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if a.link() != "attachment:1324/826" {
+		t.Errorf("link = %q, want attachment:1324/826", a.link())
+	}
+	// The upload response carries no name, and a video is a link, not an image.
+	if got, want := a.markup(), "[clip.mp4](attachment:1324/826)"; got != want {
+		t.Errorf("markup = %q, want %q", got, want)
+	}
+}
