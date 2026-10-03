@@ -55,7 +55,7 @@ func (c *BitbucketClient) createPullRequest(projectKey, repoSlug, repoRoot, titl
 	}
 	sourceBranch := fromBranch
 	if sourceBranch == "" && repoRoot != "" {
-		sourceBranch = safeGit(repoRoot, "", "rev-parse", "--abbrev-ref", "HEAD")
+		sourceBranch = gitCurrentBranch(repoRoot)
 	}
 	if sourceBranch == "" || sourceBranch == "HEAD" {
 		return toolResult{}, errors.New("Could not determine source branch. Provide create.fromBranch or pass repoPath / connect a client with workspace roots.")
@@ -252,7 +252,7 @@ func (c *BitbucketClient) mutatePullRequest(args map[string]any, repoRoot string
 		sourceBranch = argString(create, "fromBranch")
 	}
 	if sourceBranch == "" && repoRoot != "" {
-		sourceBranch = safeGit(repoRoot, "", "rev-parse", "--abbrev-ref", "HEAD")
+		sourceBranch = gitCurrentBranch(repoRoot)
 	}
 	if sourceBranch == "" || sourceBranch == "HEAD" {
 		if create != nil {

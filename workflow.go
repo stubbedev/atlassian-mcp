@@ -189,7 +189,7 @@ func startWork(session *sessionState, args map[string]any, repoRoot string) (too
 	}
 
 	if bitbucket != nil {
-		remoteURL := safeGit(repoPath, "", "remote", "get-url", "origin")
+		remoteURL := gitOriginURL(repoPath)
 		if parsed := parseBitbucketRemote(remoteURL); parsed != nil {
 			if readme := bitbucket.fetchFileText(parsed.projectKey, parsed.repoSlug, "README.md"); readme != "" {
 				const maxLen = 4000
@@ -230,11 +230,11 @@ func completeWork(args map[string]any, repoRoot string) (toolResult, error) {
 		if repoPath == "" {
 			return toolResult{}, errors.New("No repo resolved. Provide prId, or pass repoPath / connect a client that provides workspace roots.")
 		}
-		branch := safeGit(repoPath, "", "rev-parse", "--abbrev-ref", "HEAD")
+		branch := gitCurrentBranch(repoPath)
 		if branch == "" || branch == "HEAD" {
 			return toolResult{}, errors.New("Could not determine current branch. Provide prId or run from a checked-out branch.")
 		}
-		remote := safeGit(repoPath, "", "remote", "get-url", "origin")
+		remote := gitOriginURL(repoPath)
 		parsed := parseBitbucketRemote(remote)
 		if parsed == nil {
 			return toolResult{}, errors.New("Could not parse Bitbucket remote URL. Provide projectKey/repoSlug explicitly.")

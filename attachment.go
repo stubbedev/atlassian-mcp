@@ -2,15 +2,14 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"image"
+	"image/color"
 	"image/gif"
 	"image/png"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -20,6 +19,12 @@ import (
 	"time"
 
 	"github.com/disintegration/imaging"
+	_ "github.com/gen2brain/avif"   // AVIF, via libavif compiled to WebAssembly
+	_ "github.com/gen2brain/heic"   // HEIC/HEIF (iPhone photos), via libheif in WebAssembly
+	_ "github.com/gen2brain/jpegxl" // JPEG XL, via libjxl in WebAssembly
+	"github.com/klippa-app/go-pdfium"
+	"github.com/klippa-app/go-pdfium/requests"
+	"github.com/klippa-app/go-pdfium/webassembly"
 	"github.com/ledongthuc/pdf"
 	_ "golang.org/x/image/bmp"
 	_ "golang.org/x/image/tiff"
@@ -273,15 +278,6 @@ func buildAttachmentResult(a attachmentArgs) (toolResult, error) {
 		quality := intOr(a.quality, defaultJpegQuality)
 		data, outMime, resized, err := processImage(a.buffer, a.mimeType, maxDim, quality)
 		if err != nil {
-			// Pure-Go decoders don't handle AVIF/HEIC/JPEG-XL; fall back to a
-			// one-shot ffmpeg still-decode (matches what sharp could decode).
-			if raw, ferr := decodeStillViaFFmpeg(a.buffer); ferr == nil {
-				if d2, m2, r2, e2 := processImage(raw, "image/png", maxDim, quality); e2 == nil {
-					data, outMime, resized, err = d2, m2, r2, nil
-				}
-			}
-		}
-		if err != nil {
 			return textResult(fmt.Sprintf("%s\nFailed to process image: %s. Pass saveTo to write the original to disk.", header, err.Error())), nil
 		}
 		note := ""
@@ -372,14 +368,17 @@ func buildVideoResult(a attachmentArgs, header, sourceLabel string) toolResult {
 	}
 	dedupNote := ""
 	if result.dedupApplied {
-		dedupNote = " (mpdecimate enabled)"
+		dedupNote = " (near-duplicate frames dropped)"
 	}
-	summary := strings.Join([]string{
+	summaryLines := []string{
 		fmt.Sprintf("Attachment #%s: %s", a.id, header),
 		fmt.Sprintf("Duration: %.1fs, %d×%d @ %.1ffps, codec %s", m.duration, m.width, m.height, m.fps, m.codec),
 		fmt.Sprintf("Sampled %d frame(s) via %s mode from %.1fs–%.1fs at %dpx / q%d%s%s.", len(result.frames), result.mode, result.effectiveStart, result.effectiveEnd, maxDim, quality, dedupNote, tsNote),
-		"Re-call with start=<sec> end=<sec> frames=<n> or mode=scenes to refine.",
-	}, "\n")
+	}
+	if result.note != "" {
+		summaryLines = append(summaryLines, result.note)
+	}
+	summary := strings.Join(append(summaryLines, "Re-call with start=<sec> end=<sec> frames=<n> or mode=scenes to refine."), "\n")
 
 	content := []contentBlock{{Type: "text", Text: summary}}
 	for i, f := range result.frames {
@@ -400,10 +399,18 @@ func reencodeFrame(frame []byte, maxDim, quality int) []byte {
 	if err != nil {
 		return frame
 	}
+	if out := encodeFittedJPEG(img, maxDim, quality); out != nil {
+		return out
+	}
+	return frame
+}
+
+// encodeFittedJPEG shrinks img to fit maxDim and encodes it as JPEG; nil on failure.
+func encodeFittedJPEG(img image.Image, maxDim, quality int) []byte {
 	out := imaging.Fit(img, maxDim, maxDim, imaging.Lanczos)
 	var buf bytes.Buffer
 	if imaging.Encode(&buf, out, imaging.JPEG, imaging.JPEGQuality(quality)) != nil {
-		return frame
+		return nil
 	}
 	return buf.Bytes()
 }
@@ -459,15 +466,15 @@ func buildPDFResult(a attachmentArgs, header string) toolResult {
 		images, rerr := rasterizePDF(a.buffer, pageCount, maxDim)
 		if rerr != nil || len(images) == 0 {
 			path, _ := autoSaveOversized(a.id, a.filename, a.buffer)
-			reason := "no external PDF rasterizer (pdftoppm/mutool) found"
+			reason := "the PDF rendered no pages"
 			if rerr != nil {
 				reason = rerr.Error()
 			}
 			return textResult(fmt.Sprintf("%s\nNo extractable text and rasterization failed: %s. Original saved to %s.", header, reason, path))
 		}
 		content := []contentBlock{{Type: "text", Text: fmt.Sprintf("Attachment #%s: %s\nNo extractable text found (likely scanned). Rasterized first %d of %d page(s):", a.id, header, len(images), totalPages)}}
-		for i, raw := range images {
-			data := reencodeFrame(raw, maxDim, quality)
+		for i, img := range images {
+			data := encodeFittedJPEG(img, maxDim, quality)
 			content = append(content,
 				contentBlock{Type: "text", Text: fmt.Sprintf("Page %d (%s):", i+1, formatBytes(int64(len(data))))},
 				contentBlock{Type: "image", Data: b64(data), MimeType: "image/jpeg"})
@@ -478,63 +485,52 @@ func buildPDFResult(a attachmentArgs, header string) toolResult {
 	return textResult(fmt.Sprintf("Attachment #%s: %s\nExtracted text from %d page(s):\n\n%s", a.id, header, totalPages, body))
 }
 
-// rasterizePDF renders the first pageCount pages to raster images using an
-// external tool (pdftoppm or mutool), returning the raw image bytes per page.
-func rasterizePDF(buffer []byte, pageCount, maxDim int) ([][]byte, error) {
-	dir, err := os.MkdirTemp(os.TempDir(), "atlmcp-pdf-")
+// pdfiumPool is PDFium compiled to WebAssembly, run in-process by wazero.
+// Starting it compiles the module, so it happens once, on first use.
+var pdfiumPool = sync.OnceValues(func() (pdfium.Pool, error) {
+	return webassembly.Init(webassembly.Config{MinIdle: 0, MaxIdle: 1, MaxTotal: 2})
+})
+
+// rasterizePDF renders the first pageCount pages to fit maxDim, the way a
+// viewer would show them.
+func rasterizePDF(buffer []byte, pageCount, maxDim int) ([]image.Image, error) {
+	pool, err := pdfiumPool()
+	if err != nil {
+		return nil, fmt.Errorf("PDF renderer unavailable: %w", err)
+	}
+	inst, err := pool.GetInstance(time.Minute)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = os.RemoveAll(dir) }()
-	inputPDF := filepath.Join(dir, "input.pdf")
-	if err := os.WriteFile(inputPDF, buffer, 0o600); err != nil {
+	defer func() { _ = inst.Close() }()
+	doc, err := inst.OpenDocument(&requests.OpenDocument{File: &buffer})
+	if err != nil {
 		return nil, err
 	}
-
-	if p, lerr := exec.LookPath("pdftoppm"); lerr == nil {
-		prefix := filepath.Join(dir, "page")
-		cmd := exec.CommandContext(context.Background(), p, "-jpeg", "-scale-to", strconv.Itoa(maxDim), "-f", "1", "-l", strconv.Itoa(pageCount), inputPDF, prefix)
-		if err := cmd.Run(); err == nil {
-			if imgs := collectImages(dir, "page", []string{".jpg", ".jpeg"}); len(imgs) > 0 {
-				return imgs, nil
-			}
+	defer func() { _, _ = inst.FPDF_CloseDocument(&requests.FPDF_CloseDocument{Document: doc.Document}) }()
+	var out []image.Image
+	for i := range pageCount {
+		res, err := inst.RenderPageInPixels(&requests.RenderPageInPixels{
+			Page:   requests.Page{ByIndex: &requests.PageByIndex{Document: doc.Document, Index: i}},
+			Width:  maxDim,
+			Height: maxDim,
+		})
+		if err != nil {
+			return out, err
 		}
+		// The pixels live in the WebAssembly heap until Cleanup; copy them out.
+		img := imaging.Clone(res.Result.RenderedImage)
+		res.Cleanup()
+		out = append(out, flattenOnWhite(img))
 	}
-	if p, lerr := exec.LookPath("mutool"); lerr == nil {
-		out := filepath.Join(dir, "page-%d.png")
-		cmd := exec.CommandContext(context.Background(), p, "draw", "-F", "png", "-w", strconv.Itoa(maxDim), "-o", out, inputPDF, fmt.Sprintf("1-%d", pageCount))
-		if err := cmd.Run(); err == nil {
-			if imgs := collectImages(dir, "page-", []string{".png"}); len(imgs) > 0 {
-				return imgs, nil
-			}
-		}
-	}
-	return nil, errors.New("no external PDF rasterizer (pdftoppm/mutool) found on PATH")
+	return out, nil
 }
 
-func collectImages(dir, prefix string, exts []string) [][]byte {
-	entries, _ := os.ReadDir(dir)
-	var names []string
-	for _, e := range entries {
-		n := e.Name()
-		if !strings.HasPrefix(n, prefix) {
-			continue
-		}
-		for _, ext := range exts {
-			if strings.HasSuffix(strings.ToLower(n), ext) {
-				names = append(names, n)
-				break
-			}
-		}
-	}
-	sort.Strings(names)
-	var out [][]byte
-	for _, n := range names {
-		if data, err := os.ReadFile(filepath.Join(dir, n)); err == nil {
-			out = append(out, data)
-		}
-	}
-	return out
+// flattenOnWhite composites a page onto white paper: a page without a
+// background renders transparent, which JPEG would turn black.
+func flattenOnWhite(img image.Image) image.Image {
+	bg := imaging.New(img.Bounds().Dx(), img.Bounds().Dy(), color.White)
+	return imaging.Overlay(bg, img, image.Point{}, 1)
 }
 
 // getAttachmentDispatch is the get_attachment tool entry: one tool over both

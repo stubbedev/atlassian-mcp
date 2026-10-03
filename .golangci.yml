@@ -113,13 +113,9 @@ linters:
     gosec:
       excludes:
         # G104: unhandled errors — errcheck covers this properly.
-        # G204: subprocesses run user-configured binaries (git, ffmpeg,
-        #   ImageMagick) with server-built arguments; variable binary paths are
-        #   the feature, not a finding.
         # G304/G703: reading user-supplied paths (attachments, --config, ~
         #   expansion) is what the tools are for.
         - G104
-        - G204
         - G304
         - G703
 

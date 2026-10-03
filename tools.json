@@ -32,7 +32,7 @@
     },
     {
       "name": "get_attachment",
-      "description": "Fetch an attachment by ID and return its contents inline. source=jira for a Jira issue attachment (IDs come from jira_get), source=bitbucket for a repo attachment referenced from a PR description or comment as attachment:<id> (IDs come from bitbucket_get_pr). Images are auto-resized + re-encoded; text/JSON/XML return as text; videos and animated images (GIF/APNG/animated WebP) are decoded with ffmpeg into sampled frames (re-call with start/end/frames or mode=scenes to refine); audio returns as an audio block; PDFs return extracted text. Oversized/non-renderable files are saved to a temp file and the path returned.",
+      "description": "Fetch an attachment by ID and return its contents inline. source=jira for a Jira issue attachment (IDs come from jira_get), source=bitbucket for a repo attachment referenced from a PR description or comment as attachment:<id> (IDs come from bitbucket_get_pr). Images are auto-resized + re-encoded; text/JSON/XML return as text; videos (MP4/MOV, H.264) and animated images (GIF/APNG/WebP) return sampled frames (re-call with start/end/frames or mode=scenes to refine); audio returns as an audio block; PDFs return extracted text, or rendered pages when they have none. Oversized/non-renderable files are saved to a temp file and the path returned.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -49,7 +49,7 @@
           "frames": { "type": "number", "description": "Video/animated-image only: number of frames to sample (default 6, range 1-60). Higher = more detail + more context." },
           "start": { "type": "number", "description": "Video/animated-image only: start of sample window in seconds (default 0). Use with end/frames to zoom into a moment of interest after a coarse first pass." },
           "end": { "type": "number", "description": "Video/animated-image only: end of sample window in seconds (default full duration). Must be greater than start." },
-          "mode": { "type": "string", "enum": ["uniform", "scenes"], "description": "Video/animated-image only: \"uniform\" samples N frames evenly (default); \"scenes\" uses ffmpeg scene-change detection, better for screencasts/narrative content." },
+          "mode": { "type": "string", "enum": ["uniform", "scenes"], "description": "Video/animated-image only: \"uniform\" samples N frames evenly (default); \"scenes\" picks scene changes, better for screencasts/narrative content." },
           "sceneThreshold": { "type": "number", "description": "Video/animated-image only: scene-change sensitivity in 0-1 (default 0.3). Only used when mode=scenes. Lower = more frames, higher = fewer." }
         },
         "required": ["attachmentId"]
@@ -91,7 +91,7 @@
           "repoPath": { "type": "string", "description": "Local repo path (defaults to cwd)" },
           "baseBranch": { "type": "string", "description": "Branch to base off. Defaults to the repository default branch, resolved from origin/HEAD or, failing that, from Bitbucket. The branch actually used is named in the result." },
           "branchName": { "type": "string", "description": "Override the generated branch name" },
-          "transitionName": { "type": "string", "description": "Jira transition to apply, e.g. \"In Progress\" (optional)" },
+          "transitionName": { "type": "string", "description": "Jira transition to apply, e.g. \"In Progress\"" },
           "push": { "type": "boolean", "description": "Push branch to remote after creation (default false)", "default": false }
         }
       },
@@ -149,39 +149,39 @@
           "create": {
             "type": "object",
             "properties": {
-              "projectKey": { "type": "string", "description": "Jira project code (optional, auto-resolved when omitted)" },
+              "projectKey": { "type": "string", "description": "Jira project code (auto-resolved when omitted)" },
               "project": { "type": "string", "description": "Alias for projectKey" },
               "issueType": { "type": "string", "description": "Issue type name, e.g. Bug, Story, Task, Sub-task" },
               "summary": { "type": "string", "description": "Issue title" },
-              "description": { "type": "string", "description": "Issue description (optional). Use Jira wiki markup (Atlassian renderer syntax), not GitHub/CommonMark markdown. Keep it a simple spec: problem or need, repro/acceptance, code example where relevant — nothing else." },
-              "assignee": { "type": "string", "description": "Username to assign to (optional)" },
-              "reporter": { "type": "string", "description": "Reporter username (optional, defaults to the caller)" },
-              "priority": { "type": "string", "description": "Priority name (optional)" },
-              "dueDate": { "type": "string", "description": "Due date, yyyy-mm-dd (optional)" },
+              "description": { "type": "string", "description": "Issue description. Use Jira wiki markup (Atlassian renderer syntax), not GitHub/CommonMark markdown. Keep it a simple spec: problem or need, repro/acceptance, code example where relevant — nothing else." },
+              "assignee": { "type": "string", "description": "Username to assign to" },
+              "reporter": { "type": "string", "description": "Reporter username (defaults to the caller)" },
+              "priority": { "type": "string", "description": "Priority name" },
+              "dueDate": { "type": "string", "description": "Due date, yyyy-mm-dd" },
               "labels": {
                 "type": "array",
                 "items": { "type": "string" },
-                "description": "Labels to apply (optional)"
+                "description": "Labels to apply"
               },
               "components": {
                 "type": "array",
                 "items": { "type": "string" },
-                "description": "Component names to apply (optional). Must already exist on the project — discover via jira_search resource=components."
+                "description": "Component names to apply. Must already exist on the project — discover via jira_search resource=components."
               },
-              "fixVersion": { "type": "string", "description": "Single fix version name (optional). For multiple, use fixVersions." },
+              "fixVersion": { "type": "string", "description": "Single fix version name. For multiple, use fixVersions." },
               "fixVersions": {
                 "type": "array",
                 "items": { "type": "string" },
-                "description": "Fix version names (optional). Overrides fixVersion when both given."
+                "description": "Fix version names. Overrides fixVersion when both given."
               },
               "versions": {
                 "type": "array",
                 "items": { "type": "string" },
-                "description": "Affects version/s names (optional)."
+                "description": "Affects version/s names."
               },
-              "environment": { "type": "string", "description": "Environment field (optional)." },
-              "originalEstimate": { "type": "string", "description": "Original time estimate, e.g. \"3d 4h\" (optional)." },
-              "remainingEstimate": { "type": "string", "description": "Remaining time estimate, e.g. \"2h\" (optional)." },
+              "environment": { "type": "string", "description": "Environment field." },
+              "originalEstimate": { "type": "string", "description": "Original time estimate, e.g. \"3d 4h\"." },
+              "remainingEstimate": { "type": "string", "description": "Remaining time estimate, e.g. \"2h\"." },
               "parent": { "type": "string", "description": "Parent issue key. For Sub-task issue types this sets the Jira parent. If the key points to an Epic, the Epic Link custom field is set automatically instead (Jira Server epic membership)." },
               "epicLink": { "type": "string", "description": "Epic issue key to attach the new issue to as an epic child (Jira Server Epic Link). Overrides parent if both are passed." },
               "customFields": {
@@ -194,13 +194,13 @@
           "update": {
             "type": "object",
             "properties": {
-              "issueType": { "type": "string", "description": "Change the issue type, e.g. Task → Epic (optional). Pass the new type's required fields in customFields in the same call — the type change is applied before them, so fields only the new type has (Epic Name) are accepted." },
-              "summary": { "type": "string", "description": "New summary (optional)" },
-              "description": { "type": "string", "description": "New description (optional). Use Jira wiki markup (Atlassian renderer syntax), not GitHub/CommonMark markdown. Keep it a simple spec: problem or need, repro/acceptance, code example where relevant — nothing else." },
-              "assignee": { "type": "string", "description": "New assignee username, or empty string to unassign (optional)" },
-              "reporter": { "type": "string", "description": "New reporter username (optional)" },
-              "priority": { "type": "string", "description": "New priority name (optional)" },
-              "dueDate": { "type": "string", "description": "Due date yyyy-mm-dd, or empty string to clear (optional)" },
+              "issueType": { "type": "string", "description": "Change the issue type, e.g. Task → Epic. Pass the new type's required fields in customFields in the same call — the type change is applied before them, so fields only the new type has (Epic Name) are accepted." },
+              "summary": { "type": "string", "description": "New summary" },
+              "description": { "type": "string", "description": "New description. Use Jira wiki markup (Atlassian renderer syntax), not GitHub/CommonMark markdown. Keep it a simple spec: problem or need, repro/acceptance, code example where relevant — nothing else." },
+              "assignee": { "type": "string", "description": "New assignee username, or empty string to unassign" },
+              "reporter": { "type": "string", "description": "New reporter username" },
+              "priority": { "type": "string", "description": "New priority name" },
+              "dueDate": { "type": "string", "description": "Due date yyyy-mm-dd, or empty string to clear" },
               "labels": {
                 "type": "array",
                 "items": { "type": "string" },
@@ -211,7 +211,7 @@
                 "items": { "type": "string" },
                 "description": "Replace component set by name (pass [] to clear). Names must already exist — discover via jira_search resource=components."
               },
-              "fixVersion": { "type": "string", "description": "Single fix version name, or empty string to clear (optional). For multiple, use fixVersions." },
+              "fixVersion": { "type": "string", "description": "Single fix version name, or empty string to clear. For multiple, use fixVersions." },
               "fixVersions": {
                 "type": "array",
                 "items": { "type": "string" },
@@ -222,9 +222,9 @@
                 "items": { "type": "string" },
                 "description": "Replace affects version/s set by name (pass [] to clear)."
               },
-              "environment": { "type": "string", "description": "Environment field, or empty string to clear (optional)." },
-              "originalEstimate": { "type": "string", "description": "Original time estimate, e.g. \"3d 4h\" (optional)." },
-              "remainingEstimate": { "type": "string", "description": "Remaining time estimate, e.g. \"2h\" (optional)." },
+              "environment": { "type": "string", "description": "Environment field, or empty string to clear." },
+              "originalEstimate": { "type": "string", "description": "Original time estimate, e.g. \"3d 4h\"." },
+              "remainingEstimate": { "type": "string", "description": "Remaining time estimate, e.g. \"2h\"." },
               "epicLink": { "type": "string", "description": "Epic issue key to set as parent epic (Jira Server Epic Link), or empty string to clear." },
               "customFields": {
                 "type": "object",
@@ -234,11 +234,11 @@
           },
           "delete": { "type": "boolean", "description": "Permanently delete the issue named by issueKey, together with its comments, attachments, worklogs and links. There is no undo and no other argument may be combined with it. This is for an issue that should never have existed — a ticket that is simply not wanted gets closed with transitionName instead. Ask the user first unless they asked for the deletion." },
           "deleteSubtasks": { "type": "boolean", "description": "With delete: delete the issue's sub-tasks along with it. Jira refuses to delete a parent without this." },
-          "sprintId": { "type": "number", "description": "Sprint ID to add the issue into (optional)" },
+          "sprintId": { "type": "number", "description": "Sprint ID to add the issue into" },
           "removeFromSprint": { "type": "boolean", "description": "Move the issue to the backlog (remove from any sprint)" },
           "transitionId": { "type": "string", "description": "Transition ID (optional if transitionName provided)" },
           "transitionName": { "type": "string", "description": "Transition name, e.g. \"In Progress\" (optional if transitionId provided)" },
-          "comment": { "type": "string", "description": "Comment body (optional). Added after the other mutations; with commentAction=update it is the replacement text. Markdown is converted to Jira wiki markup automatically." },
+          "comment": { "type": "string", "description": "Comment body. Added after the other mutations; with commentAction=update it is the replacement text. Markdown is converted to Jira wiki markup automatically." },
           "commentAction": { "type": "string", "enum": ["add", "update", "delete"], "description": "What to do with the comment (default: add). update/delete need commentId and only work on your own comments." },
           "commentId": { "type": "string", "description": "Comment ID (required for commentAction=update or delete)" },
           "attachments": {
@@ -261,7 +261,7 @@
             "description": "Log time spent on this issue",
             "properties": {
               "timeSpent": { "type": "string", "description": "Time in Jira format, e.g. \"2h 30m\" or \"1d\"" },
-              "comment": { "type": "string", "description": "Work description (optional)" },
+              "comment": { "type": "string", "description": "Work description" },
               "started": { "type": "string", "description": "ISO 8601 datetime when work started (defaults to now)" }
             },
             "required": ["timeSpent"]
@@ -274,8 +274,8 @@
               "projectKey": { "type": "string", "description": "Jira project code (create only; inherited from the top-level projectKey or the repo when omitted)" },
               "id": { "type": "string", "description": "Version id (required for update/release/archive/delete; from jira_search resource=versions)" },
               "name": { "type": "string", "description": "Version name, e.g. \"9.1.0\" (required for create; optional rename for update)" },
-              "description": { "type": "string", "description": "Version description (optional)" },
-              "startDate": { "type": "string", "description": "Start date in YYYY-MM-DD (optional)" },
+              "description": { "type": "string", "description": "Version description" },
+              "startDate": { "type": "string", "description": "Start date in YYYY-MM-DD" },
               "releaseDate": { "type": "string", "description": "Release date in YYYY-MM-DD (optional; defaults to today on action=release)" },
               "released": { "type": "boolean", "description": "Released flag (optional; action=release forces true)" },
               "archived": { "type": "boolean", "description": "Archived flag (optional; action=archive forces true)" }
@@ -352,7 +352,7 @@
           "repoSlug": { "type": "string", "description": "Repository slug (usually auto-detected)" },
           "repo": { "type": "string", "description": "Alias for repoSlug" },
           "repoPath": { "type": "string", "description": "Local path of the repo to auto-detect project/repo from (overrides workspace roots). Usually unnecessary if projectKey+repoSlug are given." },
-          "prId": { "type": "number", "description": "Target PR number (optional, auto-resolved from branch)" },
+          "prId": { "type": "number", "description": "Target PR number (auto-resolved from branch)" },
           "action": { "type": "string", "enum": ["create", "update", "approve", "unapprove", "needs_work", "decline", "merge"], "description": "Action to perform (optional — create/update are implied by a create/update object). needs_work = mark your reviewer status as \"Needs work\" (changes requested)." },
           "mergeStrategy": { "type": "string", "enum": ["MERGE_COMMIT", "SQUASH", "FAST_FORWARD"], "description": "Merge strategy (action=merge only)" },
           "mergeMessage": { "type": "string", "description": "Custom merge commit message (action=merge only)" },
@@ -361,7 +361,7 @@
             "type": "object",
             "properties": {
               "title": { "type": "string", "description": "PR title" },
-              "description": { "type": "string", "description": "PR description (optional). Maximally concise: what and why, fenced commands or code only when they carry information." },
+              "description": { "type": "string", "description": "PR description. Maximally concise: what and why, fenced commands or code only when they carry information." },
               "fromBranch": { "type": "string", "description": "Source branch (defaults to current branch)" },
               "toBranch": { "type": "string", "description": "Target branch (defaults to the repository default branch as Bitbucket reports it)" },
               "reviewers": {
@@ -377,9 +377,9 @@
           "update": {
             "type": "object",
             "properties": {
-              "title": { "type": "string", "description": "Updated PR title (optional)" },
-              "description": { "type": "string", "description": "Updated description, or empty string to clear (optional). Maximally concise: what and why, fenced commands or code only when they carry information." },
-              "toBranch": { "type": "string", "description": "Updated target branch (optional)" },
+              "title": { "type": "string", "description": "Updated PR title" },
+              "description": { "type": "string", "description": "Updated description, or empty string to clear. Maximally concise: what and why, fenced commands or code only when they carry information." },
+              "toBranch": { "type": "string", "description": "Updated target branch" },
               "reviewers": {
                 "type": "array",
                 "items": { "type": "string" },
@@ -409,7 +409,7 @@
           "commentId": { "type": "number", "description": "Comment ID to reply to, update, or delete" },
           "text": { "type": "string", "description": "Comment text for add/update. No filler, no emojis. If suggestion is used, keep this optional and brief; it is placed before the suggestion block." },
           "filePath": { "type": "string", "description": "File path for inline comment (must pair with line)" },
-          "srcPath": { "type": "string", "description": "Source path if file was renamed (optional, defaults to filePath)" },
+          "srcPath": { "type": "string", "description": "Source path if file was renamed (defaults to filePath)" },
           "line": { "type": "number", "description": "Line number to anchor inline comment (must pair with filePath)" },
           "lineType": { "type": "string", "enum": ["ADDED", "REMOVED", "CONTEXT"], "description": "Diff line type (default ADDED)" },
           "fileType": { "type": "string", "enum": ["TO", "FROM"], "description": "Diff side: TO (new, default) or FROM (old)" },
@@ -483,8 +483,8 @@
           "prId": { "type": "number", "description": "PR to merge (auto-detected from current branch if omitted)" },
           "repoPath": { "type": "string", "description": "Local repo path (defaults to cwd)" },
           "transitionName": { "type": "string", "description": "Jira transition to apply after merge (default: \"Done\")" },
-          "mergeStrategy": { "type": "string", "enum": ["MERGE_COMMIT", "SQUASH", "FAST_FORWARD"], "description": "Merge strategy (optional)" },
-          "mergeMessage": { "type": "string", "description": "Custom merge commit message (optional)" },
+          "mergeStrategy": { "type": "string", "enum": ["MERGE_COMMIT", "SQUASH", "FAST_FORWARD"], "description": "Merge strategy" },
+          "mergeMessage": { "type": "string", "description": "Custom merge commit message" },
           "projectKey": { "type": "string", "description": "Bitbucket project code (usually auto-detected)" },
           "repoSlug": { "type": "string", "description": "Repository slug (usually auto-detected)" },
           "skipJiraTransition": { "type": "boolean", "description": "Skip transitioning the Jira ticket (default false)" },

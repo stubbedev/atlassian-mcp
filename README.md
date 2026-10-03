@@ -249,9 +249,6 @@ has no workspace, so it advertises no MCP roots and there is no useful cwd to fa
 Comma-separate several worktrees (first git repo wins); a per-call `repoPath` still
 overrides it.
 
-On Windows, Git is frequently absent from a GUI app's `PATH`. The server probes the usual
-install locations before giving up; set `ATLASSIAN_MCP_GIT_PATH` if yours lives elsewhere.
-
 Server stderr is logged to `~/Library/Logs/Claude/mcp-server-atlassian.log` (macOS) or
 `%APPDATA%\Claude\logs\mcp-server-atlassian.log` (Windows) — read that first when a
 connection fails.
@@ -460,11 +457,8 @@ nix run github:stubbedev/atlassian-mcp -- --config ~/.atlassian-mcp.json
 ```
 
 Then point your MCP client's `command` at the resulting `atlassian-mcp` binary
-instead of `npx`. On these Node-free paths (`go install`, Nix, a release binary or the
-`.mcpb` bundle) `ffmpeg`/`ffprobe` must be available on `PATH` for video and
-animated-image attachments (or set `ATLASSIAN_MCP_FFMPEG_PATH` /
-`ATLASSIAN_MCP_FFPROBE_PATH`); the npm wrapper bundles them automatically. Everything
-else — still images, PDF text, JSON/text — is pure Go and needs nothing extra.
+instead of `npx`. Every install path is the same single static binary: it needs no `git`,
+`ffmpeg` or other program on the machine.
 
 ### Running as an HTTP server (shared / behind a proxy)
 
@@ -615,28 +609,31 @@ The `get_attachment` tool decodes binary attachments into model-readable content
 
 | Input | What gets returned | How |
 | --- | --- | --- |
-| Static images (PNG/JPEG/WebP/BMP/TIFF/GIF/SVG…) | Resized image content blocks | native Go (`imaging`, long edge ≤ `maxDimension`, default 1568; EXIF auto-orient; PNG for alpha, else JPEG) |
-| Animated images (GIF/APNG/animated WebP) | N sampled frames as image content blocks | `ffmpeg` + native Go re-encode (default 6 frames @ 768 px) |
-| Video (mp4/webm/mov/…) | N sampled frames as image content blocks | `ffmpeg`/`ffprobe`. Uniform or scene-change sampling. Re-call with `start`, `end`, `frames`, `mode`, `sceneThreshold` to zoom in |
+| Static images (PNG/JPEG/WebP/BMP/TIFF/GIF/SVG/AVIF/HEIC/JPEG XL…) | Resized image content blocks | `imaging`, long edge ≤ `maxDimension`, default 1568; EXIF auto-orient; PNG for alpha, else JPEG. AVIF/HEIC/JPEG XL via [`gen2brain`](https://github.com/gen2brain) decoders (libavif/libheif/libjxl compiled to WebAssembly) |
+| Animated images (GIF/APNG/animated WebP) | N sampled frames as image content blocks | composited in Go, as a browser shows them (default 6 frames @ 768 px) |
+| Video (MP4/MOV, H.264) | N sampled frames as image content blocks | [`mp4ff`](https://github.com/Eyevinn/mp4ff) demuxing, [`goh264`](https://github.com/thesyncim/goh264) decoding, GOPs in parallel. Uniform or scene-change sampling (ffmpeg's scene metric), near-duplicate frames dropped. Re-call with `start`, `end`, `frames`, `mode`, `sceneThreshold` to zoom in. Other codecs (HEVC, VP9, AV1) and containers (WebM) are reported as unsupported; pass `saveTo` to keep the original |
 | Audio (mp3/wav/ogg/…) | MCP audio content block | passthrough |
-| PDFs | Extracted text — or rasterized pages if text is empty (scanned PDFs) | native Go text extraction (`ledongthuc/pdf`); rasterization shells to `pdftoppm`/`mutool` if present, else the original is saved to disk |
+| PDFs | Extracted text — or rasterized pages if text is empty (scanned PDFs) | text via `ledongthuc/pdf`; pages rendered by PDFium compiled to WebAssembly ([`go-pdfium`](https://github.com/klippa-app/go-pdfium)) |
 | Text-like (json/xml/yaml/…) | Text content block | passthrough |
 | Everything else (or oversized) | Auto-saved to a temp file; path is returned | `os.TempDir()` with `atlmcp-` prefix |
 
 Auto-saved files are periodically pruned by TTL and total-size quota — see *Environment overrides* below.
 
-### External tools (optional)
+### No external tools
 
-Image and PDF-text decoding are pure Go and need nothing extra. The two pipelines that have no
-pure-Go implementation shell out to external binaries:
+The binary is self-contained and built without cgo. Git access goes through
+[`go-git`](https://github.com/go-git/go-git) (status, log, diff, branch, checkout, fetch, push);
+the C libraries some formats need (PDFium, libavif, libheif, libjxl) run as embedded
+WebAssembly under [`wazero`](https://wazero.io).
 
-- **`ffmpeg` + `ffprobe`** — video and animated-image frame sampling. The npm wrapper bundles
-  [`ffmpeg-static`](https://www.npmjs.com/package/ffmpeg-static) /
-  [`ffprobe-static`](https://www.npmjs.com/package/ffprobe-static) and injects their paths, so the
-  npx install path is zero-config. On every Node-free path (`go install`, Nix, release binary,
-  `.mcpb` bundle), install `ffmpeg` (it provides `ffprobe`) or set the env vars below.
-- **`pdftoppm` (poppler) or `mutool` (MuPDF)** — only needed to rasterize *scanned* PDFs that have no
-  extractable text. If neither is on `PATH`, such PDFs are saved to disk instead.
+Git credentials for fetch/push come from where git keeps them, minus anything that needs another
+program: ssh-agent, `IdentityFile` entries in `~/.ssh/config` and unencrypted `~/.ssh/id_*`
+keys (host keys checked against `~/.ssh/known_hosts`); for https, credentials in the URL,
+`~/.git-credentials`, `~/.netrc`, and the Bitbucket token itself for the configured Bitbucket
+host. Credential helpers, passphrase prompts, git hooks and Git LFS smudging do not run.
+
+`goh264` is LGPL-2.1; it is linked unmodified and the full source of this server is public, so
+the binary can be rebuilt against a modified copy.
 
 ### Environment overrides
 
@@ -645,10 +642,7 @@ pure-Go implementation shell out to external binaries:
 | `ATLASSIAN_MCP_HTTP` | Run as a Streamable HTTP server instead of stdio. `1`/`true` → `127.0.0.1:7337`; or set an explicit `host:port`. Same as `--http`. | unset (stdio) |
 | `ATLASSIAN_MCP_HTTP_TOKEN` | Bearer token for HTTP mode. Optional on loopback binds; **required** on non-loopback binds. | unset |
 | `ATLASSIAN_MCP_REPO_ROOT` | Default workspace root(s) for the git/PR tools, comma-separated. `file://` URIs, absolute paths, `~/…` and Windows drive paths all work. Needed by clients that expose no MCP roots (desktop apps). Overridden by a `repoPath` argument or a root header. | unset |
-| `ATLASSIAN_MCP_GIT_PATH` | Path to the `git` executable. Only needed when `git` is off the host app's `PATH`; the server already probes the usual install locations. | `git` on `PATH` |
 | `ATLASSIAN_MCP_MARK_AI_TEXT` | Set `false` to stop appending the bold `[AI]` attribution line to Jira/Bitbucket text this server posts. | `true` |
-| `ATLASSIAN_MCP_FFMPEG_PATH` | Path to `ffmpeg` binary. | npm: bundled `ffmpeg-static`; otherwise `ffmpeg` on `PATH` |
-| `ATLASSIAN_MCP_FFPROBE_PATH` | Path to `ffprobe` binary. | npm: bundled `ffprobe-static`; otherwise `ffprobe` on `PATH` |
 | `ATLASSIAN_MCP_TMP_TTL_DAYS` | Auto-saved attachments older than this are pruned. | `7` |
 | `ATLASSIAN_MCP_TMP_MAX_BYTES` | Total-size quota for auto-saved attachments in `os.tmpdir()`. When exceeded, oldest are evicted. | `1073741824` (1 GB) |
 

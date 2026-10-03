@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 )
 
@@ -15,8 +14,8 @@ type committer struct {
 // getTopCommitters returns the top recent committers from the last `lookback`
 // commits, ranked by count (descending), capped to `top`.
 func getTopCommitters(repoPath string, lookback, top int) []committer {
-	raw := safeGit(repoPath, "", "log", "-n", strconv.Itoa(lookback), "--format=%aN%x09%aE")
-	if raw == "" {
+	authors := gitRecentAuthors(repoPath, lookback)
+	if len(authors) == 0 {
 		return nil
 	}
 	type entry struct {
@@ -25,15 +24,10 @@ func getTopCommitters(repoPath string, lookback, top int) []committer {
 	}
 	counts := map[string]*entry{}
 	order := 0
-	for line := range strings.SplitSeq(raw, "\n") {
-		parts := strings.SplitN(line, "\t", 2)
-		name := parts[0]
+	for _, a := range authors {
+		name, email := a.name, a.email
 		if name == "" {
 			continue
-		}
-		email := ""
-		if len(parts) > 1 {
-			email = parts[1]
 		}
 		key := strings.ToLower(name)
 		if email != "" {
@@ -81,10 +75,10 @@ func getDevContext(repoPath string) (toolResult, error) {
 	}
 	var sections []string
 
-	branch := orValue(safeGit(repoPath, "", "rev-parse", "--abbrev-ref", "HEAD"), "(unknown)")
-	remote := orValue(safeGit(repoPath, "", "remote", "get-url", "origin"), "(no remote)")
-	recentCommits := orValue(safeGit(repoPath, "", "log", "--oneline", "-5"), "(none)")
-	status := orValue(safeGit(repoPath, "", "status", "--short"), "(clean)")
+	branch := orValue(gitCurrentBranch(repoPath), "(unknown)")
+	remote := orValue(gitOriginURL(repoPath), "(no remote)")
+	recentCommits := orValue(gitOnelineLog(repoPath, 5), "(none)")
+	status := orValue(gitStatusShort(repoPath), "(clean)")
 	committers := getTopCommitters(repoPath, 50, 5)
 
 	var parsed *bitbucketRemote
@@ -92,28 +86,7 @@ func getDevContext(repoPath string) (toolResult, error) {
 		parsed = parseBitbucketRemote(remote)
 	}
 
-	upstream := safeGit(repoPath, "", "rev-parse", "--abbrev-ref", "@{u}")
-	upstreamLine := ""
-	if upstream != "" {
-		ab := safeGit(repoPath, "", "rev-list", "--left-right", "--count", upstream+"...HEAD")
-		if strings.Contains(ab, "\t") {
-			parts := strings.SplitN(ab, "\t", 2)
-			behind, _ := strconv.Atoi(strings.TrimSpace(parts[0]))
-			ahead, _ := strconv.Atoi(strings.TrimSpace(parts[1]))
-			var p []string
-			if ahead != 0 {
-				p = append(p, fmt.Sprintf("%d ahead", ahead))
-			}
-			if behind != 0 {
-				p = append(p, fmt.Sprintf("%d behind", behind))
-			}
-			if len(p) > 0 {
-				upstreamLine = upstream + " (" + strings.Join(p, ", ") + ")"
-			} else {
-				upstreamLine = upstream + " (up to date)"
-			}
-		}
-	}
+	upstreamLine := gitUpstreamLine(repoPath)
 
 	// Identity (best-effort).
 	var youParts []string

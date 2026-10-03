@@ -754,7 +754,7 @@ func (c *BitbucketClient) resolveProjectAndRepo(projectKey, repoSlug, repoRoot s
 	if repoRoot == "" {
 		return "", "", errors.New("Could not determine projectKey/repoSlug — provide them explicitly, pass repoPath, or connect a client that provides workspace roots.")
 	}
-	remote := safeGit(repoRoot, "", "remote", "get-url", "origin")
+	remote := gitOriginURL(repoRoot)
 	if remote != "" {
 		if !c.remoteMatchesInstance(remote) {
 			return "", "", fmt.Errorf("This repo's remote does not point to your configured Bitbucket instance (%s). Bitbucket tools only work with repos hosted on that instance.", c.baseURL)
@@ -829,12 +829,10 @@ func (c *BitbucketClient) getDefaultBranchRef(projectKey, repoSlug, repoRoot str
 	if err == nil && data != nil && data.DisplayID != "" {
 		return "refs/heads/" + data.DisplayID
 	}
-	head := ""
 	if repoRoot != "" {
-		head = safeGit(repoRoot, "", "rev-parse", "--abbrev-ref", "origin/HEAD")
-	}
-	if after, ok := strings.CutPrefix(head, "origin/"); ok {
-		return "refs/heads/" + after
+		if head := gitOriginHead(repoRoot); head != "" {
+			return "refs/heads/" + head
+		}
 	}
 	return "refs/heads/master"
 }
@@ -1092,7 +1090,7 @@ func (c *BitbucketClient) getPrOverview(session *sessionState, args map[string]a
 		branch := argString(args, "fromBranch")
 		if branch == "" {
 			if repoRoot != "" {
-				branch = safeGit(repoRoot, "", "rev-parse", "--abbrev-ref", "HEAD")
+				branch = gitCurrentBranch(repoRoot)
 			}
 		}
 		if branch == "" || branch == "HEAD" {

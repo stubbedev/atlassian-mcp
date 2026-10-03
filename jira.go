@@ -990,7 +990,7 @@ func (c *JiraClient) resolveProjectKey(projectKey, repoRoot string) (string, err
 		keys[p.Key] = true
 	}
 	if repoRoot != "" {
-		branch := safeGit(repoRoot, "", "rev-parse", "--abbrev-ref", "HEAD")
+		branch := gitCurrentBranch(repoRoot)
 		if m := jiraKeyInBranchRe.FindStringSubmatch(branch); m != nil {
 			if keys[m[1]] {
 				return m[1], nil

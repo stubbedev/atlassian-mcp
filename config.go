@@ -160,9 +160,8 @@ var mcpbPlaceholderRe = regexp.MustCompile(`^\$\{[A-Za-z0-9_.]+\}$`)
 var manifestEnvVars = []string{
 	"JIRA_URL", "JIRA_ACCESS_TOKEN",
 	"BITBUCKET_URL", "BITBUCKET_ACCESS_TOKEN",
-	"ATLASSIAN_MCP_REPO_ROOT", "ATLASSIAN_MCP_GIT_PATH", "ATLASSIAN_MCP_MARK_AI_TEXT",
+	"ATLASSIAN_MCP_REPO_ROOT", "ATLASSIAN_MCP_MARK_AI_TEXT",
 	"ATLASSIAN_MCP_CONFIG", "ATLASSIAN_MCP_HTTP_TOKEN",
-	"ATLASSIAN_MCP_FFMPEG_PATH", "ATLASSIAN_MCP_FFPROBE_PATH",
 }
 
 // clearUnsubstitutedEnv unsets manifest variables still holding a placeholder.
