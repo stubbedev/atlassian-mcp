@@ -28,7 +28,15 @@ jobs:
         run: go test ./...
 
       - name: Build
-        run: go build -o atlassian-mcp .
+        run: go build -tags nodynamic -o atlassian-mcp .
+
+      # publish.yml builds these; catch a dependency that drops one before tag day.
+      - name: Cross-compile release targets
+        run: |
+          set -euo pipefail
+          for t in linux/386 linux/arm linux/ppc64le linux/riscv64 linux/s390x freebsd/amd64 freebsd/arm64 windows/386 windows/arm64 darwin/arm64; do
+            CGO_ENABLED=0 GOOS=${t%/*} GOARCH=${t#*/} go build -tags nodynamic -o /dev/null . && echo "$t ok"
+          done
 
       # The .mcpb packer only runs at release time, so exercise it here: a broken
       # manifest template or missing substitution would otherwise surface on tag day.

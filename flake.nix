@@ -36,6 +36,8 @@
 
           # Version is embedded from package.json (single source of truth) — no -X needed.
           ldflags = [ "-s" "-w" ];
+          # Image decoders use their embedded WebAssembly, never system libraries.
+          tags = [ "nodynamic" ];
           doCheck = true;
 
           meta = {

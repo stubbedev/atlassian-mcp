@@ -450,7 +450,7 @@ attached to every [release](https://github.com/stubbedev/atlassian-mcp/releases/
 
 ```bash
 # Go toolchain — installs to $GOBIN / $GOPATH/bin
-go install github.com/stubbedev/atlassian-mcp@latest
+go install -tags nodynamic github.com/stubbedev/atlassian-mcp@latest
 
 # Nix flake
 nix run github:stubbedev/atlassian-mcp -- --config ~/.atlassian-mcp.json
@@ -621,7 +621,7 @@ Auto-saved files are periodically pruned by TTL and total-size quota — see *En
 
 ### No external tools
 
-The binary is self-contained and built without cgo. Git access goes through
+The binary is self-contained and built without cgo (release builds use `-tags nodynamic`, so the image decoders never look for system libraries). Git access goes through
 [`go-git`](https://github.com/go-git/go-git) (status, log, diff, branch, checkout, fetch, push);
 the C libraries some formats need (PDFium, libavif, libheif, libjxl) run as embedded
 WebAssembly under [`wazero`](https://wazero.io).

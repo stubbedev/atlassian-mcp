@@ -22,7 +22,7 @@ test:
     go test ./...
 
 build:
-    go build -o /dev/null .
+    go build -tags nodynamic -o /dev/null .
 
 fmt:
     gofmt -w .
@@ -43,7 +43,7 @@ bundle:
     ext=""
     [ "$goos" = windows ] && ext=".exe"
     mkdir -p dist
-    CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "dist/atlassian-mcp${ext}" .
+    CGO_ENABLED=0 go build -tags nodynamic -trimpath -ldflags "-s -w" -o "dist/atlassian-mcp${ext}" .
     packaging/mcpb/pack.sh "dist/atlassian-mcp${ext}" "$platform" "dist/atlassian-mcp_${goos}_${goarch}.mcpb"
 
 # Recompute the Go module vendorHash in flake.nix from go.mod/go.sum, the same

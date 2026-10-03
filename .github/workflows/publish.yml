@@ -50,7 +50,10 @@ jobs:
           EXT=""
           [ "$GOOS" = "windows" ] && EXT=".exe"
           OUT="atlassian-mcp_${GOOS}_${GOARCH}${EXT}"
-          go build -trimpath -ldflags "-s -w" -o "$OUT" .
+          # nodynamic: the gen2brain image decoders always use their embedded
+          # WebAssembly instead of dlopen-ing system libraries via purego,
+          # which does not build on every target here.
+          go build -tags nodynamic -trimpath -ldflags "-s -w" -o "$OUT" .
           echo "ASSET=$OUT" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v7
