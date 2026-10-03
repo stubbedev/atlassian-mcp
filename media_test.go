@@ -9,6 +9,7 @@ import (
 	"image/jpeg"
 	"math"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -263,5 +264,141 @@ func TestRasterizePDFInProcess(t *testing.T) {
 	res := buildPDFResult(attachmentArgs{id: "1", filename: "scan.pdf", buffer: minimalPDF()}, "scan.pdf")
 	if len(res.Content) != 3 || res.Content[2].Type != "image" {
 		t.Errorf("scanned PDF result: %+v", res.Content[0].Text)
+	}
+}
+
+// The same 6 s clip in every container the demuxers handle. The MJPEG and
+// VP8 fixtures are 80×48 at 5 and 15 fps; the VP8 one has a keyframe each
+// second and an unknown-size segment, as live WebM writers produce.
+func TestVideoContainers(t *testing.T) {
+	for _, tc := range []struct {
+		file, codec string
+		w, h        int
+	}{
+		{"cuts.mkv", "h264", 160, 96},
+		{"cuts.avi", "h264", 160, 96},
+		{"mjpeg.avi", "mjpeg", 80, 48},
+		{"mjpeg.mov", "mjpeg", 80, 48},
+		{"vp8.webm", "vp8", 80, 48},
+	} {
+		t.Run(tc.file, func(t *testing.T) {
+			res, err := processVideo(readFixture(t, tc.file), processVideoOpts{frames: 6, mode: "scenes", sceneThreshold: 0.3})
+			if err != nil {
+				t.Fatal(err)
+			}
+			m := res.meta
+			if m.codec != tc.codec || m.width != tc.w || m.height != tc.h || math.Abs(m.duration-6) > 0.1 {
+				t.Errorf("meta = %+v", m)
+			}
+			if res.mode != "scenes" || strings.Join(frameTimes(res), " ") != "2.00 4.00" {
+				t.Errorf("mode %s, times %v; ffmpeg finds cuts at 2.00 4.00", res.mode, frameTimes(res))
+			}
+			decodeJPEG(t, res.frames[0].data)
+		})
+	}
+}
+
+func TestVP8SamplesKeyframes(t *testing.T) {
+	res, err := processVideo(readFixture(t, "vp8.webm"), processVideoOpts{frames: 6, mode: "uniform"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range res.frames {
+		if f.timestampSec != math.Trunc(f.timestampSec) {
+			t.Errorf("frame at %.2f is not a keyframe (one per second)", f.timestampSec)
+		}
+	}
+	if !strings.Contains(res.note, "keyframes") {
+		t.Errorf("note = %q", res.note)
+	}
+}
+
+// MediaRecorder leaves cluster sizes unknown too; rewrite the fixture's so
+// each cluster must be ended by the next one's start.
+func TestMKVUnknownSizeClusters(t *testing.T) {
+	data := slices.Clone(readFixture(t, "vp8.webm"))
+	id := []byte{0x1F, 0x43, 0xB6, 0x75}
+	patched := 0
+	for i := bytes.Index(data, id); i >= 0; {
+		_, n, _, err := ebmlVint(data[i+4:], false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data[i+4] = byte(0xff >> (n - 1))
+		for k := 1; k < n; k++ {
+			data[i+4+k] = 0xff
+		}
+		patched++
+		next := bytes.Index(data[i+4:], id)
+		if next < 0 {
+			break
+		}
+		i += 4 + next
+	}
+	if patched < 2 {
+		t.Fatalf("only %d clusters", patched)
+	}
+	s, err := openMKVStream(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := openMKVStream(readFixture(t, "vp8.webm"))
+	if !slices.Equal(s.times(), want.times()) {
+		t.Errorf("times %v, want %v", s.times(), want.times())
+	}
+}
+
+func TestVideoUnsupportedCodecNamed(t *testing.T) {
+	data := bytes.Replace(readFixture(t, "cuts.mkv"), []byte("V_MPEG4/ISO/AVC"), []byte("V_MPEGH/ISO/HEV"), 1)
+	_, err := processVideo(data, processVideoOpts{frames: 3})
+	if err == nil || !strings.Contains(err.Error(), "unsupported video codec V_MPEGH/ISO/HEV") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+// Motion JPEG in AVI often leaves out the Huffman tables, relying on the
+// standard ones.
+func TestMJPEGWithoutHuffmanTables(t *testing.T) {
+	var buf bytes.Buffer
+	img := image.NewGray(image.Rect(0, 0, 16, 16))
+	if err := jpeg.Encode(&buf, img, nil); err != nil {
+		t.Fatal(err)
+	}
+	full := buf.Bytes()
+	var stripped []byte
+	for i := 2; i+4 <= len(full); {
+		n := 2 + (int(full[i+2])<<8 | int(full[i+3]))
+		if full[i+1] == 0xda {
+			stripped = append(append(slices.Clone(full[:2]), stripped...), full[i:]...)
+			break
+		}
+		if full[i+1] != 0xc4 {
+			stripped = append(stripped, full[i:i+n]...)
+		}
+		i += n
+	}
+	if bytes.Contains(stripped, []byte{0xff, 0xc4}) {
+		t.Fatal("DHT not stripped")
+	}
+	if _, err := jpeg.Decode(bytes.NewReader(stripped)); err == nil {
+		t.Fatal("expected the stripped frame to be undecodable as is")
+	}
+	if _, err := (mjpegDecoder{}).decode(stripped); err != nil {
+		t.Errorf("with default tables: %v", err)
+	}
+}
+
+// Truncated or corrupted files must fail cleanly, never crash the server.
+func TestVideoCorruptInputDoesNotPanic(t *testing.T) {
+	for _, name := range []string{"cuts.mp4", "cuts.mkv", "cuts.avi", "mjpeg.avi", "vp8.webm", "anim.webp"} {
+		data := readFixture(t, name)
+		for _, cut := range []int{len(data) / 3, len(data) * 2 / 3} {
+			_, _ = processVideo(data[:cut], processVideoOpts{frames: 4, mode: "scenes", sceneThreshold: 0.3})
+		}
+		mangled := slices.Clone(data)
+		for i := len(mangled) / 4; i < len(mangled); i += 97 {
+			mangled[i] ^= 0x5a
+		}
+		_, _ = processVideo(mangled, processVideoOpts{frames: 4, mode: "uniform"})
 	}
 }

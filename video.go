@@ -205,16 +205,49 @@ func videoCacheSet(key string, value *processVideoResult) {
 	videoCacheOrder = append(videoCacheOrder, key)
 }
 
-// openFrameStream picks a decoder by content: an animated image, or an
-// MP4/QuickTime file carrying H.264.
+var errUnsupportedVideo = errors.New("unsupported video format: MP4/MOV, Matroska/WebM and AVI files and GIF/APNG/WebP animations can be sampled")
+
+func unsupportedCodec(name string) error {
+	return fmt.Errorf("unsupported video codec %s: H.264, Motion JPEG and VP8 (keyframes) can be decoded", orValue(name, "(unknown)"))
+}
+
+// openFrameStream picks a demuxer by content: an animated image, Matroska
+// or WebM, AVI, else MP4/QuickTime.
 func openFrameStream(buffer []byte) (frameStream, error) {
 	if s, ok, err := openAnimation(buffer); ok {
 		return s, err
 	}
+	switch {
+	case bytes.HasPrefix(buffer, []byte{0x1A, 0x45, 0xDF, 0xA3}):
+		return openMKVStream(buffer)
+	case len(buffer) >= 12 && string(buffer[:4]) == "RIFF" && string(buffer[8:12]) == "AVI ":
+		return openAVIStream(buffer)
+	}
 	return openMP4Stream(buffer)
 }
 
-func processVideo(buffer []byte, opts processVideoOpts) (*processVideoResult, error) {
+// processVideo samples frames from a video or animation. A malformed file
+// can make a demuxer or decoder panic; that is reported as an error rather
+// than taking the server down.
+func processVideo(buffer []byte, opts processVideoOpts) (res *processVideoResult, err error) {
+	err = recoverDecode(func() error {
+		res, err = sampleVideo(buffer, opts)
+		return err
+	})
+	return res, err
+}
+
+// recoverDecode runs fn, turning a panic into an error.
+func recoverDecode(fn func() error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("the file could not be decoded (it may be corrupt or truncated): %v", r)
+		}
+	}()
+	return fn()
+}
+
+func sampleVideo(buffer []byte, opts processVideoOpts) (*processVideoResult, error) {
 	frames := min(max(opts.frames, videoFramesMin), videoFramesMax)
 	mode := opts.mode
 	if mode == "" {
@@ -266,6 +299,11 @@ func processVideo(buffer []byte, opts processVideoOpts) (*processVideoResult, er
 
 	s := &sampler{stream: stream, times: times, lo: lo, hi: hi}
 	picks, note := s.uniformPicks(start, end, frames)
+	streamNote := ""
+	if n, ok := stream.(interface{ note() string }); ok {
+		// Says why sampling is keyframe-bound, which covers the budget note.
+		streamNote = n.note()
+	}
 	effectiveMode := "uniform"
 	have := map[int]renderedFrame{}
 	if mode == "scenes" {
@@ -305,7 +343,7 @@ func processVideo(buffer []byte, opts processVideoOpts) (*processVideoResult, er
 		effectiveEnd:   end,
 		dedupApplied:   dedupApplied,
 		mode:           effectiveMode,
-		note:           note,
+		note:           orValue(streamNote, note),
 	}
 	videoCacheSet(cacheKey, result)
 	return result, nil
@@ -687,7 +725,7 @@ func parallelDo(n int, fn func(k int) error) error {
 	for range workers {
 		wg.Go(func() {
 			for k := range jobs {
-				if err := fn(k); err != nil {
+				if err := recoverDecode(func() error { return fn(k) }); err != nil {
 					errs <- err
 				}
 			}

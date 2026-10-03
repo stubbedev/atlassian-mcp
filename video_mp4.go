@@ -3,40 +3,22 @@ package main
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"image"
 	"math"
-	"slices"
 
 	"github.com/Eyevinn/mp4ff/mp4"
-	"github.com/disintegration/imaging"
 	"github.com/thesyncim/goh264"
 )
 
-// mp4Stream decodes the H.264 video track of an MP4 or QuickTime file. Each
-// GOP — a sync sample and the samples up to the next — is one segment, so
-// GOPs decode in parallel on separate decoders.
-type mp4Stream struct {
-	meta     videoMeta
-	avcC     []byte
-	samples  []mp4Sample // decode order
-	gops     [][2]int    // decode-order sample ranges [lo, hi)
-	segs     [][2]int    // the same GOPs as display-index ranges
-	display  []float64   // presentation time per display index
-	rotation int         // clockwise degrees to rotate decoded frames for display
-	px       int
-}
+// mp4Sample is a sample located in the file.
+type mp4Sample = videoPacket
 
-type mp4Sample struct {
-	data []byte
-	pts  int64 // media timescale
-	sync bool
-}
-
-func openMP4Stream(buffer []byte) (*mp4Stream, error) {
+// openMP4Stream demuxes the video track of an MP4 or QuickTime file:
+// H.264, or Motion JPEG as cameras and some screen tools write it.
+func openMP4Stream(buffer []byte) (*packetStream, error) {
 	f, err := mp4.DecodeFile(bytes.NewReader(buffer), mp4.WithDecodeMode(mp4.DecModeLazyMdat))
 	if err != nil || (f.Moov == nil && (f.Init == nil || f.Init.Moov == nil)) {
-		return nil, errors.New("unsupported video format: only MP4/MOV files (H.264 video) and GIF/APNG/WebP animations can be sampled")
+		return nil, errUnsupportedVideo
 	}
 	moov := f.Moov
 	if moov == nil {
@@ -53,92 +35,50 @@ func openMP4Stream(buffer []byte) (*mp4Stream, error) {
 		return nil, errors.New("No video stream found.")
 	}
 	stbl := trak.Mdia.Minf.Stbl
-	if stbl.Stsd == nil || stbl.Stsd.AvcX == nil || stbl.Stsd.AvcX.AvcC == nil {
-		return nil, fmt.Errorf("unsupported video codec %s: only H.264 can be decoded", sampleEntryName(stbl.Stsd))
+	if stbl.Stsd == nil {
+		return nil, errors.New("video track has no sample description")
 	}
-	var cfg bytes.Buffer
-	if err := stbl.Stsd.AvcX.AvcC.Encode(&cfg); err != nil {
-		return nil, err
-	}
-	s := &mp4Stream{avcC: cfg.Bytes()[8:]} // the record, without its box header
-	timescale := float64(trak.Mdia.Mdhd.Timescale)
-	if timescale <= 0 {
-		return nil, errors.New("video track has no timescale")
+	var codec videoCodec
+	var w, h int
+	switch entry := sampleEntryName(stbl.Stsd); {
+	case stbl.Stsd.AvcX != nil && stbl.Stsd.AvcX.AvcC != nil:
+		var cfg bytes.Buffer
+		if err := stbl.Stsd.AvcX.AvcC.Encode(&cfg); err != nil {
+			return nil, err
+		}
+		if codec, w, h, err = h264AVCC(cfg.Bytes()[8:]); err != nil { // the record, without its box header
+			return nil, err
+		}
+		if w == 0 {
+			w, h = int(stbl.Stsd.AvcX.Width), int(stbl.Stsd.AvcX.Height)
+		}
+	case entry == "jpeg" || entry == "mjpa":
+		codec = mjpegCodec
+		if vse, ok := stbl.Stsd.Children[0].(*mp4.VisualSampleEntryBox); ok {
+			w, h = int(vse.Width), int(vse.Height)
+		}
+	default:
+		return nil, unsupportedCodec(entry)
 	}
 
+	var packets []videoPacket
 	if f.IsFragmented() {
-		s.samples, err = fragmentedSamples(f, buffer, trak.Tkhd.TrackID, moov)
+		packets, err = fragmentedSamples(f, buffer, trak.Tkhd.TrackID, moov)
 	} else {
-		s.samples, err = progressiveSamples(stbl, buffer)
+		packets, err = progressiveSamples(stbl, buffer)
 	}
 	if err != nil {
 		return nil, err
 	}
-	if len(s.samples) == 0 {
-		return nil, errors.New("video track has no samples")
-	}
-
-	// GOPs in decode order; a stream that opens without a sync sample still
-	// decodes from its first sample.
-	start := 0
-	for i := 1; i < len(s.samples); i++ {
-		if s.samples[i].sync {
-			s.gops = append(s.gops, [2]int{start, i})
-			start = i
-		}
-	}
-	s.gops = append(s.gops, [2]int{start, len(s.samples)})
-
 	// The edit list's first media edit says which media time is shown at 0
 	// and how long the movie is; an empty edit before it delays the start.
-	shift, delay, editDuration := editList(trak, moov)
-	for _, g := range s.gops {
-		pts := make([]int64, 0, g[1]-g[0])
-		for _, smp := range s.samples[g[0]:g[1]] {
-			pts = append(pts, smp.pts)
-		}
-		slices.Sort(pts)
-		lo := len(s.display)
-		for _, p := range pts {
-			t := float64(p-shift)/timescale + delay
-			if p < shift {
-				t = -1 // pre-roll: decoded, never shown
-			}
-			s.display = append(s.display, t)
-		}
-		s.segs = append(s.segs, [2]int{lo, len(s.display)})
-	}
-
-	duration := editDuration
-	if duration <= 0 {
+	shift, delay, duration := editList(trak, moov)
+	timescale := float64(trak.Mdia.Mdhd.Timescale)
+	if duration <= 0 && timescale > 0 {
 		duration = float64(trak.Mdia.Mdhd.Duration) / timescale
 	}
-	if duration <= 0 {
-		last := s.display[len(s.display)-1]
-		duration = last + last/float64(max(1, len(s.display)-1))
-	}
-	shown := 0
-	for _, t := range s.display {
-		if t >= 0 {
-			shown++
-		}
-	}
-
-	info, err := goh264.InspectAVCC(s.avcC)
-	if err != nil {
-		return nil, fmt.Errorf("invalid H.264 configuration: %w", err)
-	}
-	w, h := int(stbl.Stsd.AvcX.Width), int(stbl.Stsd.AvcX.Height)
-	if info.StreamInfo.Width > 0 {
-		w, h = info.StreamInfo.Width, info.StreamInfo.Height
-	}
-	s.px = max(1, w*h)
-	s.rotation = trackRotation(trak.Tkhd)
-	if s.rotation == 90 || s.rotation == 270 {
-		w, h = h, w
-	}
-	s.meta = videoMeta{duration: duration, width: w, height: h, fps: float64(shown) / duration, codec: "h264"}
-	return s, nil
+	timing := streamTiming{timescale: timescale, shift: shift, delay: delay, duration: duration}
+	return newPacketStream(packets, codec, timing, w, h, trackRotation(trak.Tkhd))
 }
 
 func sampleEntryName(stsd *mp4.StsdBox) string {
@@ -301,54 +241,9 @@ func trackRotation(tkhd *mp4.TkhdBox) int {
 	return (deg%360 + 360) % 360
 }
 
-func (s *mp4Stream) info() videoMeta    { return s.meta }
-func (s *mp4Stream) times() []float64   { return s.display }
-func (s *mp4Stream) segments() [][2]int { return s.segs }
-func (s *mp4Stream) pixels() int        { return s.px }
-
-func (s *mp4Stream) decodeSegment(seg, last int, visit func(i int, p picture) bool) error {
-	dec := goh264.NewDecoder()
-	if _, err := dec.ConfigureAVCC(s.avcC); err != nil {
-		return fmt.Errorf("invalid H.264 configuration: %w", err)
-	}
-	g := s.gops[seg]
-	next := s.segs[seg][0]
-	emit := func(frames []*goh264.Frame) bool {
-		for _, fr := range frames {
-			if next >= s.segs[seg][1] {
-				return false
-			}
-			i := next
-			next++
-			if !visit(i, &yuvPicture{f: fr, rotation: s.rotation}) || i >= last {
-				return false
-			}
-		}
-		return true
-	}
-	for _, smp := range s.samples[g[0]:g[1]] {
-		frames, err := dec.DecodeConfiguredAVCFrames(smp.data)
-		if err != nil {
-			return fmt.Errorf("H.264 decode failed: %w", err)
-		}
-		if !emit(frames) {
-			return nil
-		}
-	}
-	frames, err := dec.FlushDelayedFrames()
-	if err != nil {
-		return fmt.Errorf("H.264 decode failed: %w", err)
-	}
-	emit(frames)
-	return nil
-}
-
 // ── decoded H.264 pictures ───────────────────────────────────────────────────
 
-type yuvPicture struct {
-	f        *goh264.Frame
-	rotation int
-}
+type yuvPicture struct{ f *goh264.Frame }
 
 // planeGeometry locates plane idx (0 = Y): its samples, stride, the visible
 // picture's offset within it, and its subsampling.
@@ -477,14 +372,6 @@ func (p *yuvPicture) image() image.Image {
 			out[x*4+2] = clamp8(b >> 16)
 			out[x*4+3] = 255
 		}
-	}
-	switch p.rotation {
-	case 90:
-		return imaging.Rotate270(img) // imaging rotates counter-clockwise
-	case 180:
-		return imaging.Rotate180(img)
-	case 270:
-		return imaging.Rotate90(img)
 	}
 	return img
 }

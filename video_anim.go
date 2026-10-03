@@ -190,8 +190,11 @@ func walkRIFF(data []byte, fn func(id string, data []byte) error) error {
 	for len(data) >= 8 {
 		id := string(data[:4])
 		size := int(binary.LittleEndian.Uint32(data[4:8]))
-		if size < 0 || 8+size > len(data) {
-			return errors.New("truncated RIFF chunk " + id)
+		if size < 0 {
+			return errors.New("corrupt RIFF chunk " + id)
+		}
+		if 8+size > len(data) {
+			size = len(data) - 8 // a cut-off file: keep what is there
 		}
 		if err := fn(id, data[8:8+size]); err != nil {
 			return err

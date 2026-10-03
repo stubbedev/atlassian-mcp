@@ -32,7 +32,7 @@
     },
     {
       "name": "get_attachment",
-      "description": "Fetch an attachment by ID and return its contents inline. source=jira for a Jira issue attachment (IDs come from jira_get), source=bitbucket for a repo attachment referenced from a PR description or comment as attachment:<id> (IDs come from bitbucket_get_pr). Images are auto-resized + re-encoded; text/JSON/XML return as text; videos (MP4/MOV, H.264) and animated images (GIF/APNG/WebP) return sampled frames (re-call with start/end/frames or mode=scenes to refine); audio returns as an audio block; PDFs return extracted text, or rendered pages when they have none. Oversized/non-renderable files are saved to a temp file and the path returned.",
+      "description": "Fetch an attachment by ID and return its contents inline. source=jira for a Jira issue attachment (IDs come from jira_get), source=bitbucket for a repo attachment referenced from a PR description or comment as attachment:<id> (IDs come from bitbucket_get_pr). Images are auto-resized + re-encoded; text/JSON/XML return as text; videos (MP4/MOV/MKV/WebM/AVI with H.264, Motion JPEG or VP8) and animated images (GIF/APNG/WebP) return sampled frames (re-call with start/end/frames or mode=scenes to refine); audio returns as an audio block; PDFs return extracted text, or rendered pages when they have none. Oversized/non-renderable files are saved to a temp file and the path returned.",
       "inputSchema": {
         "type": "object",
         "properties": {
