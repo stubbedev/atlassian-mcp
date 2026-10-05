@@ -171,9 +171,77 @@ BITBUCKET_ACCESS_TOKEN=your-bitbucket-personal-access-token
 
 Config is resolved in this order: `--config <path>` CLI arg → `ATLASSIAN_MCP_CONFIG` env var → `~/.atlassian-mcp.json` → `$XDG_CONFIG_HOME/atlassian-mcp/config.json` (default `~/.config/atlassian-mcp/config.json`) → `.atlassian-mcp.json` in cwd → environment variables. A leading `~` in the first two is expanded by the server, so a client that spawns it without a shell still resolves the path. Within a file, per-field: a value in the config file wins, environment variables fill the gaps.
 
-### 2. Connect to your AI tool
+### 2. Install
 
-No cloning or building required — just point your tool at `npx @stubbedev/atlassian-mcp@latest` and it will install and run automatically.
+Every option below runs the same single static Go binary — no `git`, `ffmpeg` or other
+program needed on the machine. Pick whichever package manager you already have:
+
+| Option | Install | Command for your MCP client |
+|---|---|---|
+| **npx** (Node 18+) | nothing — fetched on first run | `npx -y @stubbedev/atlassian-mcp@latest` |
+| **npm global** (Node 18+) | `npm install -g @stubbedev/atlassian-mcp` | `atlassian-mcp` |
+| **Composer** (PHP 8.1+) | `composer global require stubbedev/atlassian-mcp` | `atlassian-mcp` (in Composer's global bin dir) |
+| **Composer, per project** | `composer require --dev stubbedev/atlassian-mcp` | `vendor/bin/atlassian-mcp` |
+| **Claude Desktop bundle** | double-click the `.mcpb` from the [latest release](https://github.com/stubbedev/atlassian-mcp/releases/latest) | — (see [Claude Desktop](#claude-desktop)) |
+| **Prebuilt binary** | download `atlassian-mcp_<os>_<arch>` from the [latest release](https://github.com/stubbedev/atlassian-mcp/releases/latest) | path to that file |
+| **Go** | `go install -tags nodynamic github.com/stubbedev/atlassian-mcp@latest` | `atlassian-mcp` (in `$GOBIN`) |
+| **Nix** | `nix profile install github:stubbedev/atlassian-mcp` | `atlassian-mcp` |
+
+The client examples in [step 3](#3-connect-to-your-ai-tool) use `npx`. With any other
+option, replace `npx -y @stubbedev/atlassian-mcp@latest` (or `"command": "npx"` plus its
+`args`) with that option's command. MCP clients often start servers without your shell's
+`PATH`, so an absolute path is the safest choice (`which atlassian-mcp`).
+
+#### npm / npx
+
+`npx` downloads the package and the prebuilt binary for your platform on first run, so
+there is nothing to install up front. `npm install -g` does the same once and puts
+`atlassian-mcp` on your `PATH`.
+
+#### Composer
+
+The Composer package `stubbedev/atlassian-mcp` is for PHP projects, or machines with PHP
+but no Node:
+
+```bash
+composer global require stubbedev/atlassian-mcp     # per user → $(composer global config bin-dir --absolute)/atlassian-mcp
+composer require --dev stubbedev/atlassian-mcp      # per project → vendor/bin/atlassian-mcp
+
+claude mcp add atlassian -- "$(composer global config bin-dir --absolute)/atlassian-mcp" --config ~/.atlassian-mcp.json
+```
+
+Composer does not run install hooks for dependencies, so the launcher downloads the binary
+for your platform from the matching GitHub release the first time it runs. That needs
+`ext-curl` or `allow_url_fopen`. Run the launcher once after you install or update
+(`atlassian-mcp </dev/null`) so your MCP client does not wait on the download. Clients
+start the server from their own working directory, so give a per-project install as an
+absolute path (`$PWD/vendor/bin/atlassian-mcp`).
+
+#### Standalone binary (Go, Nix, release download)
+
+```bash
+go install -tags nodynamic github.com/stubbedev/atlassian-mcp@latest   # → $GOBIN / $GOPATH/bin
+nix run github:stubbedev/atlassian-mcp -- --config ~/.atlassian-mcp.json
+```
+
+Or download `atlassian-mcp_<os>_<arch>` from the
+[latest release](https://github.com/stubbedev/atlassian-mcp/releases/latest), then
+`chmod +x` it (macOS/Linux/FreeBSD).
+
+#### Updating
+
+| Option | Update |
+|---|---|
+| npx | `npx clear-npx-cache`, then restart your MCP client |
+| npm global | `npm update -g @stubbedev/atlassian-mcp` |
+| Composer | `composer global update stubbedev/atlassian-mcp` (or `composer update stubbedev/atlassian-mcp` in the project) |
+| Claude Desktop | install the newer `.mcpb` over the old one |
+| Go / Nix / binary | re-run the install command or download the newer release |
+
+### 3. Connect to your AI tool
+
+The examples below use `npx`. If you installed another way, swap in that option's command
+from the [table above](#2-install).
 
 CLI-driven clients need one line:
 
@@ -181,12 +249,14 @@ CLI-driven clients need one line:
 claude mcp add atlassian -- npx -y @stubbedev/atlassian-mcp@latest       # Claude Code
 codex mcp add atlassian -- npx -y @stubbedev/atlassian-mcp@latest        # Codex CLI / IDE / app
 code --add-mcp '{"name":"atlassian","command":"npx","args":["-y","@stubbedev/atlassian-mcp@latest"]}'   # VS Code
+
+claude mcp add atlassian -- atlassian-mcp                                 # e.g. after npm -g / Composer / Go / Nix
 ```
 
 Desktop apps: **Claude Desktop** installs a one-click [`.mcpb` bundle](#claude-desktop) —
 no Node, no JSON. Everything else takes a config file; see below.
 
-> Note: `--prefer-online` can break MCP startup in some clients. Keep the command simple and use the update steps below when you want to refresh.
+> Note: `--prefer-online` can break MCP startup in some clients. Keep the command simple and use the [update steps](#updating) when you want to refresh.
 
 ---
 
@@ -429,36 +499,7 @@ the right protocol, but making it work would mean exposing an endpoint that reac
 self-hosted Jira/Bitbucket to OpenAI's servers, and ChatGPT offers no place for the static
 bearer token this server uses. Use a client from the list above.
 
-### Updating existing installs
-
-If your MCP client is already configured and you want the newest package version:
-
-```bash
-npx clear-npx-cache
-```
-
-Then restart your MCP client.
-
 ---
-
-### Install without npm
-
-The server is a single static Go binary. The `npx` path above downloads the prebuilt
-binary for your platform on first run; these alternatives skip Node entirely — as does the
-[`.mcpb` bundle](#claude-desktop) for Claude Desktop, and the per-platform binaries
-attached to every [release](https://github.com/stubbedev/atlassian-mcp/releases/latest):
-
-```bash
-# Go toolchain — installs to $GOBIN / $GOPATH/bin
-go install -tags nodynamic github.com/stubbedev/atlassian-mcp@latest
-
-# Nix flake
-nix run github:stubbedev/atlassian-mcp -- --config ~/.atlassian-mcp.json
-```
-
-Then point your MCP client's `command` at the resulting `atlassian-mcp` binary
-instead of `npx`. Every install path is the same single static binary: it needs no `git`,
-`ffmpeg` or other program on the machine.
 
 ### Running as an HTTP server (shared / behind a proxy)
 
@@ -650,7 +691,8 @@ the binary can be rebuilt against a modified copy.
 
 ## Releases (Maintainers)
 
-This package is published to npm as `@stubbedev/atlassian-mcp`.
+This package is published to npm as `@stubbedev/atlassian-mcp` and to Packagist as
+`stubbedev/atlassian-mcp`.
 
 Use semantic versioning for releases. Breaking tool-surface changes should bump the minor version while `<1.0.0` (for example `0.0.x` -> `0.1.0`).
 
@@ -680,6 +722,12 @@ The equivalent npm scripts (`npm run release:patch` / `:minor` / `:major`) still
 Required npm setup (one-time):
 
 - In npm package settings, add this GitHub repo/workflow as a Trusted Publisher
+
+Packagist needs no workflow step: it reads `composer.json` straight from each pushed `v*`
+tag (no `version` field — the tag is the version, and the launcher reads `package.json`
+to pick the release binary). One-time setup: submit the repo at
+<https://packagist.org/packages/submit> and keep the Packagist GitHub integration enabled
+so new tags are picked up automatically.
 
 ---
 

@@ -55,6 +55,12 @@ jobs:
           print("mcpb manifest OK", m["version"])
           EOF
 
+      # The Composer launcher only runs on users' machines, so lint it here.
+      - name: Composer package
+        run: |
+          composer validate --strict
+          php -l bin/atlassian-mcp
+
       # Real-binary smoke over stdio: a full MCP handshake (initialize →
       # initialized → tools/list) on the official SDK transport. Both services
       # are configured (via env) so the full tool set registers. The trailing
