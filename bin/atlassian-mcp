@@ -1,149 +1,25 @@
 #!/usr/bin/env php
 <?php
-// Composer launcher: the PHP twin of bin/cli.mjs. Ensures the prebuilt Go
-// binary for this platform is present next to this file (downloading it from
-// the GitHub release matching package.json's version on first run — Composer
-// runs no install hooks for dependencies), then hands stdio to it.
+// Composer launcher: the PHP twin of bin/cli.mjs. The Composer plugin
+// (src/ComposerPlugin.php) normally fetches the native binary at install time;
+// this fetches it on first run when the plugin was not allowed to, then hands
+// stdio to it.
 //
-// With pcntl the launcher replaces itself with the binary, so it adds nothing
-// at runtime. Without it (Windows, minimal PHP builds) the binary runs as a
-// child that inherits the real stdin/stdout, so there is still no per-message
-// relaying: PHP only waits for the exit code.
+// MCP clients can point at the native binary directly to skip PHP entirely.
+// Through this launcher, pcntl replaces the PHP process with the binary; without
+// pcntl (Windows, minimal PHP builds) the binary runs as a child that inherits
+// the real stdin/stdout, so there is still no per-message relaying.
 
 declare(strict_types=1);
 
-const ATLASSIAN_MCP_REPO = 'stubbedev/atlassian-mcp';
+// Loaded by path rather than the autoloader so a global install works too.
+require_once dirname(__DIR__) . '/src/Binary.php';
 
-function atlassian_mcp_fail(string $msg): void
-{
-    fwrite(STDERR, "[atlassian-mcp] {$msg}\n");
+try {
+    $bin = Stubbedev\AtlassianMcp\Binary::ensure();
+} catch (Throwable $e) {
+    fwrite(STDERR, "[atlassian-mcp] {$e->getMessage()}\n");
     exit(1);
-}
-
-// Map PHP's OS family / machine onto the Go release asset naming (the same
-// targets as scripts/download.mjs).
-function atlassian_mcp_target(): array
-{
-    $os = [
-        'Linux' => 'linux',
-        'Darwin' => 'darwin',
-        'Windows' => 'windows',
-        'BSD' => 'freebsd',
-    ][PHP_OS_FAMILY] ?? null;
-
-    $machine = strtolower(php_uname('m'));
-    $arch = [
-        'x86_64' => 'amd64',
-        'amd64' => 'amd64',
-        'aarch64' => 'arm64',
-        'arm64' => 'arm64',
-        'armv7l' => 'arm',
-        'armv7' => 'arm',
-        'armv6l' => 'arm',
-        'i386' => '386',
-        'i686' => '386',
-        'x86' => '386',
-        'ppc64le' => 'ppc64le',
-        's390x' => 's390x',
-        'riscv64' => 'riscv64',
-    ][$machine] ?? null;
-
-    $supported = [
-        'linux' => ['amd64', 'arm64', 'arm', '386', 'ppc64le', 's390x', 'riscv64'],
-        'darwin' => ['amd64', 'arm64'],
-        'windows' => ['amd64', 'arm64', '386'],
-        'freebsd' => ['amd64', 'arm64'],
-    ];
-    if ($os === null || $arch === null || !in_array($arch, $supported[$os], true)) {
-        atlassian_mcp_fail(sprintf(
-            'Unsupported platform %s/%s. Build from source with: go install -tags nodynamic github.com/%s@latest',
-            PHP_OS_FAMILY,
-            $machine,
-            ATLASSIAN_MCP_REPO,
-        ));
-    }
-
-    return [$os, $arch, $os === 'windows' ? '.exe' : ''];
-}
-
-function atlassian_mcp_version(string $root): string
-{
-    $pkg = json_decode((string) @file_get_contents($root . '/package.json'), true);
-    if (!is_array($pkg) || !is_string($pkg['version'] ?? null)) {
-        atlassian_mcp_fail("cannot read the version from {$root}/package.json");
-    }
-
-    return $pkg['version'];
-}
-
-function atlassian_mcp_download(string $url, string $dest): void
-{
-    $tmp = $dest . '.download';
-    $out = @fopen($tmp, 'wb');
-    if ($out === false) {
-        atlassian_mcp_fail("cannot write {$tmp}");
-    }
-
-    if (extension_loaded('curl')) {
-        $ch = curl_init($url);
-        curl_setopt_array($ch, [
-            CURLOPT_FILE => $out,
-            CURLOPT_FOLLOWLOCATION => true,
-            CURLOPT_FAILONERROR => true,
-            CURLOPT_USERAGENT => 'atlassian-mcp-composer',
-            CURLOPT_CONNECTTIMEOUT => 30,
-        ]);
-        $ok = curl_exec($ch);
-        $err = curl_error($ch);
-        fclose($out);
-        if ($ok === false) {
-            @unlink($tmp);
-            atlassian_mcp_fail("Failed to download {$url}: {$err}");
-        }
-    } else {
-        $ctx = stream_context_create(['http' => [
-            'follow_location' => 1,
-            'user_agent' => 'atlassian-mcp-composer',
-        ]]);
-        $in = @fopen($url, 'rb', false, $ctx);
-        if ($in === false) {
-            fclose($out);
-            @unlink($tmp);
-            $err = error_get_last()['message'] ?? 'unknown error';
-            atlassian_mcp_fail("Failed to download {$url}: {$err}");
-        }
-        stream_copy_to_stream($in, $out);
-        fclose($in);
-        fclose($out);
-    }
-
-    if (filesize($tmp) === 0) {
-        @unlink($tmp);
-        atlassian_mcp_fail("Failed to download {$url}: empty response");
-    }
-    @chmod($tmp, 0755);
-    @unlink($dest);
-    if (!rename($tmp, $dest)) {
-        atlassian_mcp_fail("cannot move the binary into place at {$dest}");
-    }
-}
-
-[$os, $arch, $ext] = atlassian_mcp_target();
-$bin = __DIR__ . "/atlassian-mcp-native{$ext}";
-
-if (!is_file($bin) || filesize($bin) === 0) {
-    $version = atlassian_mcp_version(dirname(__DIR__));
-    atlassian_mcp_download(
-        sprintf(
-            'https://github.com/%s/releases/download/v%s/atlassian-mcp_%s_%s%s',
-            ATLASSIAN_MCP_REPO,
-            $version,
-            $os,
-            $arch,
-            $ext,
-        ),
-        $bin,
-    );
 }
 
 $args = array_slice($_SERVER['argv'] ?? [], 1);
@@ -155,6 +31,7 @@ if (function_exists('pcntl_exec')) {
 
 $proc = proc_open(array_merge([$bin], $args), [STDIN, STDOUT, STDERR], $pipes, null, null, ['bypass_shell' => true]);
 if (!is_resource($proc)) {
-    atlassian_mcp_fail("failed to start binary {$bin}");
+    fwrite(STDERR, "[atlassian-mcp] failed to start binary {$bin}\n");
+    exit(1);
 }
 exit(proc_close($proc));

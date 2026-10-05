@@ -1,20 +1,37 @@
 {
     "name": "stubbedev/atlassian-mcp",
     "description": "MCP server for self-hosted Jira and Bitbucket (Go, distributed as a prebuilt binary)",
-    "type": "library",
+    "type": "composer-plugin",
     "license": "MIT",
-    "keywords": ["mcp", "jira", "bitbucket", "atlassian", "model-context-protocol"],
+    "keywords": [
+        "mcp",
+        "jira",
+        "bitbucket",
+        "atlassian",
+        "model-context-protocol"
+    ],
     "homepage": "https://github.com/stubbedev/atlassian-mcp#readme",
     "support": {
         "issues": "https://github.com/stubbedev/atlassian-mcp/issues",
         "source": "https://github.com/stubbedev/atlassian-mcp"
     },
     "require": {
-        "php": ">=8.1"
+        "php": ">=8.1",
+        "composer-plugin-api": "^2.0"
     },
     "suggest": {
-        "ext-curl": "Downloads the binary on first run; without it allow_url_fopen + openssl are used",
-        "ext-pcntl": "Lets the launcher exec the binary in place instead of running it as a child"
+        "ext-curl": "Downloads the binary; without it allow_url_fopen + openssl are used",
+        "ext-pcntl": "Lets bin/atlassian-mcp exec the binary in place instead of running it as a child"
     },
-    "bin": ["bin/atlassian-mcp"]
+    "bin": [
+        "bin/atlassian-mcp"
+    ],
+    "autoload": {
+        "psr-4": {
+            "Stubbedev\\AtlassianMcp\\": "src/"
+        }
+    },
+    "extra": {
+        "class": "Stubbedev\\AtlassianMcp\\ComposerPlugin"
+    }
 }

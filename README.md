@@ -180,8 +180,8 @@ program needed on the machine. Pick whichever package manager you already have:
 |---|---|---|
 | **npx** (Node 18+) | nothing — fetched on first run | `npx -y @stubbedev/atlassian-mcp@latest` |
 | **npm global** (Node 18+) | `npm install -g @stubbedev/atlassian-mcp` | `atlassian-mcp` |
-| **Composer** (PHP 8.1+) | `composer global require stubbedev/atlassian-mcp` | `atlassian-mcp` (in Composer's global bin dir) |
-| **Composer, per project** | `composer require --dev stubbedev/atlassian-mcp` | `vendor/bin/atlassian-mcp` |
+| **Composer** (PHP 8.1+) | `composer global require stubbedev/atlassian-mcp` | the native binary it downloads — see [Composer](#composer) |
+| **Composer, per project** | `composer require --dev stubbedev/atlassian-mcp` | `vendor/stubbedev/atlassian-mcp/bin/atlassian-mcp-native` |
 | **Claude Desktop bundle** | double-click the `.mcpb` from the [latest release](https://github.com/stubbedev/atlassian-mcp/releases/latest) | — (see [Claude Desktop](#claude-desktop)) |
 | **Prebuilt binary** | download `atlassian-mcp_<os>_<arch>` from the [latest release](https://github.com/stubbedev/atlassian-mcp/releases/latest) | path to that file |
 | **Go** | `go install -tags nodynamic github.com/stubbedev/atlassian-mcp@latest` | `atlassian-mcp` (in `$GOBIN`) |
@@ -201,21 +201,39 @@ there is nothing to install up front. `npm install -g` does the same once and pu
 #### Composer
 
 The Composer package `stubbedev/atlassian-mcp` is for PHP projects, or machines with PHP
-but no Node:
+but no Node. It is a Composer plugin: on `composer install` / `update` it downloads the
+prebuilt binary for your OS and architecture (the same 14 targets as npm), from the release
+matching the installed version, so a pinned version pins the binary. Your MCP client then
+runs that native binary directly, and PHP is never in the request path:
 
 ```bash
-composer global require stubbedev/atlassian-mcp     # per user → $(composer global config bin-dir --absolute)/atlassian-mcp
-composer require --dev stubbedev/atlassian-mcp      # per project → vendor/bin/atlassian-mcp
-
-claude mcp add atlassian -- "$(composer global config bin-dir --absolute)/atlassian-mcp" --config ~/.atlassian-mcp.json
+composer require --dev stubbedev/atlassian-mcp      # per project
+composer global require stubbedev/atlassian-mcp     # per user
 ```
 
-Composer does not run install hooks for dependencies, so the launcher downloads the binary
-for your platform from the matching GitHub release the first time it runs. That needs
-`ext-curl` or `allow_url_fopen`. Run the launcher once after you install or update
-(`atlassian-mcp </dev/null`) so your MCP client does not wait on the download. Clients
-start the server from their own working directory, so give a per-project install as an
-absolute path (`$PWD/vendor/bin/atlassian-mcp`).
+Composer asks once whether to trust the plugin. For non-interactive installs (CI,
+provisioning), allow it up front:
+
+```bash
+composer config allow-plugins.stubbedev/atlassian-mcp true          # per project
+composer global config allow-plugins.stubbedev/atlassian-mcp true   # per user
+```
+
+The install prints the binary's path. Point your client at it:
+
+| Install | Native binary (no PHP at runtime) | PHP launcher |
+|---|---|---|
+| per project | `vendor/stubbedev/atlassian-mcp/bin/atlassian-mcp-native` | `vendor/bin/atlassian-mcp` |
+| per user | `$(composer global config home)/vendor/stubbedev/atlassian-mcp/bin/atlassian-mcp-native` | `$(composer global config bin-dir --absolute)/atlassian-mcp` |
+
+```bash
+claude mcp add atlassian -- "$PWD/vendor/stubbedev/atlassian-mcp/bin/atlassian-mcp-native" --config ~/.atlassian-mcp.json
+```
+
+On Windows the binary is `atlassian-mcp-native.exe`. The PHP launcher works even if
+you declined the plugin: it downloads the binary on its first run, then hands over to it.
+Clients start the server from their own working directory, so use absolute paths. Set
+`ATLASSIAN_MCP_SKIP_DOWNLOAD=1` to skip the install-time download.
 
 #### Standalone binary (Go, Nix, release download)
 
