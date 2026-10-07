@@ -8,7 +8,7 @@ require (
 	github.com/gen2brain/avif v0.6.0
 	github.com/gen2brain/heic v0.7.2
 	github.com/gen2brain/jpegxl v0.6.0
-	github.com/go-git/go-billy/v5 v5.9.0
+	github.com/go-git/go-billy/v5 v5.9.2
 	github.com/go-git/go-git/v5 v5.19.2
 	github.com/kettek/apng v0.0.0-20250827064933-2bb5f5fcf253
 	github.com/kevinburke/ssh_config v1.6.0
