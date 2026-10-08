@@ -15,7 +15,7 @@ require (
 	github.com/klippa-app/go-pdfium v1.21.1
 	github.com/ledongthuc/pdf v0.0.0-20250511090121-5959a4027728
 	github.com/modelcontextprotocol/go-sdk v1.8.0
-	github.com/sergi/go-diff v1.3.2-0.20230802210424-5b0b94c5c0d3
+	github.com/sergi/go-diff v1.4.0
 	github.com/thesyncim/goh264 v0.0.0-20260714162114-14b36a2bfcc4
 	golang.org/x/crypto v0.57.0
 	golang.org/x/image v0.46.0
