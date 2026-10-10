@@ -2,6 +2,8 @@ module github.com/stubbedev/atlassian-mcp
 
 go 1.27
 
+toolchain go1.27.2
+
 require (
 	github.com/Eyevinn/mp4ff v0.57.0
 	github.com/disintegration/imaging v1.6.2
