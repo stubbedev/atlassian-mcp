@@ -9,7 +9,7 @@ import (
 	"image/jpeg"
 	"slices"
 
-	"github.com/disintegration/imaging"
+	"github.com/kovidgoyal/imaging"
 	"github.com/thesyncim/goh264"
 	"golang.org/x/image/vp8"
 )

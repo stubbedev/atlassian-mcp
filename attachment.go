@@ -18,13 +18,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/disintegration/imaging"
 	_ "github.com/gen2brain/avif"   // AVIF, via libavif compiled to WebAssembly
 	_ "github.com/gen2brain/heic"   // HEIC/HEIF (iPhone photos), via libheif in WebAssembly
 	_ "github.com/gen2brain/jpegxl" // JPEG XL, via libjxl in WebAssembly
 	"github.com/klippa-app/go-pdfium"
 	"github.com/klippa-app/go-pdfium/requests"
 	"github.com/klippa-app/go-pdfium/webassembly"
+	"github.com/kovidgoyal/imaging"
 	"github.com/ledongthuc/pdf"
 	_ "golang.org/x/image/bmp"
 	_ "golang.org/x/image/tiff"

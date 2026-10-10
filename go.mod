@@ -6,7 +6,6 @@ toolchain go1.27.2
 
 require (
 	github.com/Eyevinn/mp4ff v0.57.0
-	github.com/disintegration/imaging v1.6.2
 	github.com/gen2brain/avif v0.6.0
 	github.com/gen2brain/heic v0.7.2
 	github.com/gen2brain/jpegxl v0.6.0
@@ -15,6 +14,7 @@ require (
 	github.com/kettek/apng v0.0.0-20250827064933-2bb5f5fcf253
 	github.com/kevinburke/ssh_config v1.6.0
 	github.com/klippa-app/go-pdfium v1.21.1
+	github.com/kovidgoyal/imaging v1.8.23
 	github.com/ledongthuc/pdf v0.0.0-20250511090121-5959a4027728
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/sergi/go-diff v1.4.0
@@ -39,7 +39,10 @@ require (
 	github.com/jbenet/go-context v0.0.0-20150711004518-d14ea06fba99 // indirect
 	github.com/jolestar/go-commons-pool/v2 v2.1.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
+	github.com/kovidgoyal/go-parallel v1.1.1 // indirect
+	github.com/kovidgoyal/go-shm v1.0.0 // indirect
 	github.com/pjbgf/sha1cd v0.6.0 // indirect
+	github.com/rwcarlsen/goexif v0.0.0-20190401172101-9e8deecbddbd // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect
 	github.com/skeema/knownhosts v1.3.1 // indirect
