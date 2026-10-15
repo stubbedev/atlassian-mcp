@@ -1313,7 +1313,7 @@ func (c *JiraClient) createIssueInternal(create map[string]any, repoRoot string)
 	}
 	if d := argString(create, "description"); d != "" {
 		wiki, _ := markdownToJiraWiki(d)
-		fields["description"] = appendAIMarkerWiki(wiki)
+		fields["description"] = appendAIMarkerWiki(wiki, authoredByAI)
 	}
 	if a := argString(create, "assignee"); a != "" {
 		fields["assignee"] = map[string]any{"name": a}
@@ -1410,7 +1410,7 @@ func (c *JiraClient) updateIssueFieldsInternal(issueKey string, update map[strin
 	}
 	if has(update, "description") {
 		wiki, _ := markdownToJiraWiki(argString(update, "description"))
-		fields["description"] = appendAIMarkerWiki(wiki)
+		fields["description"] = appendAIMarkerWiki(wiki, authoredByAI)
 	}
 	if has(update, "assignee") {
 		if a := argString(update, "assignee"); a != "" {
@@ -2098,6 +2098,8 @@ func (c *JiraClient) deleteIssue(issueKey string, deleteSubtasks bool) (toolResu
 	return textResult(fmt.Sprintf("Deleted %s%s. This cannot be undone.", issueKey, label)), nil
 }
 
+var issueMutationKeys = []string{"create", "update", "sprintId", "removeFromSprint", "transitionId", "transitionName", "comment", "commentAction", "commentId", "commentUserAuthored", "attachments", "link", "worklog"}
+
 // mutateIssue handles jira_mutate: create/update/delete/sprint/transition/comment/link/worklog.
 func (c *JiraClient) mutateIssue(args map[string]any, repoRoot string) (toolResult, error) {
 	issueKey := strings.TrimSpace(argString(args, "issueKey"))
@@ -2109,7 +2111,7 @@ func (c *JiraClient) mutateIssue(args map[string]any, repoRoot string) (toolResu
 	if version := argMap(args, "version"); version != nil {
 		// Version work and issue work in one call would mean half the arguments
 		// silently doing nothing, so they are kept apart.
-		for _, k := range []string{"create", "update", "delete", "sprintId", "removeFromSprint", "transitionId", "transitionName", "comment", "commentAction", "commentId", "attachments", "link", "worklog"} {
+		for _, k := range append([]string{"delete"}, issueMutationKeys...) {
 			if has(args, k) {
 				return toolResult{}, fmt.Errorf("version cannot be combined with %s — call jira_mutate twice: once for the version, once for the issue.", k)
 			}
@@ -2127,7 +2129,7 @@ func (c *JiraClient) mutateIssue(args map[string]any, repoRoot string) (toolResu
 	// Deletion is decided before anything is written: combined with create it
 	// would otherwise make the issue and then refuse the call.
 	if argBool(args, "delete") {
-		for _, k := range []string{"create", "update", "sprintId", "removeFromSprint", "transitionId", "transitionName", "comment", "commentAction", "commentId", "attachments", "link", "worklog"} {
+		for _, k := range issueMutationKeys {
 			if has(args, k) {
 				return toolResult{}, fmt.Errorf("delete cannot be combined with %s — the issue is gone, so the rest of the call would have nothing to act on.", k)
 			}
@@ -2136,6 +2138,10 @@ func (c *JiraClient) mutateIssue(args map[string]any, repoRoot string) (toolResu
 			return toolResult{}, errors.New("delete needs the issueKey of the issue to remove.")
 		}
 		return c.deleteIssue(issueKey, argBool(args, "deleteSubtasks"))
+	}
+
+	if argBool(args, "commentUserAuthored") && (argString(args, "commentAction") == "delete" || strings.TrimSpace(argString(args, "comment")) == "") {
+		return toolResult{}, errors.New("commentUserAuthored only applies to a comment add or update with comment text.")
 	}
 
 	if create := argMap(args, "create"); create != nil {
@@ -2202,16 +2208,17 @@ func (c *JiraClient) mutateIssue(args map[string]any, repoRoot string) (toolResu
 		actions = append(actions, "transitioned via "+transitionID)
 	}
 
-	if has(args, "comment") || has(args, "commentId") || argString(args, "commentAction") != "" {
+	if has(args, "comment") || has(args, "commentId") || argBool(args, "commentUserAuthored") || argString(args, "commentAction") != "" {
 		action := argString(args, "commentAction")
 		if action == "" {
 			action = "add"
 		}
 		res, err := c.comment(map[string]any{
-			"issueKey":  issueKey,
-			"action":    action,
-			"commentId": argString(args, "commentId"),
-			"body":      argString(args, "comment"),
+			"issueKey":     issueKey,
+			"action":       action,
+			"commentId":    argString(args, "commentId"),
+			"body":         argString(args, "comment"),
+			"userAuthored": argBool(args, "commentUserAuthored"),
 		})
 		if err != nil {
 			return toolResult{}, fail("the comment", err)
@@ -2271,7 +2278,7 @@ func (c *JiraClient) mutateIssue(args map[string]any, repoRoot string) (toolResu
 		wBody := map[string]any{"timeSpent": argString(worklog, "timeSpent")}
 		if cmt := argString(worklog, "comment"); cmt != "" {
 			wiki, _ := markdownToJiraWiki(cmt)
-			wBody["comment"] = appendAIMarkerWiki(wiki)
+			wBody["comment"] = appendAIMarkerWiki(wiki, authoredByAI)
 		}
 		if started := argString(worklog, "started"); started != "" {
 			wBody["started"] = started
@@ -2300,19 +2307,21 @@ func (c *JiraClient) comment(args map[string]any) (toolResult, error) {
 		action = "add"
 	}
 	issueKey := argString(args, "issueKey")
+	body := argString(args, "body")
+	by := parseAuthorship(args, "userAuthored")
 	switch action {
 	case "update":
-		return c.editComment(issueKey, argString(args, "commentId"), argString(args, "body"))
+		return c.editComment(issueKey, argString(args, "commentId"), body, by)
 	case "delete":
 		return c.deleteComment(issueKey, argString(args, "commentId"))
 	case "add":
-		return c.addComment(issueKey, argString(args, "body"), argStrSlice(args, "attachments"))
+		return c.addComment(issueKey, body, argStrSlice(args, "attachments"), by)
 	default:
 		return toolResult{}, fmt.Errorf("Unknown comment action %q. Use add, update, or delete.", action)
 	}
 }
 
-func (c *JiraClient) addComment(issueKey, body string, attachments []string) (toolResult, error) {
+func (c *JiraClient) addComment(issueKey, body string, attachments []string, by authorship) (toolResult, error) {
 	var actions []string
 	// Body is optional when only attaching files; required otherwise.
 	if strings.TrimSpace(body) != "" || len(attachments) == 0 {
@@ -2320,7 +2329,7 @@ func (c *JiraClient) addComment(issueKey, body string, attachments []string) (to
 		if err != nil {
 			return toolResult{}, err
 		}
-		v = appendAIMarkerWiki(v)
+		v = appendAIMarkerWiki(v, by)
 		if _, err := c.api("POST", "/issue/"+url.PathEscape(issueKey)+"/comment", map[string]any{"body": v}); err != nil {
 			return toolResult{}, err
 		}
@@ -2336,7 +2345,7 @@ func (c *JiraClient) addComment(issueKey, body string, attachments []string) (to
 	return textResult(fmt.Sprintf("%s on %s.", strings.Join(actions, ", "), issueKey)), nil
 }
 
-func (c *JiraClient) editComment(issueKey, commentID, body string) (toolResult, error) {
+func (c *JiraClient) editComment(issueKey, commentID, body string, by authorship) (toolResult, error) {
 	commentID = strings.TrimSpace(commentID)
 	if commentID == "" || commentID == "undefined" || commentID == "null" {
 		return toolResult{}, errors.New("commentId is required.")
@@ -2356,7 +2365,7 @@ func (c *JiraClient) editComment(issueKey, commentID, body string) (toolResult, 
 	if err != nil {
 		return toolResult{}, err
 	}
-	v = appendAIMarkerWiki(v)
+	v = appendAIMarkerWiki(v, by)
 	if _, err := c.api("PUT", path, map[string]any{"body": v}); err != nil {
 		return toolResult{}, err
 	}

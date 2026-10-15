@@ -6,7 +6,8 @@ import "strings"
 // readers cannot tell AI writing from human writing, and neither Jira nor
 // Bitbucket Server has a built-in attribution field. Every write path instead
 // appends a bold [AI] line. Disabled with "markAIText": false in the config
-// file or ATLASSIAN_MCP_MARK_AI_TEXT=false.
+// file or ATLASSIAN_MCP_MARK_AI_TEXT=false, and skipped per comment for text
+// the user explicitly asked to have posted in their name (authoredByUser).
 
 const (
 	aiMarkerWiki     = "*[AI]*"
@@ -15,13 +16,27 @@ const (
 
 var markAITextEnabled = true
 
+type authorship int
+
+const (
+	authoredByAI authorship = iota
+	authoredByUser
+)
+
+func parseAuthorship(args map[string]any, key string) authorship {
+	if argBool(args, key) {
+		return authoredByUser
+	}
+	return authoredByAI
+}
+
 // appendAIMarkerWiki adds the attribution line to Jira-bound text, which is
 // wiki markup by the time it gets here (markdownToJiraWiki runs first), so the
 // marker can never be rewritten or swallowed by conversion. A literal
 // {code}/{noformat} block left open would run to the end of the field — a
 // marker appended after it would render inside the block, so it is skipped.
-func appendAIMarkerWiki(text string) string {
-	if !markAITextEnabled || strings.TrimSpace(text) == "" {
+func appendAIMarkerWiki(text string, by authorship) string {
+	if by == authoredByUser || !markAITextEnabled || strings.TrimSpace(text) == "" {
 		return text
 	}
 	if strings.HasSuffix(strings.TrimRight(text, " \t\r\n"), aiMarkerWiki) {
@@ -39,8 +54,8 @@ func appendAIMarkerWiki(text string) string {
 // free from running after conversion are needed here: an unterminated code
 // fence would swallow the marker, and a trailing ```suggestion block must stay
 // last for Bitbucket's apply-suggestion UI, so the marker moves in front of it.
-func appendAIMarkerMarkdown(text string) string {
-	if !markAITextEnabled || strings.TrimSpace(text) == "" {
+func appendAIMarkerMarkdown(text string, by authorship) string {
+	if by == authoredByUser || !markAITextEnabled || strings.TrimSpace(text) == "" {
 		return text
 	}
 	trimmed := strings.TrimRight(text, " \t\r\n")

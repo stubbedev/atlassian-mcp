@@ -124,8 +124,12 @@ cannot get them wrong, and they need no prompting:
   (including worklog comments) and Bitbucket PR description / PR comment posted
   through this server ends with a bold `[AI]` line, added after markdown→wiki
   conversion so it never lands inside a code block, and skipped rather than
-  mangled when the text ends inside an open code fence. Disable with
-  `"markAIText": false` in the config file or `ATLASSIAN_MCP_MARK_AI_TEXT=false`.
+  mangled when the text ends inside an open code fence. A comment the user
+  explicitly asked the agent to post for them is left unmarked via
+  `commentUserAuthored=true` (`jira_mutate`) or `userAuthored=true`
+  (`bitbucket_comment`), so `[AI]` only flags text the agent wrote on its own.
+  Disable marking entirely with `"markAIText": false` in the config file or
+  `ATLASSIAN_MCP_MARK_AI_TEXT=false`.
 
 ## Setup
 

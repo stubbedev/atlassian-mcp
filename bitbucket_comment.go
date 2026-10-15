@@ -19,6 +19,9 @@ func (c *BitbucketClient) commentDispatch(session *sessionState, args map[string
 	case "update":
 		return c.updatePrComment(args, repoRoot)
 	case "delete":
+		if argBool(args, "userAuthored") {
+			return toolResult{}, errors.New("userAuthored only applies to add and update, which write comment text; a delete writes none.")
+		}
 		return c.deletePrComment(args, repoRoot)
 	case "add":
 		return c.addPrComment(session, args, repoRoot)
@@ -129,7 +132,7 @@ func (c *BitbucketClient) addPrComment(session *sessionState, args map[string]an
 			return toolResult{}, err
 		}
 	}
-	validText = appendAIMarkerMarkdown(validText)
+	validText = appendAIMarkerMarkdown(validText, parseAuthorship(args, "userAuthored"))
 	body := map[string]any{"text": validText}
 	if sev := argString(args, "severity"); sev != "" {
 		body["severity"] = sev
@@ -428,6 +431,10 @@ func (c *BitbucketClient) updatePrComment(args map[string]any, repoRoot string) 
 	if !hasText && stateArg == "" && severityArg == "" && !hasThreadResolved && len(attachments) == 0 {
 		return toolResult{}, errors.New("At least one field is required: text, state, severity, threadResolved, or attachments")
 	}
+	by := parseAuthorship(args, "userAuthored")
+	if by == authoredByUser && !hasText && len(attachments) == 0 {
+		return toolResult{}, errors.New("userAuthored only applies when the update writes text or attachments.")
+	}
 
 	current, err := bbDecode[bbComment](c, "GET", fmt.Sprintf("%s/pull-requests/%d/comments/%d", c.rp(pk, rs), prID, commentID), nil)
 	if err != nil {
@@ -469,7 +476,7 @@ func (c *BitbucketClient) updatePrComment(args map[string]any, repoRoot string) 
 			}
 			newText = c.linkifyCommentRefs(vt, pk, rs, prID)
 		} else {
-			newText = current.Text
+			newText = stripAIMarker(current.Text)
 		}
 		if len(attachments) > 0 {
 			newText, uploaded, err = c.attachToText(pk, rs, newText, attachments)
@@ -477,7 +484,7 @@ func (c *BitbucketClient) updatePrComment(args map[string]any, repoRoot string) 
 				return toolResult{}, err
 			}
 		}
-		newText = appendAIMarkerMarkdown(newText)
+		newText = appendAIMarkerMarkdown(newText, by)
 	}
 
 	buildBody := func(version int) map[string]any {

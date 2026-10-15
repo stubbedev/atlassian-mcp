@@ -86,7 +86,7 @@ func (c *BitbucketClient) createPullRequest(projectKey, repoSlug, repoRoot, titl
 			return toolResult{}, err
 		}
 	}
-	description = appendAIMarkerMarkdown(description)
+	description = appendAIMarkerMarkdown(description, authoredByAI)
 	reviewerObjs := make([]map[string]any, 0, len(resolvedReviewers))
 	for _, name := range resolvedReviewers {
 		reviewerObjs = append(reviewerObjs, map[string]any{"user": map[string]any{"name": name}})
@@ -138,7 +138,7 @@ func (c *BitbucketClient) updatePullRequest(projectKey, repoSlug, repoRoot strin
 		descP, uploaded = &desc, ups
 	}
 	if descP != nil {
-		marked := appendAIMarkerMarkdown(*descP)
+		marked := appendAIMarkerMarkdown(*descP, authoredByAI)
 		descP = &marked
 	}
 	if reviewersP != nil {

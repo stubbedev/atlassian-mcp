@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -962,24 +963,24 @@ func TestAppendAIMarkerWiki(t *testing.T) {
 		{"empty stays empty", "  ", "  "},
 	}
 	for _, c := range cases {
-		if got := appendAIMarkerWiki(c.in); got != c.want {
+		if got := appendAIMarkerWiki(c.in, authoredByAI); got != c.want {
 			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
 		}
 	}
 	// An unclosed {code} runs to the end of the field: a marker appended after
 	// it would render inside the block, so the text is left unmarked.
-	if got := appendAIMarkerWiki("{code:sql\nselect 1"); got != "{code:sql\nselect 1" {
+	if got := appendAIMarkerWiki("{code:sql\nselect 1", authoredByAI); got != "{code:sql\nselect 1" {
 		t.Errorf("unclosed code block: got %q", got)
 	}
 	// The real write path converts markdown first, so an unterminated markdown
 	// fence is closed into {code} and the marker lands after it, never inside.
 	wiki, _ := markdownToJiraWiki("look:\n```go\nfmt.Println(1)")
-	if got := appendAIMarkerWiki(wiki); !strings.HasSuffix(got, "{code}\n\n"+aiMarkerWiki) {
+	if got := appendAIMarkerWiki(wiki, authoredByAI); !strings.HasSuffix(got, "{code}\n\n"+aiMarkerWiki) {
 		t.Errorf("converted fence: got %q", got)
 	}
 	markAITextEnabled = false
 	defer func() { markAITextEnabled = true }()
-	if got := appendAIMarkerWiki("x"); got != "x" {
+	if got := appendAIMarkerWiki("x", authoredByAI); got != "x" {
 		t.Errorf("disabled: got %q", got)
 	}
 }
@@ -993,23 +994,124 @@ func TestAppendAIMarkerMarkdown(t *testing.T) {
 		{"empty stays empty", " ", " "},
 	}
 	for _, c := range cases {
-		if got := appendAIMarkerMarkdown(c.in); got != c.want {
+		if got := appendAIMarkerMarkdown(c.in, authoredByAI); got != c.want {
 			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
 		}
 	}
 	// An unterminated fence would swallow the marker, so it is skipped.
 	open := "```python\nprint(1)"
-	if got := appendAIMarkerMarkdown(open); got != open {
+	if got := appendAIMarkerMarkdown(open, authoredByAI); got != open {
 		t.Errorf("open fence: got %q", got)
 	}
 	// A trailing suggestion block must stay last; the marker goes before it.
 	sugg := "drop the loop\n\n```suggestion\nx := 1\n```"
 	want := "drop the loop\n\n" + aiMarkerMarkdown + "\n\n```suggestion\nx := 1\n```"
-	if got := appendAIMarkerMarkdown(sugg); got != want {
+	if got := appendAIMarkerMarkdown(sugg, authoredByAI); got != want {
 		t.Errorf("suggestion: got %q, want %q", got, want)
 	}
 	if got := stripAIMarker(want); got != sugg {
 		t.Errorf("stripAIMarker: got %q, want %q", got, sugg)
+	}
+}
+
+func TestAppendAIMarkerSkipsUserAuthored(t *testing.T) {
+	if got := appendAIMarkerWiki("Ship it", authoredByUser); got != "Ship it" {
+		t.Errorf("wiki: got %q", got)
+	}
+	if got := appendAIMarkerMarkdown("Ship it", authoredByUser); got != "Ship it" {
+		t.Errorf("markdown: got %q", got)
+	}
+}
+
+func TestJiraCommentAuthorship(t *testing.T) {
+	var posted []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ Body string }
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		posted = append(posted, body.Body)
+		_, _ = w.Write([]byte(`{"id":"1"}`))
+	}))
+	defer srv.Close()
+	c := NewJiraClient(srv.URL, "t")
+
+	for _, userAuthored := range []bool{false, true} {
+		if _, err := c.comment(map[string]any{"issueKey": "ENG-1", "body": "Ship it", "userAuthored": userAuthored}); err != nil {
+			t.Fatalf("userAuthored=%v: %v", userAuthored, err)
+		}
+	}
+	if want := []string{"Ship it\n\n" + aiMarkerWiki, "Ship it"}; !slices.Equal(posted, want) {
+		t.Errorf("posted = %q, want %q", posted, want)
+	}
+
+	for _, args := range []map[string]any{
+		{"issueKey": "ENG-1", "transitionName": "Done", "commentAction": "delete", "commentId": "1", "commentUserAuthored": true},
+		{"issueKey": "ENG-1", "transitionName": "Done", "commentUserAuthored": true},
+	} {
+		if _, err := c.mutateIssue(args, ""); err == nil || !strings.Contains(err.Error(), "commentUserAuthored") {
+			t.Errorf("%v: err = %v, want a commentUserAuthored rejection", args, err)
+		}
+	}
+	if len(posted) != 2 {
+		t.Errorf("rejected calls wrote to Jira: %q", posted)
+	}
+}
+
+func TestBitbucketCommentUpdateAuthorship(t *testing.T) {
+	const current = "Looks off\n\n**[AI]**"
+	var put []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			_, _ = fmt.Fprintf(w, `{"id":7,"version":3,"text":%q}`, current)
+		case http.MethodPost:
+			_, _ = w.Write([]byte(`{"attachments":[{"id":1,"url":"attachment:1","name":"log.txt"}]}`))
+		case http.MethodPut:
+			var body struct{ Text string }
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			put = append(put, body.Text)
+			_, _ = w.Write([]byte(`{"id":7}`))
+		}
+	}))
+	defer srv.Close()
+	c := NewBitbucketClient(srv.URL, "t")
+	base := map[string]any{"projectKey": "ENG", "repoSlug": "api", "prId": 1, "commentId": 7}
+	with := func(extra map[string]any) map[string]any {
+		args := maps.Clone(base)
+		maps.Copy(args, extra)
+		return args
+	}
+
+	attach := []any{"data:text/plain;base64,aGk="}
+	calls := []map[string]any{
+		with(map[string]any{"attachments": attach}),
+		with(map[string]any{"attachments": attach, "userAuthored": true}),
+		with(map[string]any{"text": "Ship it", "userAuthored": true}),
+	}
+	for _, args := range calls {
+		if _, err := c.updatePrComment(args, ""); err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+	}
+	want := []string{
+		"Looks off\n\n[log.txt](attachment:1)\n\n" + aiMarkerMarkdown,
+		"Looks off\n\n[log.txt](attachment:1)",
+		"Ship it",
+	}
+	if !slices.Equal(put, want) {
+		t.Errorf("put = %q, want %q", put, want)
+	}
+
+	if _, err := c.updatePrComment(with(map[string]any{"threadResolved": true, "userAuthored": true}), ""); err == nil || !strings.Contains(err.Error(), "userAuthored") {
+		t.Errorf("text-less update: err = %v, want a userAuthored rejection", err)
+	}
+	if _, err := c.commentDispatch(nil, with(map[string]any{"action": "delete", "userAuthored": true}), ""); err == nil || !strings.Contains(err.Error(), "userAuthored") {
+		t.Errorf("delete: err = %v, want a userAuthored rejection", err)
 	}
 }
 
