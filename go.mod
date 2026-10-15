@@ -20,7 +20,7 @@ require (
 	github.com/sergi/go-diff v1.4.0
 	github.com/thesyncim/goh264 v0.0.0-20260714162114-14b36a2bfcc4
 	golang.org/x/crypto v0.58.0
-	golang.org/x/image v0.46.0
+	golang.org/x/image v0.47.0
 )
 
 require (
