@@ -5,7 +5,7 @@ go 1.27
 toolchain go1.27.2
 
 require (
-	github.com/Eyevinn/mp4ff v0.57.0
+	github.com/Eyevinn/mp4ff v0.59.0
 	github.com/gen2brain/avif v0.6.0
 	github.com/gen2brain/heic v0.7.2
 	github.com/gen2brain/jpegxl v0.6.0
