@@ -13,7 +13,7 @@ require (
 	github.com/go-git/go-git/v5 v5.19.3
 	github.com/kettek/apng v0.0.0-20250827064933-2bb5f5fcf253
 	github.com/kevinburke/ssh_config v1.6.0
-	github.com/klippa-app/go-pdfium v1.21.1
+	github.com/klippa-app/go-pdfium v1.21.3
 	github.com/kovidgoyal/imaging v1.8.23
 	github.com/ledongthuc/pdf v0.0.0-20250511090121-5959a4027728
 	github.com/modelcontextprotocol/go-sdk v1.8.0

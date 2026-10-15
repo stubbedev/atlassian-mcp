@@ -71,8 +71,8 @@ github.com/kettek/apng v0.0.0-20250827064933-2bb5f5fcf253 h1:ar6YqPcuumkcWgAJHkm
 github.com/kettek/apng v0.0.0-20250827064933-2bb5f5fcf253/go.mod h1:x78/VRQYKuCftMWS0uK5e+F5RJ7S4gSlESRWI0Prl6Q=
 github.com/kevinburke/ssh_config v1.6.0 h1:J1FBfmuVosPHf5GRdltRLhPJtJpTlMdKTBjRgTaQBFY=
 github.com/kevinburke/ssh_config v1.6.0/go.mod h1:q2RIzfka+BXARoNexmF9gkxEX7DmvbW9P4hIVx2Kg4M=
-github.com/klippa-app/go-pdfium v1.21.1 h1:QYtnNHVL5wvz+f1SPlruigKaWjbYyp/vMyTJKVwAzeo=
-github.com/klippa-app/go-pdfium v1.21.1/go.mod h1:sg9hrNV29uKb2Q/g+GU8WYTzTgtEt8QAMGzXtvLPzck=
+github.com/klippa-app/go-pdfium v1.21.3 h1:RA9LChVEg0JWYcTMPPbgJ30lSwttatl46JwElfNzkcE=
+github.com/klippa-app/go-pdfium v1.21.3/go.mod h1:sg9hrNV29uKb2Q/g+GU8WYTzTgtEt8QAMGzXtvLPzck=
 github.com/kovidgoyal/go-parallel v1.1.1 h1:1OzpNjtrUkBPq3UaqrnvOoB2F9RttSt811uiUXyI7ok=
 github.com/kovidgoyal/go-parallel v1.1.1/go.mod h1:BJNIbe6+hxyFWv7n6oEDPj3PA5qSw5OCtf0hcVxWJiw=
 github.com/kovidgoyal/go-shm v1.0.0 h1:HJEel9D1F9YhULvClEHJLawoRSj/1u/EDV7MJbBPgQo=
