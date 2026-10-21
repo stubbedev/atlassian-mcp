@@ -95,14 +95,9 @@ final class Binary
 
     private static function fetch(string $cached): void
     {
-        $url = sprintf('https://github.com/%s/releases/download/v%s/%s', self::REPO, self::version(), self::asset());
-        $tmp = self::tmpBeside($cached);
-        try {
-            self::download($url, $tmp);
-            self::commit($tmp, $cached);
-        } finally {
-            @unlink($tmp);
-        }
+        self::inTmpDir($cached, static function (string $tmp) use ($cached): void {
+            self::commit(self::fetchRelease('v' . self::version(), self::asset(), $tmp), $cached);
+        });
     }
 
     private static function cacheDir(): string
@@ -162,6 +157,37 @@ final class Binary
         }
 
         return "{$file}." . bin2hex(random_bytes(6)) . '.tmp';
+    }
+
+    private static function inTmpDir(string $beside, callable $fn): void
+    {
+        $tmp = self::tmpBeside($beside);
+        if (!@mkdir($tmp, 0755)) {
+            throw new \RuntimeException("Cannot create {$tmp}: " . self::lastError());
+        }
+        try {
+            $fn($tmp);
+        } finally {
+            array_map('unlink', glob("{$tmp}/*") ?: []);
+            @rmdir($tmp);
+        }
+    }
+
+    private static function fetchRelease(string $tag, string $asset, string $dir): string
+    {
+        $base = sprintf('https://github.com/%s/releases/download/%s', self::REPO, $tag);
+        self::download("{$base}/checksums.txt", "{$dir}/checksums.txt");
+        $sums = (string) file_get_contents("{$dir}/checksums.txt");
+        if (!preg_match('/^([0-9a-f]{64})\s+\*?' . preg_quote($asset, '/') . '$/m', $sums, $m)) {
+            throw new \RuntimeException("{$asset} is not listed in {$tag} checksums.txt");
+        }
+        $file = "{$dir}/{$asset}";
+        self::download("{$base}/{$asset}", $file);
+        if (!hash_equals($m[1], hash_file('sha256', $file))) {
+            throw new \RuntimeException("Checksum mismatch for {$asset} from {$tag}");
+        }
+
+        return $file;
     }
 
     private static function download(string $url, string $file): void

@@ -241,12 +241,13 @@ Clients start the server from their own working directory, so use absolute paths
 
 #### Binary cache
 
-npm and Composer download each release's binary once per user, into
-`$XDG_CACHE_HOME/atlassian-mcp/<version>/` (by default `~/.cache` on Linux and FreeBSD,
-`~/Library/Caches` on macOS, `%LOCALAPPDATA%` on Windows), and hardlink it into every
-install, or copy it where the install is on another filesystem. Further projects and git
-worktrees on the same version install without downloading anything. Delete old version
-directories to reclaim their space; installs keep their own link.
+npm and Composer download each release's binary once per user, verify it against the
+release's `checksums.txt`, and keep it in `$XDG_CACHE_HOME/atlassian-mcp/<version>/` (by
+default `~/.cache` on Linux and FreeBSD, `~/Library/Caches` on macOS, `%LOCALAPPDATA%` on
+Windows), and hardlink it into every install, or copy it where the install is on another
+filesystem. Further projects and git worktrees on the same version install without
+downloading anything. Delete old version directories to reclaim their space; installs keep
+their own link.
 
 #### Standalone binary (Go, Nix, release download)
 

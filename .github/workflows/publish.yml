@@ -89,6 +89,12 @@ jobs:
           pack atlassian-mcp_linux_amd64        linux  linux_amd64
           pack atlassian-mcp_linux_arm64        linux  linux_arm64
 
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum * > checksums.txt
+          cat checksums.txt
+
       - name: Create / update GitHub release
         uses: softprops/action-gh-release@v3
         with:
