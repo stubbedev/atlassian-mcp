@@ -4,16 +4,12 @@ declare(strict_types=1);
 
 namespace Stubbedev\AtlassianMcp;
 
-// Resolves and downloads the prebuilt Go binary for this OS/arch from the
-// GitHub release matching package.json's version (the same targets and asset
-// names as scripts/download.mjs). Shared by the Composer plugin, which fetches
-// it at install time, and bin/atlassian-mcp, which fetches it on first run if
-// the plugin was not allowed to.
 final class Binary
 {
-    public const REPO = 'stubbedev/atlassian-mcp';
+    private const NAME = 'atlassian-mcp';
+    private const REPO = 'stubbedev/' . self::NAME;
+    private const SOURCE_HINT = 'go install -tags nodynamic github.com/' . self::REPO . '@latest';
 
-    // Release targets built by .github/workflows/publish.yml.
     private const SUPPORTED = [
         'linux' => ['amd64', 'arm64', 'arm', '386', 'ppc64le', 's390x', 'riscv64'],
         'darwin' => ['amd64', 'arm64'],
@@ -31,12 +27,14 @@ final class Binary
     private const ARCH = [
         'x86_64' => 'amd64',
         'amd64' => 'amd64',
+        'x64' => 'amd64',
         'aarch64' => 'arm64',
         'arm64' => 'arm64',
         'armv7l' => 'arm',
         'armv7' => 'arm',
         'armv6l' => 'arm',
         'i386' => '386',
+        'i586' => '386',
         'i686' => '386',
         'x86' => '386',
         'ppc64le' => 'ppc64le',
@@ -44,22 +42,17 @@ final class Binary
         'riscv64' => 'riscv64',
     ];
 
-    // Cached inside the package dir (gitignored, like the npm wrapper's copy).
-    public static function path(): string
-    {
-        [, , $ext] = self::target();
-
-        return dirname(__DIR__) . "/bin/atlassian-mcp-native{$ext}";
-    }
-
-    // Returns the path to the platform binary, downloading it if not present.
     public static function ensure(): string
     {
-        $dest = self::path();
-        if (is_file($dest) && filesize($dest) > 0) {
+        $dest = dirname(__DIR__) . '/bin/' . self::NAME . '-native' . self::target()[2];
+        if (self::present($dest)) {
             return $dest;
         }
-        self::download(self::assetUrl(), $dest);
+        $cached = self::cacheDir() . '/' . self::asset();
+        if (!self::present($cached)) {
+            self::fetch($cached);
+        }
+        self::place($cached, $dest);
 
         return $dest;
     }
@@ -72,32 +65,23 @@ final class Binary
         $arch = self::ARCH[$machine] ?? null;
         if ($os === null || $arch === null || !in_array($arch, self::SUPPORTED[$os], true)) {
             throw new \RuntimeException(sprintf(
-                'Unsupported platform %s/%s. Build from source with: go install -tags nodynamic github.com/%s@latest',
+                'Unsupported platform %s/%s. Build from source with: %s',
                 PHP_OS_FAMILY,
                 $machine,
-                self::REPO,
+                self::SOURCE_HINT,
             ));
         }
 
         return [$os, $arch, $os === 'windows' ? '.exe' : ''];
     }
 
-    private static function assetUrl(): string
+    private static function asset(): string
     {
         [$os, $arch, $ext] = self::target();
 
-        return sprintf(
-            'https://github.com/%s/releases/download/v%s/atlassian-mcp_%s_%s%s',
-            self::REPO,
-            self::version(),
-            $os,
-            $arch,
-            $ext,
-        );
+        return self::NAME . "_{$os}_{$arch}{$ext}";
     }
 
-    // package.json is the single source of truth for the version, and the
-    // release tag is cut from it, so a pinned package gets that tag's binary.
     private static function version(): string
     {
         $file = dirname(__DIR__) . '/package.json';
@@ -109,58 +93,139 @@ final class Binary
         return $pkg['version'];
     }
 
-    private static function download(string $url, string $dest): void
+    private static function fetch(string $cached): void
     {
-        $tmp = "{$dest}.download";
-        $out = @fopen($tmp, 'wb');
-        if ($out === false) {
-            throw new \RuntimeException("Cannot write {$tmp}");
-        }
-
-        if (function_exists('curl_init')) {
-            $ch = curl_init($url);
-            curl_setopt_array($ch, [
-                CURLOPT_FILE => $out,
-                CURLOPT_FOLLOWLOCATION => true,
-                CURLOPT_FAILONERROR => true,
-                CURLOPT_USERAGENT => 'atlassian-mcp-composer',
-                CURLOPT_CONNECTTIMEOUT => 30,
-            ]);
-            $ok = curl_exec($ch);
-            $err = curl_error($ch);
-            // No curl_close(): a no-op since PHP 8.0, deprecated as of 8.5.
-            unset($ch);
-            fclose($out);
-            if ($ok === false) {
-                @unlink($tmp);
-                throw new \RuntimeException("Failed to download {$url}: {$err}");
-            }
-        } else {
-            $ctx = stream_context_create(['http' => [
-                'follow_location' => 1,
-                'user_agent' => 'atlassian-mcp-composer',
-            ]]);
-            $in = @fopen($url, 'rb', false, $ctx);
-            if ($in === false) {
-                fclose($out);
-                @unlink($tmp);
-                $err = error_get_last()['message'] ?? 'unknown error';
-                throw new \RuntimeException("Failed to download {$url}: {$err}");
-            }
-            stream_copy_to_stream($in, $out);
-            fclose($in);
-            fclose($out);
-        }
-
-        clearstatcache(true, $tmp);
-        if (filesize($tmp) === 0) {
+        $url = sprintf('https://github.com/%s/releases/download/v%s/%s', self::REPO, self::version(), self::asset());
+        $tmp = self::tmpBeside($cached);
+        try {
+            self::download($url, $tmp);
+            self::commit($tmp, $cached);
+        } finally {
             @unlink($tmp);
+        }
+    }
+
+    private static function cacheDir(): string
+    {
+        return self::cacheRoot() . '/' . self::NAME . '/' . self::version();
+    }
+
+    private static function cacheRoot(): string
+    {
+        $xdg = getenv('XDG_CACHE_HOME');
+        if (is_string($xdg) && $xdg !== '') {
+            return $xdg;
+        }
+        [$var, $suffix] = match (PHP_OS_FAMILY) {
+            'Windows' => ['LOCALAPPDATA', ''],
+            'Darwin' => ['HOME', '/Library/Caches'],
+            default => ['HOME', '/.cache'],
+        };
+        $base = getenv($var);
+        if (!is_string($base) || $base === '') {
+            throw new \RuntimeException("Cannot locate a cache directory: neither XDG_CACHE_HOME nor {$var} is set");
+        }
+
+        return $base . $suffix;
+    }
+
+    private static function present(string $file): bool
+    {
+        return is_file($file) && filesize($file) > 0;
+    }
+
+    private static function place(string $cached, string $dest): void
+    {
+        $tmp = self::tmpBeside($dest);
+        try {
+            if (!@link($cached, $tmp) && !@copy($cached, $tmp)) {
+                throw new \RuntimeException("Cannot link or copy {$cached} to {$tmp}: " . self::lastError());
+            }
+            self::commit($tmp, $dest);
+        } finally {
+            @unlink($tmp);
+        }
+    }
+
+    private static function commit(string $tmp, string $dest): void
+    {
+        if (!@chmod($tmp, 0755) || !@rename($tmp, $dest)) {
+            throw new \RuntimeException("Cannot move {$tmp} into place at {$dest}: " . self::lastError());
+        }
+    }
+
+    private static function tmpBeside(string $file): string
+    {
+        $dir = dirname($file);
+        if (!is_dir($dir) && !@mkdir($dir, 0755, true) && !is_dir($dir)) {
+            throw new \RuntimeException("Cannot create {$dir}: " . self::lastError());
+        }
+
+        return "{$file}." . bin2hex(random_bytes(6)) . '.tmp';
+    }
+
+    private static function download(string $url, string $file): void
+    {
+        $out = @fopen($file, 'wb');
+        if ($out === false) {
+            throw new \RuntimeException("Cannot write {$file}: " . self::lastError());
+        }
+        try {
+            if (function_exists('curl_init')) {
+                self::curl($url, $out);
+            } else {
+                self::stream($url, $out);
+            }
+        } finally {
+            fclose($out);
+        }
+        clearstatcache(true, $file);
+        if (filesize($file) === 0) {
             throw new \RuntimeException("Failed to download {$url}: empty response");
         }
-        @chmod($tmp, 0755);
-        @unlink($dest);
-        if (!rename($tmp, $dest)) {
-            throw new \RuntimeException("Cannot move the binary into place at {$dest}");
+    }
+
+    /** @param resource $out */
+    private static function curl(string $url, $out): void
+    {
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_FILE => $out,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_FAILONERROR => true,
+            CURLOPT_USERAGENT => self::NAME . '-composer',
+            CURLOPT_CONNECTTIMEOUT => 30,
+            CURLOPT_LOW_SPEED_LIMIT => 1024,
+            CURLOPT_LOW_SPEED_TIME => 30,
+        ]);
+        if (curl_exec($ch) === false) {
+            throw new \RuntimeException("Failed to download {$url}: " . curl_error($ch));
         }
+    }
+
+    /** @param resource $out */
+    private static function stream(string $url, $out): void
+    {
+        $ctx = stream_context_create(['http' => [
+            'follow_location' => 1,
+            'user_agent' => self::NAME . '-composer',
+            'timeout' => 30,
+        ]]);
+        $in = @fopen($url, 'rb', false, $ctx);
+        if ($in === false) {
+            throw new \RuntimeException("Failed to download {$url}: " . self::lastError());
+        }
+        try {
+            if (stream_copy_to_stream($in, $out) === false) {
+                throw new \RuntimeException("Failed to download {$url}: " . self::lastError());
+            }
+        } finally {
+            fclose($in);
+        }
+    }
+
+    private static function lastError(): string
+    {
+        return error_get_last()['message'] ?? 'unknown error';
     }
 }

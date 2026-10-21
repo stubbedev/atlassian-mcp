@@ -239,6 +239,15 @@ you declined the plugin: it downloads the binary on its first run, then hands ov
 Clients start the server from their own working directory, so use absolute paths. Set
 `ATLASSIAN_MCP_SKIP_DOWNLOAD=1` to skip the install-time download.
 
+#### Binary cache
+
+npm and Composer download each release's binary once per user, into
+`$XDG_CACHE_HOME/atlassian-mcp/<version>/` (by default `~/.cache` on Linux and FreeBSD,
+`~/Library/Caches` on macOS, `%LOCALAPPDATA%` on Windows), and hardlink it into every
+install, or copy it where the install is on another filesystem. Further projects and git
+worktrees on the same version install without downloading anything. Delete old version
+directories to reclaim their space; installs keep their own link.
+
 #### Standalone binary (Go, Nix, release download)
 
 ```bash
