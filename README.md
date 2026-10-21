@@ -206,7 +206,7 @@ there is nothing to install up front. `npm install -g` does the same once and pu
 
 The Composer package `stubbedev/atlassian-mcp` is for PHP projects, or machines with PHP
 but no Node. It is a Composer plugin: on `composer install` / `update` it downloads the
-prebuilt binary for your OS and architecture (the same 14 targets as npm), from the release
+prebuilt binary for your OS and architecture (the same 13 targets as npm), from the release
 matching the installed version, so a pinned version pins the binary. Your MCP client then
 runs that native binary directly, and PHP is never in the request path:
 
@@ -304,10 +304,9 @@ claude mcp add atlassian -- npx -y @stubbedev/atlassian-mcp@latest --config ~/.a
 
 **One-click (recommended).** Grab the `.mcpb` bundle for your platform from the
 [latest release](https://github.com/stubbedev/atlassian-mcp/releases/latest) —
-`atlassian-mcp_darwin_arm64.mcpb` (Apple Silicon), `atlassian-mcp_darwin_amd64.mcpb`
-(Intel Mac), `atlassian-mcp_windows_amd64.mcpb` — then **double-click it**, drag it onto the
-Claude Desktop window, or use **Settings → Extensions → Advanced settings → Install
-Extension…**. The install dialog asks for Jira/Bitbucket URL and token (tokens are stored
+`atlassian-mcp_darwin_arm64.mcpb` (Apple Silicon), `atlassian-mcp_windows_amd64.mcpb` — then
+**double-click it**, drag it onto the Claude Desktop window, or use **Settings → Extensions →
+Advanced settings → Install Extension…**. The install dialog asks for Jira/Bitbucket URL and token (tokens are stored
 by Claude Desktop, not in a file) plus **Repository**, the working tree the git and PR tools
 default to. Leaving URL/token blank reuses an existing `~/.atlassian-mcp.json`.
 
@@ -728,11 +727,11 @@ This package is published to npm as `@stubbedev/atlassian-mcp` and to Packagist 
 
 Use semantic versioning for releases. Breaking tool-surface changes should bump the minor version while `<1.0.0` (for example `0.0.x` -> `0.1.0`).
 
-On a pushed `v*` tag, `.github/workflows/publish.yml` cross-compiles the Go binary for 14
-OS/arch targets, packs six of them into `.mcpb` bundles for one-click desktop install
-(`packaging/mcpb/pack.sh`, macOS/Windows/Linux × amd64/arm64), attaches everything to a
-GitHub release, and publishes the npm wrapper (which downloads the matching binary on
-install). `just bundle` builds a bundle for the host platform locally.
+On a pushed `v*` tag, `.github/workflows/publish.yml` cross-compiles the Go binary for 13
+OS/arch targets, packs five of them into `.mcpb` bundles for one-click desktop install
+(`packaging/mcpb/pack.sh`, macOS arm64 and Windows/Linux × amd64/arm64), attaches
+everything to a GitHub release, and publishes the npm wrapper (which downloads the matching
+binary on install). `just bundle` builds a bundle for the host platform locally.
 
 Release flow (`just` drives it; it refuses to run on a dirty tree):
 

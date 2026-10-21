@@ -12,7 +12,7 @@ final class Binary
 
     private const SUPPORTED = [
         'linux' => ['amd64', 'arm64', 'arm', '386', 'ppc64le', 's390x', 'riscv64'],
-        'darwin' => ['amd64', 'arm64'],
+        'darwin' => ['arm64'],
         'windows' => ['amd64', 'arm64', '386'],
         'freebsd' => ['amd64', 'arm64'],
     ];

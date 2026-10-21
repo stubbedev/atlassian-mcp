@@ -19,7 +19,6 @@ const PLATFORMS = {
   'linux:ppc64': { os: 'linux', arch: 'ppc64le', ext: '' },
   'linux:s390x': { os: 'linux', arch: 's390x', ext: '' },
   'linux:riscv64': { os: 'linux', arch: 'riscv64', ext: '' },
-  'darwin:x64': { os: 'darwin', arch: 'amd64', ext: '' },
   'darwin:arm64': { os: 'darwin', arch: 'arm64', ext: '' },
   'win32:x64': { os: 'windows', arch: 'amd64', ext: '.exe' },
   'win32:arm64': { os: 'windows', arch: 'arm64', ext: '.exe' },
