@@ -9,61 +9,20 @@
     extra-trusted-public-keys = [ "default:9P4FePqHV1rGv5NDBun0GN26y83pcaaMr/NHZrxKaac=" ];
   };
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    flake-parts = {
+      url = "github:hercules-ci/flake-parts";
+      inputs.nixpkgs-lib.follows = "nixpkgs";
+    };
+  };
 
-  outputs = { self, nixpkgs }:
-    let
-      # Version tracks the npm wrapper / git tag automatically: it is read from
-      # package.json, which `npm run release:*` bumps. No manual edit needed.
-      version = (builtins.fromJSON (builtins.readFile ./package.json)).version;
-
+  outputs = inputs @ { flake-parts, ... }:
+    flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
-      forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
-    in
-    {
-      packages = forAllSystems (pkgs: rec {
-        # go.mod requires 1.27; nixpkgs' default buildGoModule lags it, so use
-        # the version-pinned builder.
-        atlassian-mcp = pkgs.buildGo127Module {
-          pname = "atlassian-mcp";
-          inherit version;
-          src = self;
-
-          # vendorHash is kept current by .github/workflows/flake.yml on any
-          # change to go.mod / go.sum. If you bump deps locally, set this to
-          # pkgs.lib.fakeHash, run `nix build`, and paste the reported hash.
-          vendorHash = "sha256-0jcr6PY2Hm+08o0h3Ud2fM/4J7gbSnBj97ADfSim1dg=";
-
-          # Version is embedded from package.json (single source of truth) — no -X needed.
-          ldflags = [ "-s" "-w" ];
-          # Image decoders use their embedded WebAssembly, never system libraries.
-          tags = [ "nodynamic" ];
-          doCheck = true;
-
-          meta = {
-            description = "MCP server for self-hosted Jira and Bitbucket (Go)";
-            homepage = "https://github.com/stubbedev/atlassian-mcp";
-            license = pkgs.lib.licenses.mit;
-            mainProgram = "atlassian-mcp";
-          };
-        };
-        default = atlassian-mcp;
-      });
-
-      apps = forAllSystems (pkgs: rec {
-        atlassian-mcp = {
-          type = "app";
-          program = "${self.packages.${pkgs.system}.atlassian-mcp}/bin/atlassian-mcp";
-        };
-        default = atlassian-mcp;
-      });
-
-      devShells = forAllSystems (pkgs: {
-        default = pkgs.mkShell {
-          packages = [ pkgs.go_latest pkgs.gopls pkgs.gotools pkgs.golangci-lint ];
-        };
-      });
-
-      formatter = forAllSystems (pkgs: pkgs.nixpkgs-fmt);
+      imports = [
+        ./nix/package.nix
+        ./nix/shell.nix
+      ];
     };
 }

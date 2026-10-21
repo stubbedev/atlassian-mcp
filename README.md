@@ -746,7 +746,7 @@ just release-patch         # or release-minor / release-major
 pushes both the branch and the tag. The tag push triggers `publish.yml`.
 
 `package.json` is the single source of truth for the version: the binary embeds it via
-`go:embed` (no `-ldflags`) and `flake.nix` reads it, so one bump moves everything.
+`go:embed` (no `-ldflags`) and `nix/package.nix` reads it, so one bump moves everything.
 The equivalent npm scripts (`npm run release:patch` / `:minor` / `:major`) still work.
 
 - The workflow is configured for npm Trusted Publisher (OIDC), so no `NPM_TOKEN` secret is required
