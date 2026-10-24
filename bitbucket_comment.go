@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // commentDispatch is the bitbucket_comment tool entry.
@@ -84,29 +85,12 @@ func (c *BitbucketClient) addPrComment(session *sessionState, args map[string]an
 		}
 	}
 
-	hasText := has(args, "text")
-	hasSuggestion := has(args, "suggestion")
-	if !hasText && !hasSuggestion {
+	if !has(args, "text") && !has(args, "suggestion") {
 		return toolResult{}, errors.New("Either text or suggestion is required when adding a comment.")
 	}
-
-	commentText := argString(args, "text")
-	if hasSuggestion {
-		suggestion := strings.TrimSpace(argString(args, "suggestion"))
-		if suggestion == "" {
-			return toolResult{}, errors.New("suggestion must not be empty.")
-		}
-		suggestionBlock := "```suggestion\n" + suggestion + "\n```"
-		prefix := strings.TrimSpace(argString(args, "text"))
-		if prefix != "" {
-			commentText = prefix + "\n\n" + suggestionBlock
-		} else {
-			commentText = suggestionBlock
-		}
-	} else {
-		if err := validateSuggestionPlacement(commentText); err != nil {
-			return toolResult{}, err
-		}
+	commentText, err := composeCommentText(args)
+	if err != nil {
+		return toolResult{}, err
 	}
 
 	if !hasReply {
@@ -408,6 +392,37 @@ func (c *BitbucketClient) duplicateComment(pk, rs string, prID int, text string)
 	return 0, nil
 }
 
+func composeCommentText(args map[string]any) (string, error) {
+	text := argString(args, "text")
+	if !has(args, "suggestion") {
+		if err := validateSuggestionPlacement(text); err != nil {
+			return "", err
+		}
+		return text, nil
+	}
+	suggestion := trimBlankLines(argString(args, "suggestion"))
+	if suggestion == "" {
+		return "", errors.New("suggestion must not be empty.")
+	}
+	block := "```suggestion\n" + suggestion + "\n```"
+	prefix := strings.TrimSpace(text)
+	if prefix == "" {
+		return block, nil
+	}
+	return prefix + "\n\n" + block, nil
+}
+
+func trimBlankLines(s string) string {
+	s = strings.TrimRightFunc(s, unicode.IsSpace)
+	for {
+		line, rest, found := strings.Cut(s, "\n")
+		if !found || strings.TrimSpace(line) != "" {
+			return s
+		}
+		s = rest
+	}
+}
+
 func hasKey(m map[string]any, k string) bool {
 	if m == nil {
 		return false
@@ -423,17 +438,23 @@ func (c *BitbucketClient) updatePrComment(args map[string]any, repoRoot string) 
 	}
 	prID := argInt(args, "prId")
 	commentID := argInt(args, "commentId")
-	hasText := has(args, "text")
+	hasText := has(args, "text") || has(args, "suggestion")
 	stateArg := argString(args, "state")
 	severityArg := argString(args, "severity")
 	hasThreadResolved := has(args, "threadResolved")
 	attachments := argStrSlice(args, "attachments")
 	if !hasText && stateArg == "" && severityArg == "" && !hasThreadResolved && len(attachments) == 0 {
-		return toolResult{}, errors.New("At least one field is required: text, state, severity, threadResolved, or attachments")
+		return toolResult{}, errors.New("At least one field is required: text, suggestion, state, severity, threadResolved, or attachments")
 	}
 	by := parseAuthorship(args, "userAuthored")
 	if by == authoredByUser && !hasText && len(attachments) == 0 {
-		return toolResult{}, errors.New("userAuthored only applies when the update writes text or attachments.")
+		return toolResult{}, errors.New("userAuthored only applies when the update writes text, a suggestion or attachments.")
+	}
+	composedText := ""
+	if hasText {
+		if composedText, err = composeCommentText(args); err != nil {
+			return toolResult{}, err
+		}
 	}
 
 	current, err := bbDecode[bbComment](c, "GET", fmt.Sprintf("%s/pull-requests/%d/comments/%d", c.rp(pk, rs), prID, commentID), nil)
@@ -470,7 +491,7 @@ func (c *BitbucketClient) updatePrComment(args map[string]any, repoRoot string) 
 	newText := ""
 	if hasText || len(attachments) > 0 {
 		if hasText {
-			vt, verr := validateCommentText(argString(args, "text"))
+			vt, verr := validateCommentText(composedText)
 			if verr != nil {
 				return toolResult{}, verr
 			}

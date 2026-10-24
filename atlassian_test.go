@@ -1115,6 +1115,105 @@ func TestBitbucketCommentUpdateAuthorship(t *testing.T) {
 	}
 }
 
+func TestComposeCommentTextSuggestion(t *testing.T) {
+	cases := []struct {
+		args map[string]any
+		want string
+	}{
+		{map[string]any{"suggestion": "\t\tgetMergedOptions() {\n\t\t\treturn {};\n\t\t}"}, "```suggestion\n\t\tgetMergedOptions() {\n\t\t\treturn {};\n\t\t}\n```"},
+		{map[string]any{"suggestion": "\n  \r\n    x := 1\n\n  \n", "text": "  Use x  "}, "Use x\n\n```suggestion\n    x := 1\n```"},
+		{map[string]any{"text": "plain"}, "plain"},
+	}
+	for _, tc := range cases {
+		got, err := composeCommentText(tc.args)
+		if err != nil || got != tc.want {
+			t.Errorf("%q: got %q, %v; want %q", tc.args, got, err, tc.want)
+		}
+	}
+	for _, args := range []map[string]any{
+		{"suggestion": " \n\t\n"},
+		{"text": "```suggestion\nx\n```\nafter"},
+	} {
+		if _, err := composeCommentText(args); err == nil {
+			t.Errorf("%q: expected an error", args)
+		}
+	}
+}
+
+func suggestionCommentServer(t *testing.T, sent *[]string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Ausername", "me")
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/activities"):
+			_, _ = w.Write([]byte(`{"values":[],"isLastPage":true}`))
+		case r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(`{"id":7,"version":3,"text":"old","author":{"user":{"name":"someone"}}}`))
+		default:
+			var body struct{ Text string }
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			*sent = append(*sent, body.Text)
+			_, _ = w.Write([]byte(`{"id":7}`))
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestBitbucketCommentSuggestionKeepsIndentation(t *testing.T) {
+	var sent []string
+	c := NewBitbucketClient(suggestionCommentServer(t, &sent).URL, "t")
+	args := map[string]any{"projectKey": "ENG", "repoSlug": "api", "prId": 1, "suggestion": "\t\tgetMergedOptions() {\n\t\t\treturn {};\n\t\t}"}
+	if _, err := c.addPrComment(nil, args, ""); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{aiMarkerMarkdown + "\n\n```suggestion\n\t\tgetMergedOptions() {\n\t\t\treturn {};\n\t\t}\n```"}
+	if !slices.Equal(sent, want) {
+		t.Errorf("posted = %q, want %q", sent, want)
+	}
+}
+
+func TestBitbucketCommentUpdateSuggestion(t *testing.T) {
+	var sent []string
+	c := NewBitbucketClient(suggestionCommentServer(t, &sent).URL, "t")
+	base := map[string]any{"projectKey": "ENG", "repoSlug": "api", "prId": 1, "commentId": 7, "userAuthored": true}
+	with := func(extra map[string]any) map[string]any {
+		args := maps.Clone(base)
+		maps.Copy(args, extra)
+		return args
+	}
+	for _, args := range []map[string]any{
+		with(map[string]any{"text": "Simpler", "suggestion": "\tif x {\n\t\treturn\n\t}"}),
+		with(map[string]any{"suggestion": "\ty := 2"}),
+	} {
+		if _, err := c.updatePrComment(args, ""); err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+	}
+	want := []string{
+		"Simpler\n\n```suggestion\n\tif x {\n\t\treturn\n\t}\n```",
+		"```suggestion\n\ty := 2\n```",
+	}
+	if !slices.Equal(sent, want) {
+		t.Errorf("put = %q, want %q", sent, want)
+	}
+
+	for _, args := range []map[string]any{
+		with(map[string]any{"text": "x", "suggestion": "  \n"}),
+		with(map[string]any{"text": "```suggestion\nx\n```\nafter"}),
+	} {
+		if _, err := c.updatePrComment(args, ""); err == nil {
+			t.Errorf("%v: expected an error", args)
+		}
+	}
+	if len(sent) != len(want) {
+		t.Errorf("rejected updates wrote to Bitbucket: %q", sent[len(want):])
+	}
+}
+
 // ── attachment sources ───────────────────────────────────────────────────────
 
 func TestResolveAttachmentSourceLocalAndDataURI(t *testing.T) {
