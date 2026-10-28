@@ -615,9 +615,20 @@ func TestMarkdownInlineCodeVariants(t *testing.T) {
 	}{
 		{name: "single backticks", in: "use `make all` here", want: "use {{make all}} here", converted: true},
 		{name: "double backticks", in: "use ``a`b`` here", want: "use {{a`b}} here", converted: true},
-		{name: "double with space", in: "use `` `escaped` `` here", want: "use {{ `escaped` }} here", converted: true},
+		{name: "double with space", in: "use `` `escaped` `` here", want: "use {{`escaped`}} here", converted: true},
 		{name: "unpaired backtick stays", in: "a ` b", want: "a ` b"},
-		{name: "bold inside inline code stays", in: "`**x**`", want: "{{**x**}}", converted: true},
+		{name: "bold inside inline code stays literal", in: "`**x**`", want: "{{&#42;&#42;x&#42;&#42;}}", converted: true},
+		{name: "braces are not a macro", in: "Route `/folder/{folder}` here", want: "Route {{/folder/&#123;folder&#125;}} here", converted: true},
+		{name: "glob star", in: "pattern `KEYS prefix:*`", want: "pattern {{KEYS prefix&#58;&#42;}}", converted: true},
+		{name: "issue 30 specials", in: "`{x} * [a] |`", want: "{{&#123;x&#125; &#42; &#91;a&#93; &#124;}}", converted: true},
+		{name: "every special", in: "`{}[]*_+^~-|!?\\&():`", want: "{{&#123;&#125;&#91;&#93;&#42;&#95;&#43;&#94;&#126;&#45;&#124;&#33;&#63;&#92;&#38;&#40;&#41;&#58;}}", converted: true},
+		{name: "backslash is not a line break", in: "`a\\\\b`", want: "{{a&#92;&#92;b}}", converted: true},
+		{name: "literal entity stays literal", in: "`&#42;`", want: "{{&#38;#42;}}", converted: true},
+		{name: "emoticons stay text", in: "`:) (/)`", want: "{{&#58;&#41; &#40;/&#41;}}", converted: true},
+		{name: "single space pair stripped", in: "` x `", want: "{{x}}", converted: true},
+		{name: "edge spaces kept as entities", in: "``  x  ``", want: "{{&#32;x&#32;}}", converted: true},
+		{name: "one-sided space kept", in: "` x`", want: "{{&#32;x}}", converted: true},
+		{name: "all spaces kept", in: "`  `", want: "{{&#32;&#32;}}", converted: true},
 		{name: "inline across lines stays", in: "a ` b\nc ` d", want: "a ` b\nc ` d"},
 	} {
 		got, converted := markdownToJiraWiki(tc.in)
@@ -656,7 +667,7 @@ func TestMarkdownTables(t *testing.T) {
 		}
 	}
 	// A `|` inside an inline code span does not split the cell.
-	if got, _ := markdownToJiraWiki("| `a|b` |\n| --- |"); !strings.Contains(got, "{{a|b}}") {
+	if got, _ := markdownToJiraWiki("| `a|b` |\n| --- |"); !strings.Contains(got, "{{a&#124;b}}") {
 		t.Errorf("code span with pipe broken by table scan: %q", got)
 	}
 }

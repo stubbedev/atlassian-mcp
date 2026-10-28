@@ -66,10 +66,10 @@ func markdownToJiraWiki(text string) (string, bool) {
 	text = convertQuotes(text)
 	text = convertFences(text, stash)
 	text = mdInlineDblRe.ReplaceAllStringFunc(text, func(m string) string {
-		return stash("{{" + mdInlineDblRe.FindStringSubmatch(m)[1] + "}}")
+		return stash(wikiMonospace(mdInlineDblRe.FindStringSubmatch(m)[1]))
 	})
 	text = mdInlineRe.ReplaceAllStringFunc(text, func(m string) string {
-		return stash("{{" + mdInlineRe.FindStringSubmatch(m)[1] + "}}")
+		return stash(wikiMonospace(mdInlineRe.FindStringSubmatch(m)[1]))
 	})
 	// Tables run after the inline-code stash so a `|` inside a code span
 	// cannot split a cell in two.
@@ -106,6 +106,33 @@ func markdownToJiraWiki(text string) (string, bool) {
 	})
 	return text, text != original
 }
+
+// wikiMonospace renders the content of a markdown code span as a wiki {{...}}
+// run that Jira displays literally. Jira keeps parsing markup inside {{...}}:
+// {x} is a macro, *x* bold, -x- strike, :) an emoticon, | a table cell, and a
+// trailing } or a leading space ends or prevents the run. Backslash escapes
+// cannot cover all of that (\} before the closing }} still splits the run and
+// \\ is a forced line break), so every character Jira could read as markup is
+// written as a numeric entity, which the renderer passes through untouched.
+// One leading and trailing space pair is stripped first, as CommonMark does.
+func wikiMonospace(code string) string {
+	if len(code) >= 2 && code[0] == ' ' && code[len(code)-1] == ' ' && strings.TrimSpace(code) != "" {
+		code = code[1 : len(code)-1]
+	}
+	var b strings.Builder
+	b.WriteString("{{")
+	for i, r := range code {
+		if strings.ContainsRune(wikiMonospaceSpecials, r) || (r == ' ' && (i == 0 || i == len(code)-1)) {
+			fmt.Fprintf(&b, "&#%d;", r)
+			continue
+		}
+		b.WriteRune(r)
+	}
+	b.WriteString("}}")
+	return b.String()
+}
+
+const wikiMonospaceSpecials = `{}[]*_+^~-|!?\&():`
 
 // convertHeadings rewrites markdown "##".."######" headings to wiki h2.-h6.
 // with one guard the regex alone cannot express: wiki ordered lists nest as
