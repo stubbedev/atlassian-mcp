@@ -1,9 +1,7 @@
 {
-  perSystem = { lib, pkgs, self', ... }: {
+  perSystem = { inputs', lib, pkgs, self', ... }: {
     packages = {
-      # go.mod requires 1.27; nixpkgs' default buildGoModule lags it, so use
-      # the version-pinned builder.
-      atlassian-mcp = pkgs.buildGo127Module {
+      atlassian-mcp = (pkgs.buildGoModule.override { go = inputs'.devtools.packages.go; }) {
         pname = "atlassian-mcp";
         # Version tracks the npm wrapper / git tag automatically: it is read from
         # package.json, which `npm run release:*` bumps. No manual edit needed.
