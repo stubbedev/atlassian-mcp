@@ -5,8 +5,14 @@
   # rebuilding it. Honoured with --accept-flake-config (or for trusted users).
   # The cache is public; no token needed to pull.
   nixConfig = {
-    extra-substituters = [ "https://nix.stubbe.dev/default" ];
-    extra-trusted-public-keys = [ "default:9P4FePqHV1rGv5NDBun0GN26y83pcaaMr/NHZrxKaac=" ];
+    extra-substituters = [
+      "https://nix.stubbe.dev/c/default/default"
+      "https://nix.stubbe.dev/c/default/flakes"
+    ];
+    extra-trusted-public-keys = [
+      "default:6uWvXutL9cXjV3lii+Ur5ff+ArQoG4kMBKNXWrIxhHg="
+      "flakes:0Dr9MyPOvA6va2GVzflJcbrChNoZUeIZflyrww3O+YM="
+    ];
   };
 
   inputs = {
