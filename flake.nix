@@ -17,7 +17,6 @@
     };
     devtools = {
       url = "github:stubbedev/flakes.nix";
-      inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-parts.follows = "flake-parts";
     };
   };
