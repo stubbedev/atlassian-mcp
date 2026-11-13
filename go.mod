@@ -1,8 +1,6 @@
 module github.com/stubbedev/atlassian-mcp
 
-go 1.27
-
-toolchain go1.27.4
+go 1.27.4
 
 require (
 	github.com/Eyevinn/mp4ff v0.62.0
