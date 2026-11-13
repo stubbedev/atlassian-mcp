@@ -424,7 +424,7 @@ func fieldCacheClient() *JiraClient {
 	return c
 }
 
-func TestResolveFieldID(t *testing.T) {
+func TestResolveField(t *testing.T) {
 	c := fieldCacheClient()
 	for arg, want := range map[string]string{
 		"Epic Name":         "customfield_10005",
@@ -432,16 +432,174 @@ func TestResolveFieldID(t *testing.T) {
 		"customfield_10002": "customfield_10002",
 		"summary":           "summary",
 	} {
-		got, err := c.resolveFieldID(arg)
-		if err != nil || got != want {
-			t.Errorf("resolveFieldID(%q) = %q, %v; want %q", arg, got, err, want)
+		got, err := c.resolveField(arg)
+		if err != nil || got.ID != want {
+			t.Errorf("resolveField(%q) = %q, %v; want %q", arg, got.ID, err, want)
 		}
 	}
-	if _, err := c.resolveFieldID("Nope"); err == nil {
+	if _, err := c.resolveField("Nope"); err == nil {
 		t.Error("unknown field should error")
 	}
 	if id, _ := c.getEpicNameFieldID(); id != "customfield_10005" {
 		t.Errorf("getEpicNameFieldID = %q", id)
+	}
+}
+
+func TestResolveFieldsDropsRepeats(t *testing.T) {
+	got, err := fieldCacheClient().resolveFields([]string{"Story Points", "customfield_10002", "Epic Name"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, 0, len(got))
+	for _, f := range got {
+		ids = append(ids, f.ID)
+	}
+	if want := []string{"customfield_10002", "customfield_10005"}; !slices.Equal(ids, want) {
+		t.Errorf("resolveFields ids = %v, want %v", ids, want)
+	}
+	if fieldIDs(got) != ",customfield_10002,customfield_10005" {
+		t.Errorf("fieldIDs = %q", fieldIDs(got))
+	}
+}
+
+func TestFormatFieldValue(t *testing.T) {
+	for raw, want := range map[string]string{
+		``:                                     "None",
+		`null`:                                 "None",
+		`5.0`:                                  "5",
+		`2.5`:                                  "2.5",
+		`"KON-7"`:                              "KON-7",
+		`""`:                                   "None",
+		`true`:                                 "true",
+		`[]`:                                   "None",
+		`{"self":"x","value":"High","id":"1"}`: "High",
+		`{"value":"Hardware","child":{"value":"Disk"}}`: "Hardware > Disk",
+		`{"name":"jdoe","displayName":"Jane Doe"}`:      "Jane Doe",
+		`[{"name":"1.0"},{"name":"1.1"}]`:               "1.0, 1.1",
+		`["a","b"]`:                                     "a, b",
+		`{"key":"KON-3","id":"10003"}`:                  "KON-3",
+		`{"id":"42"}`:                                   `{"id":"42"}`,
+		`["com.atlassian.greenhopper.service.sprint.Sprint@1f2[id=7,rapidViewId=3,state=ACTIVE,name=Sprint 12,startDate=2026-11-01T09:00:00.000Z]"]`: "Sprint 12",
+	} {
+		if got := formatFieldValue(json.RawMessage(raw)); got != want {
+			t.Errorf("formatFieldValue(%s) = %q, want %q", raw, got, want)
+		}
+	}
+}
+
+const storyPointsFieldList = `[{"id":"customfield_10002","name":"Story Points","custom":true,"schema":{"type":"number","custom":"com.atlassian.jira.plugin.system.customfieldtypes:float"}},{"id":"customfield_10008","name":"Epic Link","custom":true,"schema":{"type":"any","custom":"com.pyxis.greenhopper.jira:gh-epic-link"}},{"id":"summary","name":"Summary"}]`
+
+func requireFields(t *testing.T, r *http.Request, want string) {
+	t.Helper()
+	if got := r.URL.Query().Get("fields"); !strings.Contains(","+got+",", ","+want+",") {
+		t.Errorf("%s fetched fields=%q, missing %s", r.URL.Path, got, want)
+	}
+}
+
+func TestJiraGetShowsRequestedCustomFields(t *testing.T) {
+	c, _ := jiraStub(t, func(w http.ResponseWriter, r *http.Request) bool {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/field"):
+			_, _ = w.Write([]byte(storyPointsFieldList))
+			return true
+		case strings.HasSuffix(r.URL.Path, "/issue/KON-1"):
+			requireFields(t, r, "customfield_10002")
+			_, _ = w.Write([]byte(`{"key":"KON-1","fields":{"summary":"S","status":{"name":"Open"},"issuetype":{"name":"Story"},"customfield_10002":3.0,"customfield_10008":"KON-9"}}`))
+			return true
+		}
+		return false
+	})
+	res, err := c.issueOverview(issueOverviewOpts{issueKey: "KON-1", customFields: []string{"story points"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := res.Content[0].Text
+	for _, want := range []string{"Story Points: 3\n", "Epic Link:  KON-9"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("jira_get output missing %q:\n%s", want, text)
+		}
+	}
+	if _, err := c.issueOverview(issueOverviewOpts{issueKey: "KON-1", customFields: []string{"Velocity"}}); err == nil || !strings.Contains(err.Error(), "Story Points") {
+		t.Errorf("an unknown field should fail naming the fields that exist, got %v", err)
+	}
+}
+
+func TestSearchIssuesShowsCustomFields(t *testing.T) {
+	c, _ := jiraStub(t, func(w http.ResponseWriter, r *http.Request) bool {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/field"):
+			_, _ = w.Write([]byte(storyPointsFieldList))
+			return true
+		case strings.HasSuffix(r.URL.Path, "/search"):
+			requireFields(t, r, "customfield_10002")
+			_, _ = w.Write([]byte(`{"total":2,"startAt":0,"issues":[
+				{"key":"KON-1","fields":{"summary":"A","status":{"name":"Done"},"customfield_10002":5.0}},
+				{"key":"KON-2","fields":{"summary":"B","status":{"name":"Open"},"customfield_10002":null}}]}`))
+			return true
+		}
+		return false
+	})
+	res, err := c.search(map[string]any{"jql": "sprint = 7", "customFields": []any{"Story Points"}}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := res.Content[0].Text
+	for _, want := range []string{"[KON-1] A | Done | Unassigned | Story Points: 5 | ", "[KON-2] B | Open | Unassigned | Story Points: None | "} {
+		if !strings.Contains(text, want) {
+			t.Errorf("search output missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func boardStub(t *testing.T, estimation string, sprintIssues func(r *http.Request)) *JiraClient {
+	t.Helper()
+	c, _ := jiraStub(t, func(w http.ResponseWriter, r *http.Request) bool {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/field"):
+			_, _ = w.Write([]byte(storyPointsFieldList))
+		case strings.HasSuffix(r.URL.Path, "/board/3/configuration"):
+			_, _ = w.Write([]byte(`{"id":3,"estimation":` + estimation + `}`))
+		case strings.HasSuffix(r.URL.Path, "/board/3"):
+			_, _ = w.Write([]byte(`{"id":3,"name":"KON board","type":"scrum"}`))
+		case strings.HasSuffix(r.URL.Path, "/board/3/sprint"):
+			_, _ = w.Write([]byte(`{"isLast":true,"values":[{"id":7,"name":"Sprint 12","state":"active"}]}`))
+		case strings.HasSuffix(r.URL.Path, "/sprint/7/issue"):
+			sprintIssues(r)
+			_, _ = w.Write([]byte(`{"total":1,"issues":[{"key":"KON-1","fields":{"summary":"A","status":{"name":"Open"},"customfield_10002":8.0,"customfield_10008":"KON-9"}}]}`))
+		default:
+			return false
+		}
+		return true
+	})
+	return c
+}
+
+func TestBoardOverviewShowsBoardEstimationField(t *testing.T) {
+	c := boardStub(t, `{"type":"field","field":{"fieldId":"customfield_10002","displayName":"Story Points"}}`, func(r *http.Request) {
+		requireFields(t, r, "customfield_10002")
+		requireFields(t, r, "customfield_10008")
+	})
+	res, err := c.boardOverview(map[string]any{"boardId": 3.0, "customFields": []any{"Epic Link", "Story Points"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "[KON-1] A | Open | Unassigned | Story Points: 8 | Epic Link: KON-9 | "; !strings.Contains(res.Content[0].Text, want) {
+		t.Errorf("board overview missing %q:\n%s", want, res.Content[0].Text)
+	}
+}
+
+func TestBoardOverviewSkipsTimeTrackingEstimation(t *testing.T) {
+	c := boardStub(t, `{"type":"field","field":{"fieldId":"timeoriginalestimate","displayName":"Original Time Estimate"}}`, func(r *http.Request) {
+		if got := r.URL.Query().Get("fields"); got != issueListFields {
+			t.Errorf("sprint issues fetched fields=%q, want only %q", got, issueListFields)
+		}
+	})
+	res, err := c.boardOverview(map[string]any{"boardId": 3.0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "[KON-1] A | Open | Unassigned | "; !strings.Contains(res.Content[0].Text, want) || strings.Contains(res.Content[0].Text, "Estimate") {
+		t.Errorf("time-tracking estimation should add nothing to the listing:\n%s", res.Content[0].Text)
 	}
 }
 

@@ -109,6 +109,36 @@ type jiraIssueFields struct {
 		} `json:"fields"`
 	} `json:"subtasks"`
 	Attachment []jiraAttachment `json:"attachment"`
+	raw        map[string]json.RawMessage
+}
+
+func (f *jiraIssueFields) UnmarshalJSON(b []byte) error {
+	type typed jiraIssueFields
+	if err := json.Unmarshal(b, (*typed)(f)); err != nil {
+		return err
+	}
+	return json.Unmarshal(b, &f.raw)
+}
+
+func (f jiraIssueFields) value(field jiraField) string {
+	return formatFieldValue(f.raw[field.ID])
+}
+
+func (f jiraIssueFields) assigneeName() string {
+	if f.Assignee == nil {
+		return "Unassigned"
+	}
+	return f.Assignee.DisplayName
+}
+
+const issueListFields = "summary,status,assignee,priority,issuetype"
+
+func (c *JiraClient) issueListLine(i jiraIssue, extra []jiraField) string {
+	parts := []string{"[" + i.Key + "] " + i.Fields.Summary, i.Fields.Status.Name, i.Fields.assigneeName()}
+	for _, f := range extra {
+		parts = append(parts, f.Name+": "+i.Fields.value(f))
+	}
+	return strings.Join(append(parts, c.issueURL(i.Key)), " | ")
 }
 
 type jiraIssue struct {
@@ -205,6 +235,15 @@ type jiraBoard struct {
 		ProjectKey  string `json:"projectKey"`
 		ProjectName string `json:"projectName"`
 	} `json:"location"`
+}
+
+type jiraBoardConfig struct {
+	Estimation struct {
+		Type  string `json:"type"`
+		Field struct {
+			FieldID string `json:"fieldId"`
+		} `json:"field"`
+	} `json:"estimation"`
 }
 
 type jiraIssueLink struct {
@@ -641,30 +680,109 @@ func (c *JiraClient) getEpicNameFieldID() (string, error) {
 	return c.fieldIDBySchema("com.pyxis.greenhopper.jira:gh-epic-label")
 }
 
-// resolveFieldID maps a field name ("Epic Name", "Story Points") or a raw id
-// ("customfield_10005", "duedate") to the id Jira's field payload wants.
-func (c *JiraClient) resolveFieldID(nameOrID string) (string, error) {
+func (c *JiraClient) resolveField(nameOrID string) (jiraField, error) {
 	key := strings.TrimSpace(nameOrID)
 	if key == "" {
-		return "", errors.New("customFields keys must be a field name or id.")
+		return jiraField{}, errors.New("customFields entries must be a field name or id.")
 	}
 	fields, err := c.fieldList()
 	if err != nil {
-		return "", err
+		return jiraField{}, err
 	}
 	var names []string
 	for _, f := range fields {
-		if f.ID == key {
-			return f.ID, nil
-		}
-		if strings.EqualFold(f.Name, key) {
-			return f.ID, nil
+		if f.ID == key || strings.EqualFold(f.Name, key) {
+			return f, nil
 		}
 		if f.Custom {
 			names = append(names, f.Name)
 		}
 	}
-	return "", fmt.Errorf("Unknown Jira field %q. Custom fields on this instance: %s", key, strings.Join(names, ", "))
+	return jiraField{}, fmt.Errorf("Unknown Jira field %q. Custom fields on this instance: %s", key, strings.Join(names, ", "))
+}
+
+func (c *JiraClient) resolveFields(namesOrIDs []string) ([]jiraField, error) {
+	out := make([]jiraField, 0, len(namesOrIDs))
+	seen := make(map[string]bool, len(namesOrIDs))
+	for _, n := range namesOrIDs {
+		f, err := c.resolveField(n)
+		if err != nil {
+			return nil, err
+		}
+		if seen[f.ID] {
+			continue
+		}
+		seen[f.ID] = true
+		out = append(out, f)
+	}
+	return out, nil
+}
+
+func fieldIDs(fields []jiraField) string {
+	var b strings.Builder
+	for _, f := range fields {
+		b.WriteByte(',')
+		b.WriteString(f.ID)
+	}
+	return b.String()
+}
+
+var greenhopperSprintNameRe = regexp.MustCompile(`\bname=([^,\]]*)`)
+
+func formatFieldValue(raw json.RawMessage) string {
+	var v any
+	if len(raw) == 0 || json.Unmarshal(raw, &v) != nil {
+		return "None"
+	}
+	return formatFieldAny(v)
+}
+
+func formatFieldAny(v any) string {
+	switch tv := v.(type) {
+	case nil:
+		return "None"
+	case string:
+		if strings.HasPrefix(tv, "com.atlassian.greenhopper.service.sprint.Sprint@") {
+			if m := greenhopperSprintNameRe.FindStringSubmatch(tv); m != nil {
+				return m[1]
+			}
+		}
+		return orNone(tv)
+	case float64:
+		return strconv.FormatFloat(tv, 'f', -1, 64)
+	case bool:
+		return strconv.FormatBool(tv)
+	case []any:
+		if len(tv) == 0 {
+			return "None"
+		}
+		parts := make([]string, 0, len(tv))
+		for _, item := range tv {
+			parts = append(parts, formatFieldAny(item))
+		}
+		return strings.Join(parts, ", ")
+	case map[string]any:
+		return formatFieldObject(tv)
+	}
+	return fmt.Sprint(v)
+}
+
+func formatFieldObject(m map[string]any) string {
+	for _, k := range []string{"displayName", "value", "name", "key"} {
+		s, ok := m[k].(string)
+		if !ok || s == "" {
+			continue
+		}
+		if child, ok := m["child"].(map[string]any); ok && k == "value" {
+			return s + " > " + formatFieldObject(child)
+		}
+		return s
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return fmt.Sprint(m)
+	}
+	return string(b)
 }
 
 // coerceFieldValue turns the plain value a caller passes ("Bug fix", 5,
@@ -749,26 +867,13 @@ func sendHint(schema jiraFieldSchema) string {
 	return one(schema.Type)
 }
 
-// applyCustomFields resolves each key to a field id and coerces the value with
-// that field's schema.
 func (c *JiraClient) applyCustomFields(target, custom map[string]any) error {
-	fields, err := c.fieldList()
-	if err != nil {
-		return err
-	}
 	for k, v := range custom {
-		id, err := c.resolveFieldID(k)
+		f, err := c.resolveField(k)
 		if err != nil {
 			return err
 		}
-		schema := jiraFieldSchema{Type: "any"}
-		for _, f := range fields {
-			if f.ID == id {
-				schema = f.Schema
-				break
-			}
-		}
-		target[id] = coerceFieldValue(schema, v)
+		target[f.ID] = coerceFieldValue(f.Schema, v)
 	}
 	return nil
 }
@@ -1544,19 +1649,23 @@ func (c *JiraClient) search(args map[string]any, repoRoot string) (toolResult, e
 	case "users":
 		return c.searchUsers(argString(args, "query"), argIntDefault(args, "maxResults", 10))
 	case "issues":
+		extra, err := c.resolveFields(argStrSlice(args, "customFields"))
+		if err != nil {
+			return toolResult{}, err
+		}
 		if argBool(args, "mine") {
-			return c.searchIssues("", "assignee = currentUser() ORDER BY updated DESC", "", "", "", "", argIntDefault(args, "maxResults", 20), argInt(args, "startAt"))
+			return c.searchIssues("", "assignee = currentUser() ORDER BY updated DESC", "", "", "", "", extra, argIntDefault(args, "maxResults", 20), argInt(args, "startAt"))
 		}
 		return c.searchIssues(
 			argString(args, "query"), argString(args, "jql"), argString(args, "project"),
 			argString(args, "status"), argString(args, "assignee"), argString(args, "issueType"),
-			argIntDefault(args, "maxResults", 20), argInt(args, "startAt"))
+			extra, argIntDefault(args, "maxResults", 20), argInt(args, "startAt"))
 	default:
 		return toolResult{}, fmt.Errorf("Unknown resource %q. Use one of: issues, projects, issue_types, boards, sprints, board_overview, versions, components, fields, users.", resource)
 	}
 }
 
-func (c *JiraClient) searchIssues(query, jql, project, status, assignee, issueType string, maxResults, startAt int) (toolResult, error) {
+func (c *JiraClient) searchIssues(query, jql, project, status, assignee, issueType string, extra []jiraField, maxResults, startAt int) (toolResult, error) {
 	builtJQL, err := buildJQL(query, jql, project, status, assignee, issueType)
 	if err != nil {
 		return toolResult{}, err
@@ -1565,7 +1674,7 @@ func (c *JiraClient) searchIssues(query, jql, project, status, assignee, issueTy
 	q.Set("jql", builtJQL)
 	q.Set("maxResults", strconv.Itoa(maxResults))
 	q.Set("startAt", strconv.Itoa(startAt))
-	q.Set("fields", "summary,status,assignee,priority,issuetype")
+	q.Set("fields", issueListFields+fieldIDs(extra))
 	data, err := jiraGet[jiraSearchResult](c, "/rest/api/2", "GET", "/search?"+q.Encode(), nil)
 	if err != nil {
 		return toolResult{}, err
@@ -1575,11 +1684,7 @@ func (c *JiraClient) searchIssues(query, jql, project, status, assignee, issueTy
 	}
 	var lines []string
 	for idx, i := range data.Issues {
-		assignee := "Unassigned"
-		if i.Fields.Assignee != nil {
-			assignee = i.Fields.Assignee.DisplayName
-		}
-		lines = append(lines, fmt.Sprintf("%d. [%s] %s | %s | %s | %s", startAt+idx+1, i.Key, i.Fields.Summary, i.Fields.Status.Name, assignee, c.issueURL(i.Key)))
+		lines = append(lines, fmt.Sprintf("%d. %s", startAt+idx+1, c.issueListLine(i, extra)))
 	}
 	page := pagination(data.Total, startAt, len(data.Issues))
 	return textResult(fmt.Sprintf("Found %d issues%s:\n%s", data.Total, page, strings.Join(lines, "\n"))), nil
@@ -1728,6 +1833,7 @@ type issueOverviewOpts struct {
 	includeTransitions bool
 	includeSprint      bool
 	descriptionCap     int // 0 = no cap
+	customFields       []string
 }
 
 func issueOverviewOptsFromArgs(args map[string]any) issueOverviewOpts {
@@ -1746,6 +1852,7 @@ func issueOverviewOptsFromArgs(args map[string]any) issueOverviewOpts {
 		includeTransitions: argBoolDefault(args, "includeTransitions", true),
 		includeSprint:      argBoolDefault(args, "includeSprint", true),
 		descriptionCap:     defaultCap,
+		customFields:       argStrSlice(args, "customFields"),
 	}
 }
 
@@ -1755,37 +1862,26 @@ func (c *JiraClient) issueOverview(o issueOverviewOpts) (toolResult, error) {
 	if err != nil {
 		return toolResult{}, err
 	}
-	fields := baseFields
-	if epicFieldID != "" {
-		fields += "," + epicFieldID
-	}
-	raw, err := c.api("GET", "/issue/"+url.PathEscape(o.issueKey)+"?fields="+fields, nil)
+	extra, err := c.resolveFields(o.customFields)
 	if err != nil {
 		return toolResult{}, err
 	}
-	if len(raw) == 0 {
-		return textResult("Issue not found."), nil
+	fields := baseFields + fieldIDs(extra)
+	if epicFieldID != "" {
+		fields += "," + epicFieldID
 	}
-	var issue jiraIssue
-	if json.Unmarshal(raw, &issue) != nil {
+	issue, err := jiraGet[jiraIssue](c, "/rest/api/2", "GET", "/issue/"+url.PathEscape(o.issueKey)+"?fields="+fields, nil)
+	if err != nil {
+		return toolResult{}, err
+	}
+	if issue == nil {
 		return textResult("Issue not found."), nil
 	}
 	f := issue.Fields
 
-	// Epic link is a dynamic custom-field key; pull it out of the raw fields.
 	epicLinkKey := ""
 	if epicFieldID != "" {
-		var probe struct {
-			Fields map[string]json.RawMessage `json:"fields"`
-		}
-		if json.Unmarshal(raw, &probe) == nil {
-			if rawVal, ok := probe.Fields[epicFieldID]; ok {
-				var s string
-				if json.Unmarshal(rawVal, &s) == nil {
-					epicLinkKey = s
-				}
-			}
-		}
+		_ = json.Unmarshal(f.raw[epicFieldID], &epicLinkKey)
 	}
 
 	priority := "None"
@@ -1866,6 +1962,9 @@ func (c *JiraClient) issueOverview(o issueOverviewOpts) (toolResult, error) {
 			}
 		}
 		lines = append(lines, "Links:      "+strings.Join(parts, "; "))
+	}
+	for _, x := range extra {
+		lines = append(lines, fmt.Sprintf("%-11s %s", x.Name+":", f.value(x)))
 	}
 
 	if o.includeSprint {
@@ -1962,6 +2061,18 @@ func (c *JiraClient) issueOverview(o issueOverviewOpts) (toolResult, error) {
 	return textResult(strings.TrimRight(strings.Join(lines, "\n"), "\n \t")), nil
 }
 
+func (c *JiraClient) boardIssueFields(boardID int, requested []string) ([]jiraField, error) {
+	cfg, err := jiraGet[jiraBoardConfig](c, "/rest/agile/1.0", "GET", fmt.Sprintf("/board/%d/configuration", boardID), nil)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	if cfg != nil && cfg.Estimation.Type == "field" && strings.HasPrefix(cfg.Estimation.Field.FieldID, "customfield_") {
+		names = append(names, cfg.Estimation.Field.FieldID)
+	}
+	return c.resolveFields(append(names, requested...))
+}
+
 func (c *JiraClient) boardOverview(args map[string]any) (toolResult, error) {
 	boardID := argInt(args, "boardId")
 	includeIssues := argBoolDefault(args, "includeIssues", true)
@@ -2007,12 +2118,17 @@ func (c *JiraClient) boardOverview(args map[string]any) (toolResult, error) {
 	issueJql := strings.Join(filterClauses, " AND ")
 
 	issueBySprint := map[int]*jiraSearchResult{}
+	var extra []jiraField
 	if includeIssues {
+		extra, err = c.boardIssueFields(boardID, argStrSlice(args, "customFields"))
+		if err != nil {
+			return toolResult{}, err
+		}
 		for _, sprint := range sprints.Values {
 			q := url.Values{}
 			q.Set("maxResults", strconv.Itoa(issueMaxResults))
 			q.Set("startAt", strconv.Itoa(issueStartAt))
-			q.Set("fields", "summary,status,assignee,priority,issuetype")
+			q.Set("fields", issueListFields+fieldIDs(extra))
 			if issueJql != "" {
 				q.Set("jql", issueJql)
 			}
@@ -2053,11 +2169,7 @@ func (c *JiraClient) boardOverview(args map[string]any) (toolResult, error) {
 			}
 			lines = append(lines, fmt.Sprintf("   Issues: %d", total))
 			for _, issue := range issues {
-				a := "Unassigned"
-				if issue.Fields.Assignee != nil {
-					a = issue.Fields.Assignee.DisplayName
-				}
-				lines = append(lines, fmt.Sprintf("   - [%s] %s | %s | %s | %s", issue.Key, issue.Fields.Summary, issue.Fields.Status.Name, a, c.issueURL(issue.Key)))
+				lines = append(lines, "   - "+c.issueListLine(issue, extra))
 			}
 			if total > len(issues) {
 				lines = append(lines, fmt.Sprintf("   ...and %d more (adjust issueStartAt/issueMaxResults).", total-len(issues)))

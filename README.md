@@ -27,7 +27,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 | Tool | Description |
 |---|---|
 | `jira_search` | Discover resources: `issues`, `projects`, `issue_types`, `boards`, `sprints`, `board_overview`, `versions`, `components`, `fields`, or `users` via `resource` param |
-| `jira_get` | Full details for one issue: summary, description, status, sprint, transitions, comments, and attachment list |
+| `jira_get` | Full details for one issue: summary, description, status, sprint, transitions, comments, and attachment list; `customFields` adds any custom field value (e.g. Story Points) |
 | `jira_mutate` | Create, update, transition, comment (`commentAction`: `add` / `update` / `delete`), upload attachments from a local path, URL, or `data:` URI, link, add to sprint, log work, change issue type, set any custom field by name (`create.customFields` / `update.customFields`), delete an issue (`delete=true`), or manage a fix version (`version.action`: `create` / `update` / `release` / `archive` / `delete`) — several in one call. Markdown in any text field is converted to Jira wiki markup |
 
 ### Bitbucket
@@ -68,7 +68,8 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **s
 - "resolve this blocker on PR 42" → `bitbucket_comment` with `action=update`, `severity=BLOCKER`, `state=RESOLVED`
 - "list PR checklist tasks" → `bitbucket_pr_tasks` with `action=list`
 - "find bugs assigned to me in PAY project" → `jira_search` with `mine=true`, `issueType=Bug`
-- "what's in the current sprint?" → `jira_search` with `resource=board_overview`
+- "what's in the current sprint?" → `jira_search` with `resource=board_overview` (each issue shows the board's estimate, e.g. Story Points)
+- "how many story points are in sprint 42?" → `jira_search` with `jql="sprint = 42"`, `customFields=["Story Points"]`
 - "move FOO-123 to In Progress" → `jira_mutate` with `transitionName="In Progress"`
 - "log 2h on FOO-123" → `jira_mutate` with `worklog`
 - "create version 9.1.0 in PAY" → `jira_mutate` with `version.action=create`, `version.projectKey=PAY`, `version.name=9.1.0`
