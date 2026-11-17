@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none" stroke-linecap="round" stroke-linejoin="round" role="img" aria-labelledby="title">
+  <title id="title">atlassian-mcp</title>
+  <g id="mesh" stroke="#5CA8FF" stroke-width="7" opacity=".7">
+    <path d="M72 96 256 168 440 96"/>
+    <path d="M136 432 256 360 376 432"/>
+    <path d="M104 264H164"/>
+    <path d="M408 264H348"/>
+    <path d="M72 96 164 264 136 432"/>
+    <path d="M440 96 348 264 376 432"/>
+  </g>
+  <path id="frame" d="M72 96H440L376 432H136Z" stroke="#1D6FE8" stroke-width="20"/>
+  <path id="outer" d="M256 168 348 264 256 360 164 264Z" stroke="#1D6FE8" stroke-width="18"/>
+  <path id="inner" d="M256 216 302 264 256 312 210 264Z" stroke="#5CA8FF" stroke-width="16"/>
+  <g id="nodes" fill="#1D6FE8">
+    <circle cx="72" cy="96" r="20"/>
+    <circle cx="440" cy="96" r="20"/>
+    <circle cx="376" cy="432" r="20"/>
+    <circle cx="136" cy="432" r="20"/>
+    <circle cx="256" cy="168" r="16"/>
+    <circle cx="348" cy="264" r="16"/>
+    <circle cx="256" cy="360" r="16"/>
+    <circle cx="164" cy="264" r="16"/>
+  </g>
+</svg>
