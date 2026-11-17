@@ -20,7 +20,7 @@ func connectProbe(t *testing.T, caps *mcp.ClientCapabilities) *mcp.ClientSession
 	sessions = map[string]*sessionState{}
 	sessMu.Unlock()
 
-	srv := buildServer("test instructions")
+	srv := buildServer("test instructions", "test")
 	var opts *mcp.ClientOptions
 	if caps != nil {
 		opts = &mcp.ClientOptions{Capabilities: caps}
@@ -67,9 +67,9 @@ func resourceURIs(t *testing.T, cs *mcp.ClientSession) map[string]bool {
 // widget resource, and a direct read of it is refused rather than pouring a few
 // hundred KB of inlined SDK into a client that can never render it.
 func TestAppsSurfaceHiddenWithoutCapability(t *testing.T) {
-	prevJira, prevBB := jira, bitbucket
-	jira, bitbucket = &JiraClient{}, &BitbucketClient{}
-	defer func() { jira, bitbucket = prevJira, prevBB }()
+	prevJira, prevBB := jiraClient, bitbucketClient
+	jiraClient, bitbucketClient = &JiraClient{}, &BitbucketClient{}
+	defer func() { jiraClient, bitbucketClient = prevJira, prevBB }()
 
 	cs := connectProbe(t, nil)
 
@@ -96,9 +96,9 @@ func TestAppsSurfaceHiddenWithoutCapability(t *testing.T) {
 }
 
 func TestAppsSurfaceVisibleWithCapability(t *testing.T) {
-	prevJira, prevBB := jira, bitbucket
-	jira, bitbucket = &JiraClient{}, &BitbucketClient{}
-	defer func() { jira, bitbucket = prevJira, prevBB }()
+	prevJira, prevBB := jiraClient, bitbucketClient
+	jiraClient, bitbucketClient = &JiraClient{}, &BitbucketClient{}
+	defer func() { jiraClient, bitbucketClient = prevJira, prevBB }()
 
 	caps := &mcp.ClientCapabilities{}
 	caps.AddExtension(uiExtensionKey, map[string]any{"mimeTypes": []any{appResourceMIMEType}})

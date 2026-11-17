@@ -549,12 +549,53 @@ func validateSuggestionPlacement(textValue string) error {
 type BitbucketClient struct {
 	baseURL         string
 	token           string
+	creds           Credentials
 	mu              sync.Mutex // guards currentUsername (HTTP is concurrent)
 	currentUsername string
 }
 
-func NewBitbucketClient(baseURL, token string) *BitbucketClient {
-	return &BitbucketClient{baseURL: strings.TrimRight(baseURL, "/"), token: token}
+// prReviews records the commit pair a client was last shown for each PR, so an
+// inline comment anchors to the state that was actually reviewed instead of
+// whatever the PR head has become. Keyed by project/repo/PR.
+type prReviews struct {
+	mu   sync.Mutex
+	seen map[string]reviewedState
+}
+
+type reviewedState struct {
+	fromHash string
+	toHash   string
+}
+
+func (p *prReviews) remember(key, fromHash, toHash string) {
+	if p == nil || key == "" || fromHash == "" || toHash == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.seen == nil {
+		p.seen = map[string]reviewedState{}
+	}
+	p.seen[key] = reviewedState{fromHash: fromHash, toHash: toHash}
+}
+
+func (p *prReviews) last(key string) (string, string, bool) {
+	if p == nil {
+		return "", "", false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	st, ok := p.seen[key]
+	return st.fromHash, st.toHash, ok
+}
+
+// reviewKey scopes remembered state to one PR in one repository.
+func reviewKey(projectKey, repoSlug string, prID int) string {
+	return fmt.Sprintf("%s/%s#%d", projectKey, repoSlug, prID)
+}
+
+func NewBitbucketClient(baseURL, token string, creds Credentials) *BitbucketClient {
+	return &BitbucketClient{baseURL: strings.TrimRight(baseURL, "/"), token: token, creds: creds}
 }
 
 func (c *BitbucketClient) doRequest(apiBase, method, path string, body any) ([]byte, int, error) {
@@ -1067,7 +1108,7 @@ func joinReviewers(reviewers []bbReviewer) string {
 	return strings.Join(parts, ", ")
 }
 
-func (c *BitbucketClient) getPrOverview(session *sessionState, args map[string]any, repoRoot string) (toolResult, error) {
+func (c *BitbucketClient) getPrOverview(reviews *prReviews, args map[string]any, repoRoot string) (toolResult, error) {
 	pk, rs, err := c.resolveProjectAndRepo(argString(args, "projectKey"), argString(args, "repoSlug"), repoRoot)
 	if err != nil {
 		return toolResult{}, err
@@ -1136,7 +1177,7 @@ func (c *BitbucketClient) getPrOverview(session *sessionState, args map[string]a
 	if fromHash != "" && toHash != "" {
 		// Remembered per session: bitbucket_comment then anchors inline comments
 		// to this pair by default, so nobody has to carry the hashes by hand.
-		session.rememberReviewed(reviewKey(pk, rs, prID), fromHash, toHash)
+		reviews.remember(reviewKey(pk, rs, prID), fromHash, toHash)
 		commitsLine = fmt.Sprintf("Commits:   fromHash=%s toHash=%s (inline comments anchor here automatically)", fromHash, toHash)
 	}
 	desc := pr.Description

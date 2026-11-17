@@ -555,12 +555,12 @@ func checkRemoteBranch(branchName, repoPath string) (remoteBranchInfo, error) {
 	if err != nil {
 		return remoteBranchInfo{exists: false}, nil
 	}
-	sha, ok := lsRemoteHead(r, "origin", branchName)
+	sha, ok := lsRemoteHead(r, "origin", branchName, credentials)
 	if !ok {
 		return remoteBranchInfo{exists: false}, nil
 	}
 	shortSha := sha.String()[:8]
-	if err := fetchBranch(r, "origin", branchName); err != nil {
+	if err := fetchBranch(r, "origin", branchName, credentials); err != nil {
 		return remoteBranchInfo{exists: true, sha: shortSha}, nil
 	}
 	ref, err := r.Reference(plumbing.NewRemoteReferenceName("origin", branchName), true)
@@ -600,9 +600,9 @@ func getDefaultBranch(r *git.Repository) string {
 	if head := gitOriginHead(r); head != "" {
 		return head
 	}
-	if bitbucket != nil {
+	if bitbucketClient != nil {
 		if parsed := parseBitbucketRemote(remoteURL(r, "origin")); parsed != nil {
-			if name := bitbucket.defaultBranchName(parsed.projectKey, parsed.repoSlug); name != "" {
+			if name := bitbucketClient.defaultBranchName(parsed.projectKey, parsed.repoSlug); name != "" {
 				return name
 			}
 		}
@@ -688,7 +688,7 @@ func createBranch(branchName, baseBranch, repoPath string, push bool) toolResult
 	if refExists(r, local) {
 		return textResult(fmt.Sprintf("Branch %q already exists locally. Switch with: git checkout %s", branchName, branchName))
 	}
-	_ = fetchBranch(r, "origin", baseBranch)
+	_ = fetchBranch(r, "origin", baseBranch, credentials)
 	base, err := r.Reference(plumbing.NewRemoteReferenceName("origin", baseBranch), true)
 	if err != nil {
 		return textResult(fmt.Sprintf("Error creating branch: origin/%s not found.", baseBranch))
@@ -704,7 +704,7 @@ func createBranch(branchName, baseBranch, repoPath string, push bool) toolResult
 	}
 	lines := []string{fmt.Sprintf("Created and switched to branch %q from origin/%s.", branchName, baseBranch)}
 	if push {
-		if err := pushBranch(r, "origin", branchName); err != nil {
+		if err := pushBranch(r, "origin", branchName, credentials); err != nil {
 			return textResult("Error creating branch: " + err.Error())
 		}
 		lines = append(lines, fmt.Sprintf("Pushed to origin/%s and set upstream.", branchName))
@@ -717,7 +717,7 @@ func createBranch(branchName, baseBranch, repoPath string, push bool) toolResult
 const gitNetworkTimeout = 2 * time.Minute
 
 // lsRemoteHead asks the remote for refs/heads/<branch> without fetching.
-func lsRemoteHead(r *git.Repository, remote, branch string) (plumbing.Hash, bool) {
+func lsRemoteHead(r *git.Repository, remote, branch string, creds Credentials) (plumbing.Hash, bool) {
 	rem, err := r.Remote(remote)
 	if err != nil {
 		return plumbing.ZeroHash, false
@@ -725,7 +725,7 @@ func lsRemoteHead(r *git.Repository, remote, branch string) (plumbing.Hash, bool
 	u := remoteURL(r, remote)
 	ctx, cancel := netContext()
 	defer cancel()
-	refs, err := rem.ListContext(ctx, &git.ListOptions{Auth: gitAuth(u)})
+	refs, err := rem.ListContext(ctx, &git.ListOptions{Auth: gitAuth(u, creds)})
 	if err != nil {
 		return plumbing.ZeroHash, false
 	}
@@ -739,7 +739,7 @@ func lsRemoteHead(r *git.Repository, remote, branch string) (plumbing.Hash, bool
 }
 
 // fetchBranch updates <remote>/<branch> from the remote.
-func fetchBranch(r *git.Repository, remote, branch string) error {
+func fetchBranch(r *git.Repository, remote, branch string, creds Credentials) error {
 	rem, err := r.Remote(remote)
 	if err != nil {
 		return err
@@ -748,7 +748,7 @@ func fetchBranch(r *git.Repository, remote, branch string) error {
 	spec := gitconfig.RefSpec(fmt.Sprintf("+refs/heads/%s:refs/remotes/%s/%s", branch, remote, branch))
 	ctx, cancel := netContext()
 	defer cancel()
-	err = rem.FetchContext(ctx, &git.FetchOptions{RemoteURL: u, RefSpecs: []gitconfig.RefSpec{spec}, Auth: gitAuth(u)})
+	err = rem.FetchContext(ctx, &git.FetchOptions{RemoteURL: u, RefSpecs: []gitconfig.RefSpec{spec}, Auth: gitAuth(u, creds)})
 	if errors.Is(err, git.NoErrAlreadyUpToDate) {
 		return nil
 	}
@@ -756,7 +756,7 @@ func fetchBranch(r *git.Repository, remote, branch string) error {
 }
 
 // pushBranch is `git push -u <remote> <branch>`.
-func pushBranch(r *git.Repository, remote, branch string) error {
+func pushBranch(r *git.Repository, remote, branch string, creds Credentials) error {
 	rem, err := r.Remote(remote)
 	if err != nil {
 		return err
@@ -765,7 +765,7 @@ func pushBranch(r *git.Repository, remote, branch string) error {
 	spec := gitconfig.RefSpec(fmt.Sprintf("refs/heads/%s:refs/heads/%s", branch, branch))
 	ctx, cancel := netContext()
 	defer cancel()
-	err = rem.PushContext(ctx, &git.PushOptions{RemoteURL: u, RefSpecs: []gitconfig.RefSpec{spec}, Auth: gitAuth(u)})
+	err = rem.PushContext(ctx, &git.PushOptions{RemoteURL: u, RefSpecs: []gitconfig.RefSpec{spec}, Auth: gitAuth(u, creds)})
 	if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
 		return err
 	}

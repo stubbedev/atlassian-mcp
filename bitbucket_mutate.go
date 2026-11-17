@@ -455,15 +455,15 @@ func bitbucketMutate(session *sessionState, args map[string]any, repoRoot string
 	prID := argInt(args, "prId")
 	switch action {
 	case "approve":
-		return bitbucket.approvePr(pk, rs, repoRoot, prID)
+		return bitbucketClient.approvePr(pk, rs, repoRoot, prID)
 	case "unapprove":
-		return bitbucket.unapprovePr(pk, rs, repoRoot, prID)
+		return bitbucketClient.unapprovePr(pk, rs, repoRoot, prID)
 	case "needs_work":
-		return bitbucket.needsWorkPr(pk, rs, repoRoot, prID)
+		return bitbucketClient.needsWorkPr(pk, rs, repoRoot, prID)
 	case "decline":
-		return bitbucket.declinePr(pk, rs, repoRoot, prID, argString(args, "declineMessage"))
+		return bitbucketClient.declinePr(pk, rs, repoRoot, prID, argString(args, "declineMessage"))
 	case "merge":
-		return bitbucket.mergePr(pk, rs, repoRoot, prID, argString(args, "mergeStrategy"), argString(args, "mergeMessage"))
+		return bitbucketClient.mergePr(pk, rs, repoRoot, prID, argString(args, "mergeStrategy"), argString(args, "mergeMessage"))
 	case "create":
 		if argMap(args, "create") == nil {
 			return toolResult{}, errors.New("action=create needs a create object (title, and optionally description/fromBranch/toBranch/reviewers).")
@@ -480,7 +480,7 @@ func bitbucketMutate(session *sessionState, args map[string]any, repoRoot string
 	// Interactive reviewer picker for PR creation.
 	create := argMap(args, "create")
 	if create != nil && argBool(create, "pickReviewers") && !has(args, "prId") {
-		users, err := bitbucket.searchUsersRaw(pk, rs, "", 30)
+		users, err := bitbucketClient.searchUsersRaw(pk, rs, "", 30)
 		if err == nil && len(users) > 0 {
 			properties := map[string]any{}
 			schemaKeyToUser := map[string]string{}
@@ -505,7 +505,7 @@ func bitbucketMutate(session *sessionState, args map[string]any, repoRoot string
 		}
 	}
 
-	return bitbucket.mutatePullRequest(args, repoRoot)
+	return bitbucketClient.mutatePullRequest(args, repoRoot)
 }
 
 var schemaKeyRe = regexp.MustCompile(`[^a-zA-Z0-9]`)

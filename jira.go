@@ -442,6 +442,7 @@ func wikiNote(converted bool) string {
 type JiraClient struct {
 	baseURL string
 	token   string
+	creds   Credentials
 
 	mu                 sync.Mutex // guards the lazily-populated caches below (HTTP is concurrent)
 	currentUser        *jiraCurrentUser
@@ -456,10 +457,11 @@ type JiraClient struct {
 	issueTypeCache     map[string]string
 }
 
-func NewJiraClient(baseURL, token string) *JiraClient {
+func NewJiraClient(baseURL, token string, creds Credentials) *JiraClient {
 	return &JiraClient{
 		baseURL:        strings.TrimRight(baseURL, "/"),
 		token:          token,
+		creds:          creds,
 		issueTypeCache: map[string]string{},
 	}
 }
@@ -2826,7 +2828,7 @@ func (c *JiraClient) mutateVersion(args map[string]any, repoRoot string) (toolRe
 // request. Sources are resolved (local path, URL, data: URI) first. Returns the
 // uploaded filenames.
 func (c *JiraClient) uploadAttachments(issueKey string, sources []string) ([]string, error) {
-	resolved, err := resolveAttachmentSources(sources)
+	resolved, err := resolveAttachmentSources(sources, c.creds)
 	if err != nil {
 		return nil, err
 	}

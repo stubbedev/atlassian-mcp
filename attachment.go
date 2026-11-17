@@ -544,22 +544,22 @@ func getAttachmentDispatch(session *sessionState, args map[string]any) (toolResu
 	source := argString(args, "source")
 	if source == "" {
 		switch {
-		case jira != nil && bitbucket == nil:
+		case jiraClient != nil && bitbucketClient == nil:
 			source = "jira"
-		case bitbucket != nil && jira == nil:
+		case bitbucketClient != nil && jiraClient == nil:
 			source = "bitbucket"
 		default:
 			return toolResult{}, errors.New("source is required: \"jira\" for an issue attachment (IDs from jira_get) or \"bitbucket\" for a repo attachment (IDs from bitbucket_get_pr).")
 		}
 	}
 	if source == "jira" {
-		if jira == nil {
+		if jiraClient == nil {
 			return toolResult{}, errors.New("Jira is not configured.")
 		}
-		return jira.getAttachment(args)
+		return jiraClient.getAttachment(args)
 	}
-	if bitbucket == nil {
+	if bitbucketClient == nil {
 		return toolResult{}, errors.New("Bitbucket is not configured.")
 	}
-	return bitbucket.getAttachment(args, resolveRepoRoot(session, args))
+	return bitbucketClient.getAttachment(args, resolveRepoRoot(session, args))
 }

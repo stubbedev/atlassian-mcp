@@ -38,8 +38,8 @@ var (
 )
 
 // runServer builds the server and serves it over the configured transport.
-func runServer(instructions string) {
-	mcpServer = buildServer(instructions)
+func runServer(instructions, version string) {
+	mcpServer = buildServer(instructions, version)
 	if addr := httpAddr(); addr != "" {
 		serveHTTP(addr)
 		return
@@ -52,9 +52,9 @@ func runServer(instructions string) {
 
 // buildServer creates the MCP server and registers the tools applicable to the
 // current configuration (toolList gates by configured service).
-func buildServer(instructions string) *mcp.Server {
+func buildServer(instructions, version string) *mcp.Server {
 	srv := mcp.NewServer(
-		&mcp.Implementation{Name: "atlassian-mcp", Version: Version},
+		&mcp.Implementation{Name: "atlassian-mcp", Version: version},
 		&mcp.ServerOptions{
 			Instructions: instructions,
 			Capabilities: &mcp.ServerCapabilities{
@@ -97,7 +97,7 @@ func buildServer(instructions string) *mcp.Server {
 	// does, for MCPB-packaged servers too) fetch this when attach_files runs and
 	// render it as an iframe in the chat; hosts that do not simply ignore the
 	// tool's _meta and the tool still works with paths and URLs.
-	if jira != nil || bitbucket != nil {
+	if jiraClient != nil || bitbucketClient != nil {
 		srv.AddResource(&mcp.Resource{
 			URI:         uploadWidgetURI,
 			Name:        "upload-panel",

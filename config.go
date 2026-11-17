@@ -25,6 +25,48 @@ type Config struct {
 	MarkAIText bool
 }
 
+// Credentials are the configured services' tokens, offered to a URL only when
+// it has the same scheme, host and port as that service.
+type Credentials []ServiceConfig
+
+func (c Config) Credentials() Credentials {
+	var out Credentials
+	for _, s := range []*ServiceConfig{c.Jira, c.Bitbucket} {
+		if s != nil && s.Token != "" {
+			out = append(out, *s)
+		}
+	}
+	return out
+}
+
+func (cs Credentials) TokenFor(u *url.URL) string {
+	for _, s := range cs {
+		base, err := url.Parse(s.URL)
+		if err == nil && sameOrigin(base, u) {
+			return s.Token
+		}
+	}
+	return ""
+}
+
+func sameOrigin(a, b *url.URL) bool {
+	return a.Host != "" && strings.EqualFold(a.Scheme, b.Scheme) &&
+		strings.EqualFold(a.Hostname(), b.Hostname()) && effectivePort(a) == effectivePort(b)
+}
+
+func effectivePort(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+		return "443"
+	case "http":
+		return "80"
+	}
+	return ""
+}
+
 type configFile struct {
 	MarkAIText *bool `json:"markAIText"`
 	Jira       struct {

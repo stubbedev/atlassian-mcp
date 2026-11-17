@@ -96,7 +96,7 @@ func (tr *testRepo) withRemote() string {
 	if _, err := tr.repo.CreateRemote(&gitconfig.RemoteConfig{Name: "origin", URLs: []string{bare}}); err != nil {
 		tr.t.Fatal(err)
 	}
-	if err := pushBranch(tr.repo, "origin", "master"); err != nil {
+	if err := pushBranch(tr.repo, "origin", "master", nil); err != nil {
 		tr.t.Fatal(err)
 	}
 	return bare

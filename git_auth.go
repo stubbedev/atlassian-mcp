@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -27,8 +28,8 @@ import (
 //     checked against ~/.ssh/known_hosts; HostName and Port from ~/.ssh/config
 //     are honored.
 //   - http(s): credentials in the URL, ~/.git-credentials (the "store" helper's
-//     file), ~/.netrc, and — for the configured Bitbucket instance only — the
-//     Bitbucket token this server already holds.
+//     file), ~/.netrc, and the token of a configured service on the same
+//     scheme, host and port.
 
 // Local remotes (a path or file:// URL) would otherwise run git-upload-pack
 // and git-receive-pack; serve them in-process instead.
@@ -41,7 +42,7 @@ func netContext() (context.Context, context.CancelFunc) {
 }
 
 // gitAuth picks the credentials for a remote URL; nil lets go-git go without.
-func gitAuth(remote string) transport.AuthMethod {
+func gitAuth(remote string, creds Credentials) transport.AuthMethod {
 	ep, err := transport.NewEndpoint(remote)
 	if err != nil {
 		return nil
@@ -50,7 +51,7 @@ func gitAuth(remote string) transport.AuthMethod {
 	case "ssh":
 		return sshAuth(ep)
 	case "http", "https":
-		return httpAuth(ep)
+		return httpAuth(ep, creds)
 	}
 	return nil
 }
@@ -112,7 +113,7 @@ func loadKeyFile(path string) ssh.Signer {
 	return s
 }
 
-func httpAuth(ep *transport.Endpoint) transport.AuthMethod {
+func httpAuth(ep *transport.Endpoint, creds Credentials) transport.AuthMethod {
 	if ep.User != "" && ep.Password != "" {
 		return &githttp.BasicAuth{Username: ep.User, Password: ep.Password}
 	}
@@ -122,11 +123,12 @@ func httpAuth(ep *transport.Endpoint) transport.AuthMethod {
 	if user, pass, ok := netrcCredential(ep.Host); ok {
 		return &githttp.BasicAuth{Username: user, Password: pass}
 	}
-	if bitbucket != nil && bitbucket.token != "" {
-		if base, err := url.Parse(bitbucket.baseURL); err == nil &&
-			strings.EqualFold(base.Scheme, ep.Protocol) && strings.EqualFold(base.Hostname(), ep.Host) {
-			return &githttp.TokenAuth{Token: bitbucket.token}
-		}
+	host := ep.Host
+	if ep.Port > 0 {
+		host = net.JoinHostPort(ep.Host, strconv.Itoa(ep.Port))
+	}
+	if token := creds.TokenFor(&url.URL{Scheme: ep.Protocol, Host: host}); token != "" {
+		return &githttp.TokenAuth{Token: token}
 	}
 	return nil
 }

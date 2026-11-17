@@ -17,92 +17,92 @@ func runTool(session *sessionState, name string, args map[string]any) (toolResul
 
 	// ── Combined context ─────────────────────────────────────────────────
 	case "get_dev_context":
-		if jira == nil && bitbucket == nil {
+		if jiraClient == nil && bitbucketClient == nil {
 			return toolResult{}, errUnknownTool
 		}
 		return getDevContext(resolveRepoRoot(session, args))
 
 	case "get_attachment":
-		if jira == nil && bitbucket == nil {
+		if jiraClient == nil && bitbucketClient == nil {
 			return toolResult{}, errUnknownTool
 		}
 		return getAttachmentDispatch(session, args)
 
 	case "attach_files":
-		if jira == nil && bitbucket == nil {
+		if jiraClient == nil && bitbucketClient == nil {
 			return toolResult{}, errUnknownTool
 		}
 		return attachFiles(session, args)
 
 	// ── Jira ─────────────────────────────────────────────────────────────
 	case "start_work":
-		if jira == nil {
+		if jiraClient == nil {
 			return toolResult{}, errUnknownTool
 		}
 		return startWork(session, args, resolveRepoRoot(session, args))
 
 	case "jira_search":
-		if jira == nil {
+		if jiraClient == nil {
 			return toolResult{}, errUnknownTool
 		}
-		return jira.search(normalizeJiraProjectArgs(args), resolveRepoRoot(session, args))
+		return jiraClient.search(normalizeJiraProjectArgs(args), resolveRepoRoot(session, args))
 
 	case "jira_get":
-		if jira == nil {
+		if jiraClient == nil {
 			return toolResult{}, errUnknownTool
 		}
-		opts, err := jira.issueOverviewOptsFromArgs(args)
+		opts, err := jiraClient.issueOverviewOptsFromArgs(args)
 		if err != nil {
 			return toolResult{}, err
 		}
-		return jira.issueOverview(opts)
+		return jiraClient.issueOverview(opts)
 
 	case "jira_mutate":
-		if jira == nil {
+		if jiraClient == nil {
 			return toolResult{}, errUnknownTool
 		}
-		return jira.mutateIssue(normalizeJiraMutateArgs(args), resolveRepoRoot(session, args))
+		return jiraClient.mutateIssue(normalizeJiraMutateArgs(args), resolveRepoRoot(session, args))
 
 	// ── Bitbucket ────────────────────────────────────────────────────────
 	case "bitbucket_search":
-		if bitbucket == nil {
+		if bitbucketClient == nil {
 			return toolResult{}, errUnknownTool
 		}
-		return bitbucket.search(normalizeBitbucketArgs(args), resolveRepoRoot(session, args))
+		return bitbucketClient.search(normalizeBitbucketArgs(args), resolveRepoRoot(session, args))
 
 	case "bitbucket_get_pr":
-		if bitbucket == nil {
+		if bitbucketClient == nil {
 			return toolResult{}, errUnknownTool
 		}
-		return bitbucket.getPrOverview(session, normalizeBitbucketArgs(args), resolveRepoRoot(session, args))
+		return bitbucketClient.getPrOverview(session.prReviews(), normalizeBitbucketArgs(args), resolveRepoRoot(session, args))
 
 	case "bitbucket_mutate":
-		if bitbucket == nil {
+		if bitbucketClient == nil {
 			return toolResult{}, errUnknownTool
 		}
 		return bitbucketMutate(session, normalizeBitbucketArgs(args), resolveRepoRoot(session, args))
 
 	case "bitbucket_comment":
-		if bitbucket == nil {
+		if bitbucketClient == nil {
 			return toolResult{}, errUnknownTool
 		}
-		return bitbucket.commentDispatch(session, normalizeBitbucketArgs(args), resolveRepoRoot(session, args))
+		return bitbucketClient.commentDispatch(session.prReviews(), normalizeBitbucketArgs(args), resolveRepoRoot(session, args))
 
 	case "bitbucket_get_file":
-		if bitbucket == nil {
+		if bitbucketClient == nil {
 			return toolResult{}, errUnknownTool
 		}
-		return bitbucket.getFile(normalizeBitbucketArgs(args), resolveRepoRoot(session, args))
+		return bitbucketClient.getFile(normalizeBitbucketArgs(args), resolveRepoRoot(session, args))
 
 	case "bitbucket_pr_tasks":
-		if bitbucket == nil {
+		if bitbucketClient == nil {
 			return toolResult{}, errUnknownTool
 		}
-		return bitbucket.prTasksDispatch(normalizeBitbucketArgs(args), resolveRepoRoot(session, args))
+		return bitbucketClient.prTasksDispatch(normalizeBitbucketArgs(args), resolveRepoRoot(session, args))
 
 	// ── Combined workflow ────────────────────────────────────────────────
 	case "complete_work":
-		if jira == nil || bitbucket == nil {
+		if jiraClient == nil || bitbucketClient == nil {
 			return toolResult{}, errUnknownTool
 		}
 		return completeWork(args, resolveRepoRoot(session, args))

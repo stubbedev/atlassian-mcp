@@ -11,7 +11,7 @@ import (
 )
 
 // commentDispatch is the bitbucket_comment tool entry.
-func (c *BitbucketClient) commentDispatch(session *sessionState, args map[string]any, repoRoot string) (toolResult, error) {
+func (c *BitbucketClient) commentDispatch(reviews *prReviews, args map[string]any, repoRoot string) (toolResult, error) {
 	action := argString(args, "action")
 	if action == "" {
 		action = "add"
@@ -25,13 +25,13 @@ func (c *BitbucketClient) commentDispatch(session *sessionState, args map[string
 		}
 		return c.deletePrComment(args, repoRoot)
 	case "add":
-		return c.addPrComment(session, args, repoRoot)
+		return c.addPrComment(reviews, args, repoRoot)
 	default:
 		return toolResult{}, fmt.Errorf("Unknown comment action %q. Use add, update, or delete. To reply, use action=add with commentId.", action)
 	}
 }
 
-func (c *BitbucketClient) addPrComment(session *sessionState, args map[string]any, repoRoot string) (toolResult, error) {
+func (c *BitbucketClient) addPrComment(reviews *prReviews, args map[string]any, repoRoot string) (toolResult, error) {
 	pk, rs, err := c.resolveProjectAndRepo(argString(args, "projectKey"), argString(args, "repoSlug"), repoRoot)
 	if err != nil {
 		return toolResult{}, err
@@ -171,7 +171,7 @@ func (c *BitbucketClient) addPrComment(session *sessionState, args map[string]an
 		// branch has not moved since the review).
 		argFromHash, argToHash := argString(args, "fromHash"), argString(args, "toHash")
 		if argFromHash == "" && argToHash == "" {
-			if sf, st, ok := session.lastReviewed(reviewKey(pk, rs, prID)); ok {
+			if sf, st, ok := reviews.last(reviewKey(pk, rs, prID)); ok {
 				argFromHash, argToHash = sf, st
 				usedRememberedHashes = true
 			}

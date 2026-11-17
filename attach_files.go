@@ -47,10 +47,10 @@ func attachFiles(session *sessionState, args map[string]any) (toolResult, error)
 	if issueKey != "" && prID != 0 {
 		return toolResult{}, errors.New("Pass issueKey or prId, not both — one upload goes to one place.")
 	}
-	if issueKey != "" && jira == nil {
+	if issueKey != "" && jiraClient == nil {
 		return toolResult{}, errors.New("Jira is not configured.")
 	}
-	if prID != 0 && bitbucket == nil {
+	if prID != 0 && bitbucketClient == nil {
 		return toolResult{}, errors.New("Bitbucket is not configured.")
 	}
 
@@ -68,7 +68,7 @@ func attachFiles(session *sessionState, args map[string]any) (toolResult, error)
 	}
 
 	if issueKey != "" {
-		names, err := jira.uploadAttachments(issueKey, files)
+		names, err := jiraClient.uploadAttachments(issueKey, files)
 		if err != nil {
 			return toolResult{}, err
 		}
@@ -80,7 +80,7 @@ func attachFiles(session *sessionState, args map[string]any) (toolResult, error)
 	// the markup lands in the PR description (or a comment, when one is named).
 	repoRoot := resolveRepoRoot(session, args)
 	if commentID := argInt(args, "commentId"); commentID != 0 {
-		return bitbucket.updatePrComment(map[string]any{
+		return bitbucketClient.updatePrComment(map[string]any{
 			"prId":        prID,
 			"commentId":   commentID,
 			"projectKey":  argString(args, "projectKey"),
@@ -88,7 +88,7 @@ func attachFiles(session *sessionState, args map[string]any) (toolResult, error)
 			"attachments": toAnySlice(files),
 		}, repoRoot)
 	}
-	return bitbucket.updatePullRequest(argString(args, "projectKey"), argString(args, "repoSlug"), repoRoot, prID, nil, nil, nil, nil, false, files)
+	return bitbucketClient.updatePullRequest(argString(args, "projectKey"), argString(args, "repoSlug"), repoRoot, prID, nil, nil, nil, nil, false, files)
 }
 
 func attachTargetLabel(issueKey string, prID int) string {

@@ -89,7 +89,7 @@ func getDevContext(repoPath string) (toolResult, error) {
 	committers := getTopCommitters(r, 50, 5)
 
 	var parsed *bitbucketRemote
-	if bitbucket != nil && bitbucket.isRemoteForThisInstance(remote) {
+	if bitbucketClient != nil && bitbucketClient.isRemoteForThisInstance(remote) {
 		parsed = parseBitbucketRemote(remote)
 	}
 
@@ -97,8 +97,8 @@ func getDevContext(repoPath string) (toolResult, error) {
 
 	// Identity (best-effort).
 	var youParts []string
-	if jira != nil {
-		if me, err := jira.whoami(); err == nil && me != nil {
+	if jiraClient != nil {
+		if me, err := jiraClient.whoami(); err == nil && me != nil {
 			id := me.Name
 			if id == "" {
 				id = me.Key
@@ -113,8 +113,8 @@ func getDevContext(repoPath string) (toolResult, error) {
 			youParts = append(youParts, "Jira "+id+disp)
 		}
 	}
-	if bitbucket != nil {
-		if me, err := bitbucket.whoami(); err == nil && me != "" {
+	if bitbucketClient != nil {
+		if me, err := bitbucketClient.whoami(); err == nil && me != "" {
 			youParts = append(youParts, "Bitbucket "+me)
 		}
 	}
@@ -148,10 +148,10 @@ func getDevContext(repoPath string) (toolResult, error) {
 	sections = append(sections, strings.Join(headerLines, "\n"))
 
 	// Jira — overview for any keys in the branch name.
-	if jira != nil {
+	if jiraClient != nil {
 		jiraKeys := uniqueStrings(jiraKeyRe.FindAllString(branch, -1))
 		for _, key := range jiraKeys {
-			res, err := jira.issueOverview(issueOverviewOpts{
+			res, err := jiraClient.issueOverview(issueOverviewOpts{
 				issueKey:           key,
 				includeComments:    true,
 				commentsMaxResults: 5,
@@ -170,7 +170,7 @@ func getDevContext(repoPath string) (toolResult, error) {
 
 	// Bitbucket — open PR for this branch.
 	if parsed != nil {
-		pr, err := bitbucket.findOpenPrForBranch(parsed.projectKey, parsed.repoSlug, branch)
+		pr, err := bitbucketClient.findOpenPrForBranch(parsed.projectKey, parsed.repoSlug, branch)
 		switch {
 		case err != nil:
 			sections = append(sections, fmt.Sprintf("── Bitbucket (%s/%s) ── (could not fetch PRs)", parsed.projectKey, parsed.repoSlug))

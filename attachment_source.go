@@ -38,10 +38,10 @@ type resolvedAttachment struct {
 
 // resolveAttachmentSources resolves every entry, cleaning up after itself if any
 // one of them fails — a half-resolved batch must not leak temp files.
-func resolveAttachmentSources(sources []string) ([]resolvedAttachment, error) {
+func resolveAttachmentSources(sources []string, creds Credentials) ([]resolvedAttachment, error) {
 	out := make([]resolvedAttachment, 0, len(sources))
 	for _, s := range sources {
-		r, err := resolveAttachmentSource(strings.TrimSpace(s))
+		r, err := resolveAttachmentSource(strings.TrimSpace(s), creds)
 		if err != nil {
 			releaseAttachments(out)
 			return nil, err
@@ -68,7 +68,7 @@ func releaseAttachments(list []resolvedAttachment) {
 	}
 }
 
-func resolveAttachmentSource(src string) (resolvedAttachment, error) {
+func resolveAttachmentSource(src string, creds Credentials) (resolvedAttachment, error) {
 	if src == "" {
 		return resolvedAttachment{}, fmt.Errorf("empty attachment source. %s", attachmentSourceHint)
 	}
@@ -76,7 +76,7 @@ func resolveAttachmentSource(src string) (resolvedAttachment, error) {
 	case strings.HasPrefix(strings.ToLower(src), "data:"):
 		return resolveDataURIAttachment(src)
 	case hasHTTPScheme(src):
-		return fetchRemoteAttachment(src)
+		return fetchRemoteAttachment(src, creds)
 	case strings.HasPrefix(strings.ToLower(src), "file://"):
 		p := fileURIToPath(src)
 		if p == "" {
@@ -175,7 +175,7 @@ func resolveDataURIAttachment(src string) (resolvedAttachment, error) {
 // fetchRemoteAttachment downloads a URL into a temp file. Requests to the
 // configured Jira/Bitbucket hosts carry the bearer token, so an attachment
 // already living on one service can be re-attached to the other by URL.
-func fetchRemoteAttachment(src string) (resolvedAttachment, error) {
+func fetchRemoteAttachment(src string, creds Credentials) (resolvedAttachment, error) {
 	u, err := url.Parse(src)
 	if err != nil {
 		return resolvedAttachment{}, fmt.Errorf("cannot fetch attachment %s: %w", src, err)
@@ -187,7 +187,7 @@ func fetchRemoteAttachment(src string) (resolvedAttachment, error) {
 		return resolvedAttachment{}, fmt.Errorf("cannot fetch attachment %s: %w", src, err)
 	}
 	req.Header.Set("Accept", "*/*")
-	if tok := attachmentAuthToken(u); tok != "" {
+	if tok := creds.TokenFor(u); tok != "" {
 		req.Header.Set("Authorization", "Bearer "+tok)
 	}
 	res, err := httpClient.Do(req)
@@ -225,31 +225,6 @@ func fetchRemoteAttachment(src string) (resolvedAttachment, error) {
 		return resolvedAttachment{}, fmt.Errorf("attachment %s downloaded zero bytes.", src)
 	}
 	return resolvedAttachment{path: p, name: name, ref: src, tmp: true}, nil
-}
-
-// attachmentAuthToken returns the bearer token for a URL that points at one of
-// the configured services. Host must match exactly — a token is never sent
-// anywhere the server was not already talking to.
-func attachmentAuthToken(u *url.URL) string {
-	if jira != nil {
-		if sameHost(u, jira.baseURL) {
-			return jira.token
-		}
-	}
-	if bitbucket != nil {
-		if sameHost(u, bitbucket.baseURL) {
-			return bitbucket.token
-		}
-	}
-	return ""
-}
-
-func sameHost(u *url.URL, base string) bool {
-	b, err := url.Parse(base)
-	if err != nil || b.Host == "" {
-		return false
-	}
-	return strings.EqualFold(u.Host, b.Host)
 }
 
 // remoteAttachmentName picks the filename: Content-Disposition first, then the

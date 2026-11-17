@@ -12,14 +12,14 @@ import (
 // initialize handshake, tools/list (gated by configured services), and a
 // tools/call round-trip. It replaces the old stdio/JSON-RPC smoke.
 func TestSDKServerSmoke(t *testing.T) {
-	jira = NewJiraClient("https://example.com", "tok")
-	bitbucket = NewBitbucketClient("https://example.com", "tok")
-	t.Cleanup(func() { jira = nil; bitbucket = nil })
+	jiraClient = NewJiraClient("https://example.com", "tok", nil)
+	bitbucketClient = NewBitbucketClient("https://example.com", "tok", nil)
+	t.Cleanup(func() { jiraClient = nil; bitbucketClient = nil })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	srv := buildServer("smoke instructions")
+	srv := buildServer("smoke instructions", "test")
 	clientT, serverT := mcp.NewInMemoryTransports()
 	go func() { _ = srv.Run(ctx, serverT) }()
 

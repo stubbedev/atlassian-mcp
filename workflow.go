@@ -45,7 +45,7 @@ func startWork(session *sessionState, args map[string]any, repoRoot string) (too
 	}
 
 	if issueKey == "" && query != "" {
-		candidates, err := jira.findIssues(query, 10)
+		candidates, err := jiraClient.findIssues(query, 10)
 		if err != nil {
 			return toolResult{}, err
 		}
@@ -96,7 +96,7 @@ func startWork(session *sessionState, args map[string]any, repoRoot string) (too
 		return toolResult{}, errors.New("Could not resolve issue key.")
 	}
 
-	summary, status, issueType, err := jira.getIssueFields(issueKey)
+	summary, status, issueType, err := jiraClient.getIssueFields(issueKey)
 	if err != nil {
 		return toolResult{}, err
 	}
@@ -181,17 +181,17 @@ func startWork(session *sessionState, args map[string]any, repoRoot string) (too
 		branchResult.Content[0].Text,
 	}
 	if tn := argString(args, "transitionName"); tn != "" {
-		if _, err := jira.mutateIssue(map[string]any{"issueKey": issueKey, "transitionName": tn}, repoRoot); err != nil {
+		if _, err := jiraClient.mutateIssue(map[string]any{"issueKey": issueKey, "transitionName": tn}, repoRoot); err != nil {
 			lines = append(lines, "Jira:    could not transition — "+err.Error())
 		} else {
 			lines = append(lines, "Jira:    transitioned → "+tn)
 		}
 	}
 
-	if bitbucket != nil {
+	if bitbucketClient != nil {
 		remoteURL := gitOriginURL(repoPath)
 		if parsed := parseBitbucketRemote(remoteURL); parsed != nil {
-			if readme := bitbucket.fetchFileText(parsed.projectKey, parsed.repoSlug, "README.md"); readme != "" {
+			if readme := bitbucketClient.fetchFileText(parsed.projectKey, parsed.repoSlug, "README.md"); readme != "" {
 				const maxLen = 4000
 				truncated := readme
 				if len(readme) > maxLen {
@@ -247,7 +247,7 @@ func completeWork(args map[string]any, repoRoot string) (toolResult, error) {
 		if rs == "" {
 			rs = parsed.repoSlug
 		}
-		pr, err := bitbucket.findOpenPrForBranch(pk, rs, branch)
+		pr, err := bitbucketClient.findOpenPrForBranch(pk, rs, branch)
 		if err != nil {
 			return toolResult{}, err
 		}
@@ -265,15 +265,15 @@ func completeWork(args map[string]any, repoRoot string) (toolResult, error) {
 	}
 
 	if !argBool(args, "force") {
-		pk, rs, rerr := bitbucket.resolveProjectAndRepo(argString(args, "projectKey"), argString(args, "repoSlug"), repoRoot)
+		pk, rs, rerr := bitbucketClient.resolveProjectAndRepo(argString(args, "projectKey"), argString(args, "repoSlug"), repoRoot)
 		if rerr == nil {
-			if blockers := bitbucket.mergeBlockers(pk, rs, resolvedPrID); len(blockers) > 0 {
+			if blockers := bitbucketClient.mergeBlockers(pk, rs, resolvedPrID); len(blockers) > 0 {
 				return toolResult{}, fmt.Errorf("PR #%d is not ready to merge: %s. Resolve these first, or pass force=true if the user wants it merged anyway.", resolvedPrID, strings.Join(blockers, "; "))
 			}
 		}
 	}
 
-	mergeResult, err := bitbucket.mergePr(argString(args, "projectKey"), argString(args, "repoSlug"), repoRoot, resolvedPrID, argString(args, "mergeStrategy"), argString(args, "mergeMessage"))
+	mergeResult, err := bitbucketClient.mergePr(argString(args, "projectKey"), argString(args, "repoSlug"), repoRoot, resolvedPrID, argString(args, "mergeStrategy"), argString(args, "mergeMessage"))
 	if err != nil {
 		return toolResult{}, err
 	}
@@ -285,7 +285,7 @@ func completeWork(args map[string]any, repoRoot string) (toolResult, error) {
 		if transitionName == "" {
 			transitionName = "Done"
 		}
-		if _, err := jira.mutateIssue(map[string]any{"issueKey": issueKey, "transitionName": transitionName}, repoRoot); err != nil {
+		if _, err := jiraClient.mutateIssue(map[string]any{"issueKey": issueKey, "transitionName": transitionName}, repoRoot); err != nil {
 			lines = append(lines, fmt.Sprintf("Jira:    could not transition %s — %s", issueKey, err.Error()))
 		} else {
 			lines = append(lines, fmt.Sprintf("Jira:    %s transitioned → %s", issueKey, transitionName))

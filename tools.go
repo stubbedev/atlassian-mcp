@@ -29,16 +29,16 @@ func toolList() []json.RawMessage {
 	}
 	out := make([]json.RawMessage, 0, 16)
 	out = append(out, g.Git...)
-	if jira != nil || bitbucket != nil {
+	if jiraClient != nil || bitbucketClient != nil {
 		out = append(out, g.Context...)
 	}
-	if jira != nil {
+	if jiraClient != nil {
 		out = append(out, g.Jira...)
 	}
-	if bitbucket != nil {
+	if bitbucketClient != nil {
 		out = append(out, g.Bitbucket...)
 	}
-	if jira != nil && bitbucket != nil {
+	if jiraClient != nil && bitbucketClient != nil {
 		out = append(out, g.Combined...)
 	}
 	return out

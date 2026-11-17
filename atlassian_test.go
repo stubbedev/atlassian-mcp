@@ -7,6 +7,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -334,19 +335,19 @@ func TestRemoteMatchesBitbucketInstance(t *testing.T) {
 }
 
 func TestToolListGating(t *testing.T) {
-	jira, bitbucket = nil, nil
+	jiraClient, bitbucketClient = nil, nil
 	if got := len(toolList()); got != 1 {
 		t.Errorf("git-only should be 1 tool, got %d", got)
 	}
-	jira = &JiraClient{}
+	jiraClient = &JiraClient{}
 	if got := len(toolList()); got != 8 {
 		t.Errorf("git+context+jira should be 8 tools, got %d", got)
 	}
-	bitbucket = &BitbucketClient{}
+	bitbucketClient = &BitbucketClient{}
 	if got := len(toolList()); got != 15 {
 		t.Errorf("all should be 15 tools, got %d", got)
 	}
-	jira, bitbucket = nil, nil
+	jiraClient, bitbucketClient = nil, nil
 }
 
 func TestNamedList(t *testing.T) {
@@ -415,7 +416,7 @@ func TestProjectKeyOf(t *testing.T) {
 // fieldCacheClient returns a client with its /field cache pre-seeded so the
 // resolution helpers can be tested without HTTP.
 func fieldCacheClient() *JiraClient {
-	c := NewJiraClient("https://jira.example", "t")
+	c := NewJiraClient("https://jira.example", "t", nil)
 	epicName := jiraField{ID: "customfield_10005", Name: "Epic Name", Custom: true}
 	epicName.Schema.Custom = "com.pyxis.greenhopper.jira:gh-epic-label"
 	points := jiraField{ID: "customfield_10002", Name: "Story Points", Custom: true}
@@ -891,7 +892,7 @@ func TestLinkifyCommentRefs(t *testing.T) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer srv.Close()
-	c := NewBitbucketClient(srv.URL, "t")
+	c := NewBitbucketClient(srv.URL, "t", nil)
 	got := c.linkifyCommentRefs("see #12, not #99 or `#12` or code:\n```\n#12\n```", "ENG", "api", 7)
 	want := "see [#12](" + srv.URL + "/projects/ENG/repos/api/pull-requests/7/overview?commentId=12), not #99"
 	if !strings.HasPrefix(got, want) {
@@ -915,7 +916,7 @@ func TestResolveReviewers(t *testing.T) {
 		_, _ = w.Write([]byte(`{"values":[{"user":{"name":"abs","displayName":"Alexander Bugge Stage"}}]}`))
 	}))
 	defer srv.Close()
-	c := NewBitbucketClient(srv.URL, "t")
+	c := NewBitbucketClient(srv.URL, "t", nil)
 	got, err := c.resolveReviewers("ENG", "api", []string{"ABS"})
 	if err != nil || len(got) != 1 || got[0] != "abs" {
 		t.Errorf("resolveReviewers = %v, %v; want [abs]", got, err)
@@ -961,30 +962,30 @@ func TestCheckProjectNames(t *testing.T) {
 }
 
 func TestSessionRemembersReviewedHashes(t *testing.T) {
-	s := &sessionState{}
+	s := (&sessionState{}).prReviews()
 	key := reviewKey("ENG", "api", 7)
-	if _, _, ok := s.lastReviewed(key); ok {
+	if _, _, ok := s.last(key); ok {
 		t.Error("nothing should be remembered yet")
 	}
-	s.rememberReviewed(key, "aaa", "bbb")
-	from, to, ok := s.lastReviewed(key)
+	s.remember(key, "aaa", "bbb")
+	from, to, ok := s.last(key)
 	if !ok || from != "aaa" || to != "bbb" {
-		t.Errorf("lastReviewed = %q %q %v", from, to, ok)
+		t.Errorf("last = %q %q %v", from, to, ok)
 	}
 	// Scoped per repo: the same PR number elsewhere is a different review.
-	if _, _, ok := s.lastReviewed(reviewKey("ENG", "web", 7)); ok {
+	if _, _, ok := s.last(reviewKey("ENG", "web", 7)); ok {
 		t.Error("review state leaked across repos")
 	}
 	var nilSession *sessionState
-	nilSession.rememberReviewed(key, "a", "b")
-	if _, _, ok := nilSession.lastReviewed(key); ok {
+	nilSession.prReviews().remember(key, "a", "b")
+	if _, _, ok := nilSession.prReviews().last(key); ok {
 		t.Error("nil session should be inert")
 	}
 }
 
 func TestToolAnnotations(t *testing.T) {
-	jira, bitbucket = &JiraClient{}, &BitbucketClient{}
-	t.Cleanup(func() { jira, bitbucket = nil, nil })
+	jiraClient, bitbucketClient = &JiraClient{}, &BitbucketClient{}
+	t.Cleanup(func() { jiraClient, bitbucketClient = nil, nil })
 	readOnly := map[string]bool{}
 	for _, raw := range toolList() {
 		var tl struct {
@@ -1024,7 +1025,7 @@ func TestUserLookupFallsBackWhenScopeDenied(t *testing.T) {
 		_, _ = w.Write([]byte(`{"values":[{"name":"mm","displayName":"Magnus Melin"}]}`))
 	}))
 	defer srv.Close()
-	c := NewBitbucketClient(srv.URL, "t")
+	c := NewBitbucketClient(srv.URL, "t", nil)
 	users, err := c.searchUsersRaw("ENG", "api", "magnus", 10)
 	if err != nil || len(users) != 1 || users[0].Name != "mm" {
 		t.Fatalf("searchUsersRaw = %v, %v; want [mm] with no error", users, err)
@@ -1037,7 +1038,7 @@ func TestUserLookupFallsBackWhenScopeDenied(t *testing.T) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	defer deny.Close()
-	if _, err := NewBitbucketClient(deny.URL, "t").searchUsersRaw("", "", "magnus", 10); err == nil {
+	if _, err := NewBitbucketClient(deny.URL, "t", nil).searchUsersRaw("", "", "magnus", 10); err == nil {
 		t.Error("an unscoped 401 should still be an error")
 	}
 }
@@ -1076,7 +1077,7 @@ func TestAttachToText(t *testing.T) {
 		}
 	}
 
-	c := NewBitbucketClient(srv.URL, "t")
+	c := NewBitbucketClient(srv.URL, "t", nil)
 	text, uploaded, err := c.attachToText("ENG", "api", "Before:\n\n![the widget]("+shot+")", []string{shot, log})
 	if err != nil {
 		t.Fatalf("attachToText: %v", err)
@@ -1204,7 +1205,7 @@ func TestJiraCommentAuthorship(t *testing.T) {
 		_, _ = w.Write([]byte(`{"id":"1"}`))
 	}))
 	defer srv.Close()
-	c := NewJiraClient(srv.URL, "t")
+	c := NewJiraClient(srv.URL, "t", nil)
 
 	for _, userAuthored := range []bool{false, true} {
 		if _, err := c.comment(map[string]any{"issueKey": "ENG-1", "body": "Ship it", "userAuthored": userAuthored}); err != nil {
@@ -1248,7 +1249,7 @@ func TestBitbucketCommentUpdateAuthorship(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	c := NewBitbucketClient(srv.URL, "t")
+	c := NewBitbucketClient(srv.URL, "t", nil)
 	base := map[string]any{"projectKey": "ENG", "repoSlug": "api", "prId": 1, "commentId": 7}
 	with := func(extra map[string]any) map[string]any {
 		args := maps.Clone(base)
@@ -1334,7 +1335,7 @@ func suggestionCommentServer(t *testing.T, sent *[]string) *httptest.Server {
 
 func TestBitbucketCommentSuggestionKeepsIndentation(t *testing.T) {
 	var sent []string
-	c := NewBitbucketClient(suggestionCommentServer(t, &sent).URL, "t")
+	c := NewBitbucketClient(suggestionCommentServer(t, &sent).URL, "t", nil)
 	args := map[string]any{"projectKey": "ENG", "repoSlug": "api", "prId": 1, "suggestion": "\t\tgetMergedOptions() {\n\t\t\treturn {};\n\t\t}"}
 	if _, err := c.addPrComment(nil, args, ""); err != nil {
 		t.Fatal(err)
@@ -1347,7 +1348,7 @@ func TestBitbucketCommentSuggestionKeepsIndentation(t *testing.T) {
 
 func TestBitbucketCommentUpdateSuggestion(t *testing.T) {
 	var sent []string
-	c := NewBitbucketClient(suggestionCommentServer(t, &sent).URL, "t")
+	c := NewBitbucketClient(suggestionCommentServer(t, &sent).URL, "t", nil)
 	base := map[string]any{"projectKey": "ENG", "repoSlug": "api", "prId": 1, "commentId": 7, "userAuthored": true}
 	with := func(extra map[string]any) map[string]any {
 		args := maps.Clone(base)
@@ -1392,7 +1393,7 @@ func TestResolveAttachmentSourceLocalAndDataURI(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r, err := resolveAttachmentSource(local)
+	r, err := resolveAttachmentSource(local, nil)
 	if err != nil {
 		t.Fatalf("local: %v", err)
 	}
@@ -1403,7 +1404,7 @@ func TestResolveAttachmentSourceLocalAndDataURI(t *testing.T) {
 
 	// A data: URI carries its own bytes, so it works with no filesystem at all —
 	// the transport a sandboxed host is left with.
-	d, err := resolveAttachmentSource("data:text/plain;name=run.log;base64," + base64.StdEncoding.EncodeToString([]byte("boom")))
+	d, err := resolveAttachmentSource("data:text/plain;name=run.log;base64,"+base64.StdEncoding.EncodeToString([]byte("boom")), nil)
 	if err != nil {
 		t.Fatalf("data URI: %v", err)
 	}
@@ -1417,7 +1418,7 @@ func TestResolveAttachmentSourceLocalAndDataURI(t *testing.T) {
 	}
 
 	// An unnamed data: URI gets an extension from its media type.
-	png, err := resolveAttachmentSource("data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte("\x89PNG")))
+	png, err := resolveAttachmentSource("data:image/png;base64,"+base64.StdEncoding.EncodeToString([]byte("\x89PNG")), nil)
 	if err != nil {
 		t.Fatalf("png data URI: %v", err)
 	}
@@ -1427,7 +1428,7 @@ func TestResolveAttachmentSourceLocalAndDataURI(t *testing.T) {
 	}
 
 	// An unreadable path must name the alternatives that need no filesystem.
-	_, err = resolveAttachmentSource(filepath.Join(dir, "missing.png"))
+	_, err = resolveAttachmentSource(filepath.Join(dir, "missing.png"), nil)
 	if err == nil || !strings.Contains(err.Error(), "data:") ||
 		!strings.Contains(err.Error(), "confined") {
 		t.Errorf("missing path error = %v", err)
@@ -1458,7 +1459,7 @@ func TestResolveAttachmentSourceURL(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	r, err := resolveAttachmentSource(srv.URL + "/named")
+	r, err := resolveAttachmentSource(srv.URL+"/named", nil)
 	if err != nil {
 		t.Fatalf("named: %v", err)
 	}
@@ -1467,7 +1468,7 @@ func TestResolveAttachmentSourceURL(t *testing.T) {
 		t.Errorf("named resolved = %+v", r)
 	}
 
-	bare, err := resolveAttachmentSource(srv.URL + "/1234")
+	bare, err := resolveAttachmentSource(srv.URL+"/1234", nil)
 	if err != nil {
 		t.Fatalf("bare: %v", err)
 	}
@@ -1478,17 +1479,14 @@ func TestResolveAttachmentSourceURL(t *testing.T) {
 
 	// A URL on the configured Jira host is fetched with the token, so an
 	// attachment already in Jira can be re-attached elsewhere.
-	prev := jira
-	jira = NewJiraClient(srv.URL, "jira-token")
-	defer func() { jira = prev }()
-	auth, err := resolveAttachmentSource(srv.URL + "/secret")
+	auth, err := resolveAttachmentSource(srv.URL+"/secret", Credentials{{URL: srv.URL, Token: "jira-token"}})
 	if err != nil {
 		t.Fatalf("authenticated: %v", err)
 	}
 	defer releaseAttachments([]resolvedAttachment{auth})
 
 	// A host we are not configured for gets no token, and the failure says so.
-	if _, err := resolveAttachmentSource(srv.URL + "/gone"); err == nil || !strings.Contains(err.Error(), "404") {
+	if _, err := resolveAttachmentSource(srv.URL+"/gone", nil); err == nil || !strings.Contains(err.Error(), "404") {
 		t.Errorf("missing URL error = %v", err)
 	}
 }
@@ -1511,7 +1509,7 @@ func TestAttachToTextSplicesURLSources(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewBitbucketClient(srv.URL, "t")
+	c := NewBitbucketClient(srv.URL, "t", nil)
 	url := srv.URL + "/shot.png"
 	text, uploaded, err := c.attachToText("ENG", "api", "Before:\n\n![the widget]("+url+")", []string{url})
 	if err != nil {
@@ -1552,9 +1550,9 @@ func TestUploadWidgetIsSelfContained(t *testing.T) {
 }
 
 func TestAttachFilesTargetValidation(t *testing.T) {
-	prevJira, prevBB := jira, bitbucket
-	jira, bitbucket = &JiraClient{}, &BitbucketClient{}
-	defer func() { jira, bitbucket = prevJira, prevBB }()
+	prevJira, prevBB := jiraClient, bitbucketClient
+	jiraClient, bitbucketClient = &JiraClient{}, &BitbucketClient{}
+	defer func() { jiraClient, bitbucketClient = prevJira, prevBB }()
 
 	if _, err := attachFiles(nil, map[string]any{}); err == nil ||
 		!strings.Contains(err.Error(), "issueKey") {
@@ -1612,9 +1610,9 @@ func TestAppsCapabilityNegotiation(t *testing.T) {
 }
 
 func TestAttachFilesRequiresConfiguredService(t *testing.T) {
-	prevJira, prevBB := jira, bitbucket
-	jira, bitbucket = nil, &BitbucketClient{}
-	defer func() { jira, bitbucket = prevJira, prevBB }()
+	prevJira, prevBB := jiraClient, bitbucketClient
+	jiraClient, bitbucketClient = nil, &BitbucketClient{}
+	defer func() { jiraClient, bitbucketClient = prevJira, prevBB }()
 
 	if _, err := attachFiles(nil, map[string]any{"issueKey": "KON-1"}); err == nil ||
 		!strings.Contains(err.Error(), "Jira is not configured") {
@@ -1630,7 +1628,7 @@ func TestWidgetDataURIFormat(t *testing.T) {
 	// as "shot.png".
 	const fromWidget = "data:image/png;name=shot.png;base64,AQIDBA=="
 
-	r, err := resolveAttachmentSource(fromWidget)
+	r, err := resolveAttachmentSource(fromWidget, nil)
 	if err != nil {
 		t.Fatalf("widget data URI: %v", err)
 	}
@@ -1646,7 +1644,7 @@ func TestWidgetDataURIFormat(t *testing.T) {
 		t.Errorf("bytes = %v, want %v", got, want)
 	}
 	// The panel names a pasted screenshot rather than sending an empty one.
-	p, err := resolveAttachmentSource("data:image/png;name=pasted-image;base64,CQk=")
+	p, err := resolveAttachmentSource("data:image/png;name=pasted-image;base64,CQk=", nil)
 	if err != nil {
 		t.Fatalf("pasted image: %v", err)
 	}
@@ -1804,7 +1802,7 @@ func jiraStub(t *testing.T, handler func(w http.ResponseWriter, r *http.Request)
 		}
 	}))
 	t.Cleanup(srv.Close)
-	return NewJiraClient(srv.URL, "t"), &calls
+	return NewJiraClient(srv.URL, "t", nil), &calls
 }
 
 func TestResolveLinkType(t *testing.T) {
@@ -1832,7 +1830,7 @@ func TestResolveLinkType(t *testing.T) {
 		t.Errorf("unknown link type should list the real ones, got %v", err)
 	}
 	// A lookup that cannot run leaves the decision to Jira.
-	blind := NewJiraClient("https://jira.example", "t")
+	blind := NewJiraClient("https://jira.example", "t", nil)
 	blind.linkTypesCached = true
 	if got, _, err := blind.resolveLinkType("Whatever"); err != nil || got != "Whatever" {
 		t.Errorf("unknown link types should pass through, got %q, %v", got, err)
@@ -1996,5 +1994,29 @@ func TestParseUploadedAttachmentPrefersAttachmentHref(t *testing.T) {
 	// The upload response carries no name, and a video is a link, not an image.
 	if got, want := a.markup(), "[clip.mp4](attachment:1324/826)"; got != want {
 		t.Errorf("markup = %q, want %q", got, want)
+	}
+}
+
+func TestCredentialsTokenForMatchesOrigin(t *testing.T) {
+	creds := Config{
+		Jira:      &ServiceConfig{URL: "https://jira.example.com/jira", Token: "j"},
+		Bitbucket: &ServiceConfig{URL: "https://git.example.com:7990", Token: "b"},
+	}.Credentials()
+	for raw, want := range map[string]string{
+		"https://jira.example.com/secure/attachment/1/a.png": "j",
+		"https://JIRA.example.com:443/x":                     "j",
+		"http://jira.example.com/x":                          "",
+		"https://jira.example.com:8443/x":                    "",
+		"https://git.example.com:7990/scm/eng/api.git":       "b",
+		"https://git.example.com/scm/eng/api.git":            "",
+		"https://evil.example.com/x":                         "",
+	} {
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := creds.TokenFor(u); got != want {
+			t.Errorf("TokenFor(%s) = %q, want %q", raw, got, want)
+		}
 	}
 }

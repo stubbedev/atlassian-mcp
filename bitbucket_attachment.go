@@ -61,7 +61,7 @@ func (a bbUploadedAttachment) markup() string {
 // several files per request but returns them in an array that two files with
 // the same base name make ambiguous.
 func (c *BitbucketClient) uploadAttachments(projectKey, repoSlug string, sources []string) ([]bbUploadedAttachment, error) {
-	resolved, err := resolveAttachmentSources(sources)
+	resolved, err := resolveAttachmentSources(sources, c.creds)
 	if err != nil {
 		return nil, err
 	}
