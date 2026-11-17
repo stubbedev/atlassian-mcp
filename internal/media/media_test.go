@@ -2,18 +2,18 @@ package media
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"image"
 	"image/color"
 	"image/gif"
 	"image/jpeg"
+	"image/png"
 	"math"
 	"os"
 	"slices"
 	"strings"
 	"testing"
-
-	"github.com/kettek/apng"
 )
 
 // Fixtures in testdata/media: cuts.mp4 is H.264 High with B-frames — 2 s of
@@ -160,33 +160,109 @@ func TestAnimatedGIF(t *testing.T) {
 	}
 }
 
+func solidFrame(c color.NRGBA) *image.NRGBA {
+	img := image.NewNRGBA(image.Rect(0, 0, 16, 16))
+	for p := 0; p < len(img.Pix); p += 4 {
+		img.Pix[p], img.Pix[p+1], img.Pix[p+2], img.Pix[p+3] = c.R, c.G, c.B, c.A
+	}
+	return img
+}
+
+// encodeAPNG builds an APNG from same-sized frames the way encoders do: each
+// frame is a PNG whose IDAT data moves into fdAT chunks behind a frame
+// control. A static default image, when given, precedes the first frame
+// control and is not part of the animation.
+func encodeAPNG(t *testing.T, defaultImage image.Image, frames []image.Image, delays [][2]uint16) []byte {
+	t.Helper()
+	idat := func(img image.Image) (ihdr, data []byte) {
+		var b bytes.Buffer
+		if err := png.Encode(&b, img); err != nil {
+			t.Fatal(err)
+		}
+		chunks, err := pngChunks(b.Bytes())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range chunks {
+			switch c.kind {
+			case "IHDR":
+				ihdr = c.data
+			case "IDAT":
+				data = append(data, c.data...)
+			}
+		}
+		return ihdr, data
+	}
+	ihdr, _ := idat(frames[0])
+	var out bytes.Buffer
+	out.WriteString("\x89PNG\r\n\x1a\n")
+	out.Write(encodePNGChunk("IHDR", ihdr))
+	actl := make([]byte, 8)
+	binary.BigEndian.PutUint32(actl, uint32(len(frames)))
+	out.Write(encodePNGChunk("acTL", actl))
+	if defaultImage != nil {
+		_, data := idat(defaultImage)
+		out.Write(encodePNGChunk("IDAT", data))
+	}
+	seq := uint32(0)
+	for i, f := range frames {
+		b := f.Bounds()
+		ctl := make([]byte, 26)
+		binary.BigEndian.PutUint32(ctl, seq)
+		binary.BigEndian.PutUint32(ctl[4:], uint32(b.Dx()))
+		binary.BigEndian.PutUint32(ctl[8:], uint32(b.Dy()))
+		binary.BigEndian.PutUint16(ctl[20:], delays[i][0])
+		binary.BigEndian.PutUint16(ctl[22:], delays[i][1])
+		out.Write(encodePNGChunk("fcTL", ctl))
+		seq++
+		_, data := idat(f)
+		if i == 0 && defaultImage == nil {
+			out.Write(encodePNGChunk("IDAT", data))
+			continue
+		}
+		fdat := binary.BigEndian.AppendUint32(nil, seq)
+		out.Write(encodePNGChunk("fdAT", append(fdat, data...)))
+		seq++
+	}
+	out.Write(encodePNGChunk("IEND", nil))
+	return out.Bytes()
+}
+
 func TestAnimatedPNG(t *testing.T) {
-	a := apng.APNG{}
+	frames := make([]image.Image, 0, len(animationColors))
+	delays := make([][2]uint16, 0, len(animationColors))
 	for i, c := range animationColors {
-		img := image.NewNRGBA(image.Rect(0, 0, 16, 16))
-		for p := 0; p < len(img.Pix); p += 4 {
-			img.Pix[p], img.Pix[p+1], img.Pix[p+2], img.Pix[p+3] = c.R, c.G, c.B, c.A
+		frames = append(frames, solidFrame(c))
+		delays = append(delays, [2]uint16{uint16(1 + i%2), 4})
+	}
+	for _, defaultImage := range []image.Image{nil, solidFrame(color.NRGBA{R: 255, B: 255, A: 255})} {
+		res, err := ProcessVideo(encodeAPNG(t, defaultImage, frames, delays), ProcessVideoOpts{Frames: 4, Mode: "uniform"})
+		if err != nil {
+			t.Fatal(err)
 		}
-		a.Frames = append(a.Frames, apng.Frame{Image: img, DelayNumerator: uint16(1 + i%2), DelayDenominator: 4})
-	}
-	var buf bytes.Buffer
-	if err := apng.Encode(&buf, a); err != nil {
-		t.Fatal(err)
-	}
-	res, err := ProcessVideo(buf.Bytes(), ProcessVideoOpts{Frames: 4, Mode: "uniform"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Delays alternate 0.25 s and 0.5 s: 1.5 s in all.
-	if res.Meta.Codec != "apng" || math.Abs(res.Meta.Duration-1.5) > 1e-9 {
-		t.Fatalf("meta %+v", res.Meta)
-	}
-	for _, f := range res.Frames {
-		i := 0
-		for i+1 < len(animationColors) && f.TimestampSec >= []float64{0, 0.25, 0.75, 1.0}[i+1] {
-			i++
+		// Delays alternate 0.25 s and 0.5 s: 1.5 s in all.
+		if res.Meta.Codec != "apng" || math.Abs(res.Meta.Duration-1.5) > 1e-9 || res.Meta.Width != 16 {
+			t.Fatalf("meta %+v", res.Meta)
 		}
-		assertColorAt(t, f.Data, animationColors[i])
+		for _, f := range res.Frames {
+			i := 0
+			for i+1 < len(animationColors) && f.TimestampSec >= []float64{0, 0.25, 0.75, 1.0}[i+1] {
+				i++
+			}
+			assertColorAt(t, f.Data, animationColors[i])
+		}
+	}
+}
+
+func TestAPNGRejectsCorruptChunks(t *testing.T) {
+	good := encodeAPNG(t, nil, []image.Image{solidFrame(animationColors[0])}, [][2]uint16{{1, 10}})
+	bad := append([]byte(nil), good...)
+	bad[len(bad)-20] ^= 0xFF
+	if _, _, err := apngFrames(bad); err == nil {
+		t.Error("a chunk with a bad checksum must be an error")
+	}
+	if _, _, err := apngFrames(good[:40]); err == nil {
+		t.Error("a truncated APNG must be an error")
 	}
 }
 

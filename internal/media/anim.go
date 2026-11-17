@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"hash/crc32"
 	"image"
 	"image/color"
 	"image/draw"
 	"image/gif"
+	"image/png"
 
-	"github.com/kettek/apng"
 	"golang.org/x/image/webp"
 )
 
@@ -110,39 +112,140 @@ func gifFrames(buffer []byte) ([]animFrame, image.Rectangle, error) {
 	return frames, canvas, nil
 }
 
+// apngFrames splits an APNG into standalone PNGs, one per frame control
+// chunk, and decodes each with image/png. A default image that comes before
+// the first frame control is the static fallback, not part of the animation.
 func apngFrames(buffer []byte) ([]animFrame, image.Rectangle, error) {
-	a, err := apng.DecodeAll(bytes.NewReader(buffer))
+	chunks, err := pngChunks(buffer)
 	if err != nil {
 		return nil, image.Rectangle{}, err
 	}
+	if len(chunks) == 0 || chunks[0].kind != "IHDR" || len(chunks[0].data) != 13 {
+		return nil, image.Rectangle{}, errors.New("APNG has no image header")
+	}
+	ihdr := chunks[0].data
+	canvas := image.Rect(0, 0, int(binary.BigEndian.Uint32(ihdr)), int(binary.BigEndian.Uint32(ihdr[4:])))
+	var shared [][]byte
 	var frames []animFrame
-	var canvas image.Rectangle
-	for i, fr := range a.Frames {
-		if i == 0 {
-			canvas = image.Rect(0, 0, fr.Image.Bounds().Dx(), fr.Image.Bounds().Dy())
+	var ctl []byte
+	var data [][]byte
+	flush := func() error {
+		if ctl == nil {
+			data = nil
+			return nil
 		}
-		if fr.IsDefault {
-			continue // the static fallback image, not part of the animation
-		}
-		b := fr.Image.Bounds()
-		f := animFrame{
-			img:   fr.Image,
-			rect:  image.Rect(fr.XOffset, fr.YOffset, fr.XOffset+b.Dx(), fr.YOffset+b.Dy()),
-			delay: browserDelay(fr.GetDelay()),
-			blend: fr.BlendOp == apng.BLEND_OP_OVER,
-		}
-		switch fr.DisposeOp {
-		case apng.DISPOSE_OP_BACKGROUND:
-			f.dispose = disposeBackground
-		case apng.DISPOSE_OP_PREVIOUS:
-			f.dispose = disposePrevious
-			if len(frames) == 0 {
-				f.dispose = disposeBackground // per spec, for the first frame
-			}
+		f, err := apngFrame(ihdr, shared, ctl, data, len(frames) == 0)
+		if err != nil {
+			return fmt.Errorf("APNG frame %d: %w", len(frames)+1, err)
 		}
 		frames = append(frames, f)
+		ctl, data = nil, nil
+		return nil
+	}
+	for _, c := range chunks[1:] {
+		switch c.kind {
+		case "PLTE", "tRNS":
+			shared = append(shared, encodePNGChunk(c.kind, c.data))
+		case "fcTL":
+			if err := flush(); err != nil {
+				return nil, image.Rectangle{}, err
+			}
+			if len(c.data) != 26 {
+				return nil, image.Rectangle{}, errors.New("APNG frame control chunk is malformed")
+			}
+			ctl = c.data
+		case "IDAT":
+			data = append(data, c.data)
+		case "fdAT":
+			if len(c.data) < 4 {
+				return nil, image.Rectangle{}, errors.New("APNG frame data chunk is malformed")
+			}
+			data = append(data, c.data[4:])
+		}
+	}
+	if err := flush(); err != nil {
+		return nil, image.Rectangle{}, err
 	}
 	return frames, canvas, nil
+}
+
+func apngFrame(ihdr []byte, shared [][]byte, ctl []byte, data [][]byte, first bool) (animFrame, error) {
+	w, h := binary.BigEndian.Uint32(ctl[4:]), binary.BigEndian.Uint32(ctl[8:])
+	x, y := int(binary.BigEndian.Uint32(ctl[12:])), int(binary.BigEndian.Uint32(ctl[16:]))
+	num, den := float64(binary.BigEndian.Uint16(ctl[20:])), float64(binary.BigEndian.Uint16(ctl[22:]))
+	if den == 0 {
+		den = 100
+	}
+	header := append([]byte(nil), ihdr...)
+	binary.BigEndian.PutUint32(header, w)
+	binary.BigEndian.PutUint32(header[4:], h)
+	var b bytes.Buffer
+	b.Write(pngSig)
+	b.Write([]byte{0x0D, 0x0A, 0x1A, 0x0A})
+	b.Write(encodePNGChunk("IHDR", header))
+	for _, c := range shared {
+		b.Write(c)
+	}
+	b.Write(encodePNGChunk("IDAT", bytes.Join(data, nil)))
+	b.Write(encodePNGChunk("IEND", nil))
+	img, err := png.Decode(&b)
+	if err != nil {
+		return animFrame{}, err
+	}
+	f := animFrame{
+		img:   img,
+		rect:  image.Rect(x, y, x+int(w), y+int(h)),
+		delay: browserDelay(num / den),
+		blend: ctl[25] == 1,
+	}
+	switch ctl[24] {
+	case 1:
+		f.dispose = disposeBackground
+	case 2:
+		f.dispose = disposePrevious
+		if first {
+			f.dispose = disposeBackground
+		}
+	}
+	return f, nil
+}
+
+type pngChunk struct {
+	kind string
+	data []byte
+}
+
+func pngChunks(buffer []byte) ([]pngChunk, error) {
+	if len(buffer) < 8 || !bytes.HasPrefix(buffer, pngSig) {
+		return nil, errors.New("not a PNG")
+	}
+	var out []pngChunk
+	for at := 8; at+12 <= len(buffer); {
+		n := int(binary.BigEndian.Uint32(buffer[at:]))
+		end := at + 12 + n
+		if n < 0 || end > len(buffer) {
+			return nil, errors.New("PNG chunk runs past the end of the file")
+		}
+		kind := string(buffer[at+4 : at+8])
+		if crc32.ChecksumIEEE(buffer[at+4:at+8+n]) != binary.BigEndian.Uint32(buffer[at+8+n:]) {
+			return nil, fmt.Errorf("PNG chunk %s has a bad checksum", kind)
+		}
+		out = append(out, pngChunk{kind: kind, data: buffer[at+8 : at+8+n]})
+		if kind == "IEND" {
+			return out, nil
+		}
+		at = end
+	}
+	return nil, errors.New("PNG is truncated: no IEND chunk")
+}
+
+func encodePNGChunk(kind string, data []byte) []byte {
+	out := make([]byte, 12+len(data))
+	binary.BigEndian.PutUint32(out, uint32(len(data))) //nolint:gosec // chunk data comes from a parsed PNG chunk
+	copy(out[4:], kind)
+	copy(out[8:], data)
+	binary.BigEndian.PutUint32(out[8+len(data):], crc32.ChecksumIEEE(out[4:8+len(data)]))
+	return out
 }
 
 // webpFrames demuxes an animated WebP (RIFF chunks VP8X, ANIM, ANMF…) and
