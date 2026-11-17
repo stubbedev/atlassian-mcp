@@ -829,8 +829,8 @@ func (c *BitbucketClient) getDefaultBranchRef(projectKey, repoSlug, repoRoot str
 	if err == nil && data != nil && data.DisplayID != "" {
 		return "refs/heads/" + data.DisplayID
 	}
-	if repoRoot != "" {
-		if head := gitOriginHead(repoRoot); head != "" {
+	if r, err := openRepo(repoRoot); err == nil {
+		if head := gitOriginHead(r); head != "" {
 			return "refs/heads/" + head
 		}
 	}

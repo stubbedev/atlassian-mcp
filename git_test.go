@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/sha1"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/go-git/go-git/v5"
 	gitconfig "github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/format/index"
 	"github.com/go-git/go-git/v5/plumbing/object"
 )
 
@@ -119,15 +121,15 @@ func TestGitBasics(t *testing.T) {
 	if !isGitRepo(filepath.Join(tr.dir, "sub")) || isGitRepo(t.TempDir()) {
 		t.Error("isGitRepo mismatch")
 	}
-	log := gitOnelineLog(tr.dir, 5)
+	log := gitOnelineLog(mustOpen(t, tr.dir), 5)
 	want := second.String()[:shortHashLen] + " second commit\n"
 	if !strings.HasPrefix(log, want) || !strings.HasSuffix(log, " first commit") {
 		t.Errorf("log = %q", log)
 	}
-	if got := gitOnelineLog(tr.dir, 1); strings.Contains(got, "\n") {
+	if got := gitOnelineLog(mustOpen(t, tr.dir), 1); strings.Contains(got, "\n") {
 		t.Errorf("limit ignored: %q", got)
 	}
-	authors := gitRecentAuthors(tr.dir, 10)
+	authors := gitRecentAuthors(mustOpen(t, tr.dir), 10)
 	if len(authors) != 2 || authors[0].name != "Bob" || authors[1].email != "alice@example.com" {
 		t.Errorf("authors = %+v", authors)
 	}
@@ -138,7 +140,7 @@ func TestGitMailmap(t *testing.T) {
 	tr.write(".mailmap", "Alice Proper <alice@corp.com> <alice@example.com>\n")
 	tr.add(".mailmap")
 	tr.commit("c", "Alice")
-	a := gitRecentAuthors(tr.dir, 1)
+	a := gitRecentAuthors(mustOpen(t, tr.dir), 1)
 	if len(a) != 1 || a[0].name != "Alice Proper" || a[0].email != "alice@corp.com" {
 		t.Errorf("mailmap not applied: %+v", a)
 	}
@@ -160,7 +162,7 @@ func TestGitStatusShort(t *testing.T) {
 	tr.write("dir/untracked.txt", "u\n")
 	tr.write("noise.log", "ignored\n")
 
-	got := gitStatusShort(tr.dir)
+	got := mustStatus(t, tr.dir)
 	want := strings.Join([]string{
 		"A  staged.txt",
 		" M tracked.txt",
@@ -186,7 +188,7 @@ func TestGitGlobalExcludes(t *testing.T) {
 		t.Fatal(err)
 	}
 	tr.write(".envrc", "secret\n")
-	if got := gitStatusShort(tr.dir); got != "" {
+	if got := mustStatus(t, tr.dir); got != "" {
 		t.Errorf("globally ignored file shown: %q", got)
 	}
 }
@@ -211,7 +213,7 @@ func TestGitWorktreeDiff(t *testing.T) {
 	tr.write("added.txt", "hi")
 	tr.add("added.txt")
 
-	got, err := gitDiff(tr.dir, "HEAD", "")
+	got, err := gitDiff(mustOpen(t, tr.dir), "HEAD", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +229,7 @@ func TestGitWorktreeDiff(t *testing.T) {
 			t.Errorf("diff missing %q in:\n%s", want, got)
 		}
 	}
-	if stat := gitDiffStatSummary(tr.dir); stat != "3 files changed, 2 insertions(+), 2 deletions(-)" {
+	if stat := gitDiffStatSummary(mustOpen(t, tr.dir)); stat != "3 files changed, 2 insertions(+), 2 deletions(-)" {
 		t.Errorf("stat = %q", stat)
 	}
 }
@@ -247,18 +249,18 @@ func TestGitCommitDiffRenameAndRanges(t *testing.T) {
 	tr.add("new.txt")
 	tr.commit("rename", "Alice")
 
-	got, err := gitDiff(tr.dir, base.String()[:8], "HEAD")
+	got, err := gitDiff(mustOpen(t, tr.dir), base.String()[:8], "HEAD")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(got, "similarity index 100%\nrename from old.txt\nrename to new.txt\n") || strings.Contains(got, "@@") {
 		t.Errorf("rename diff:\n%s", got)
 	}
-	dots, err := gitDiff(tr.dir, "HEAD~1..HEAD", "")
+	dots, err := gitDiff(mustOpen(t, tr.dir), "HEAD~1..HEAD", "")
 	if err != nil || dots != got {
 		t.Errorf("a..b differs from a b: %v\n%s", err, dots)
 	}
-	sym, err := gitDiff(tr.dir, "HEAD~1...HEAD", "")
+	sym, err := gitDiff(mustOpen(t, tr.dir), "HEAD~1...HEAD", "")
 	if err != nil || sym != got {
 		t.Errorf("a...b differs on linear history: %v\n%s", err, sym)
 	}
@@ -273,12 +275,12 @@ func TestGitUpstreamAheadBehind(t *testing.T) {
 	if err := setUpstream(tr.repo, "master", "origin", "master"); err != nil {
 		t.Fatal(err)
 	}
-	if got := gitUpstreamLine(tr.dir); got != "origin/master (up to date)" {
+	if got := gitUpstreamLine(mustOpen(t, tr.dir)); got != "origin/master (up to date)" {
 		t.Errorf("upstream = %q", got)
 	}
 	tr.commit("local 1", "Alice")
 	tr.commit("local 2", "Alice")
-	if got := gitUpstreamLine(tr.dir); got != "origin/master (2 ahead)" {
+	if got := gitUpstreamLine(mustOpen(t, tr.dir)); got != "origin/master (2 ahead)" {
 		t.Errorf("upstream = %q", got)
 	}
 	// Move origin/master to a commit HEAD lacks: diverged.
@@ -297,7 +299,7 @@ func TestGitUpstreamAheadBehind(t *testing.T) {
 	if err := tr.repo.Storer.SetReference(plumbing.NewHashReference(plumbing.NewRemoteReferenceName("origin", "master"), h)); err != nil {
 		t.Fatal(err)
 	}
-	if got := gitUpstreamLine(tr.dir); got != "origin/master (1 ahead, 1 behind)" {
+	if got := gitUpstreamLine(mustOpen(t, tr.dir)); got != "origin/master (1 ahead, 1 behind)" {
 		t.Errorf("upstream = %q", got)
 	}
 	if _, err := resolveCommit(tr.repo, "@{u}"); err != nil {
@@ -315,7 +317,7 @@ func TestGitBranchCheckoutAndPush(t *testing.T) {
 	if err := tr.repo.Storer.SetReference(plumbing.NewSymbolicReference(plumbing.NewRemoteHEADReferenceName("origin"), plumbing.NewRemoteReferenceName("origin", "master"))); err != nil {
 		t.Fatal(err)
 	}
-	if got := getDefaultBranch(tr.dir); got != "master" {
+	if got := getDefaultBranch(mustOpen(t, tr.dir)); got != "master" {
 		t.Errorf("default branch = %q", got)
 	}
 
@@ -333,14 +335,14 @@ func TestGitBranchCheckoutAndPush(t *testing.T) {
 	if tr.read("other.txt") != "unstaged edit\n" {
 		t.Error("unstaged change lost")
 	}
-	if st := gitStatusShort(tr.dir); st != " M other.txt\nA  staged.txt" {
+	if st := mustStatus(t, tr.dir); st != " M other.txt\nA  staged.txt" {
 		t.Errorf("status after checkout = %q", st)
 	}
 	remote, _ := git.PlainOpen(bare)
 	if _, err := remote.Reference(plumbing.NewBranchReferenceName("feature/X-1"), true); err != nil {
 		t.Errorf("branch not pushed: %v", err)
 	}
-	if up := gitUpstreamLine(tr.dir); up != "origin/feature/X-1 (up to date)" {
+	if up := gitUpstreamLine(mustOpen(t, tr.dir)); up != "origin/feature/X-1 (up to date)" {
 		t.Errorf("upstream = %q", up)
 	}
 
@@ -393,7 +395,7 @@ func TestGitCheckoutTracksRemoteBranch(t *testing.T) {
 	if !strings.Contains(res.Content[0].Text, "tracking origin/topic") {
 		t.Fatalf("checkout: %s", res.Content[0].Text)
 	}
-	if up := gitUpstreamLine(tr.dir); up != "origin/topic (up to date)" {
+	if up := gitUpstreamLine(mustOpen(t, tr.dir)); up != "origin/topic (up to date)" {
 		t.Errorf("upstream = %q", up)
 	}
 }
@@ -414,7 +416,7 @@ func TestGitSkipHashIndex(t *testing.T) {
 	if err := os.WriteFile(p, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := gitStatusShort(tr.dir); got != " M a.txt" {
+	if got := mustStatus(t, tr.dir); got != " M a.txt" {
 		t.Errorf("status with skipHash index = %q", got)
 	}
 }
@@ -444,5 +446,179 @@ func TestNetrcCredential(t *testing.T) {
 	}
 	if _, _, ok := netrcCredential("missing.example"); ok {
 		t.Error("matched a missing host")
+	}
+}
+
+func mustOpen(t *testing.T, dir string) *git.Repository {
+	t.Helper()
+	r, err := openRepo(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+func mustStatus(t *testing.T, dir string) string {
+	t.Helper()
+	st, err := gitStatusShort(mustOpen(t, dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
+func TestGitStatusShortTrackedChanges(t *testing.T) {
+	tr := newTestRepo(t)
+	tr.write("gone.txt", "x\n")
+	tr.write("unstaged-rm.txt", "x\n")
+	tr.write("exec.sh", "x\n")
+	tr.write("link", "x\n")
+	tr.write("touched.txt", "same\n")
+	tr.add("gone.txt", "unstaged-rm.txt", "exec.sh", "link", "touched.txt")
+	tr.commit("c", "Alice")
+
+	wt, err := tr.repo.Worktree()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wt.Remove("gone.txt"); err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range []error{
+		os.Remove(filepath.Join(tr.dir, "unstaged-rm.txt")),
+		os.Chmod(filepath.Join(tr.dir, "exec.sh"), 0o755),
+		os.Remove(filepath.Join(tr.dir, "link")),
+		os.Symlink("exec.sh", filepath.Join(tr.dir, "link")),
+		os.Chtimes(filepath.Join(tr.dir, "touched.txt"), tr.now.Add(time.Hour), tr.now.Add(time.Hour)),
+	} {
+		if step != nil {
+			t.Fatal(step)
+		}
+	}
+
+	want := strings.Join([]string{
+		" M exec.sh",
+		"D  gone.txt",
+		" T link",
+		" D unstaged-rm.txt",
+	}, "\n")
+	if got := mustStatus(t, tr.dir); got != want {
+		t.Errorf("status:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestGitStatusShortIgnoreRules(t *testing.T) {
+	tr := newTestRepo(t)
+	tr.write(".gitignore", "vendor/\n")
+	tr.write("src/.gitignore", "*.gen\n")
+	tr.write("src/main.go", "x\n")
+	tr.add(".gitignore", "src/.gitignore", "src/main.go")
+	tr.commit("c", "Alice")
+
+	tr.write("vendor/pkg/a.php", "x\n")
+	locked := filepath.Join(tr.dir, "vendor", "pkg")
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	tr.write("src/out.gen", "x\n")
+	tr.write("onlyignored/.gitignore", "*\n")
+	tr.write("onlyignored/a.txt", "x\n")
+	tr.write("cache/x.tmp", "x\n")
+	tr.write("excluded.txt", "x\n")
+	tr.write(".git/info/exclude", "*.tmp\nexcluded.txt\n")
+	tr.write("emptyish/deeper/.keep", "x\n")
+	tr.write("nested/.git/HEAD", "ref: refs/heads/main\n")
+
+	want := strings.Join([]string{
+		"?? emptyish/",
+		"?? nested/",
+	}, "\n")
+	if got := mustStatus(t, tr.dir); got != want {
+		t.Errorf("status:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestTrackedStatusUsesCacheTree(t *testing.T) {
+	tr := newTestRepo(t)
+	tr.write("keep/a.txt", "x\n")
+	tr.write("edit/b.txt", "x\n")
+	tr.add("keep/a.txt", "edit/b.txt")
+	head := tr.commit("c", "Alice")
+	tr.write("edit/b.txt", "staged\n")
+	tr.add("edit/b.txt")
+
+	r := mustOpen(t, tr.dir)
+	commit, err := r.CommitObject(head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree, err := commit.Tree()
+	if err != nil {
+		t.Fatal(err)
+	}
+	subtree := func(name string) plumbing.Hash {
+		e, err := tree.FindEntry(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return e.Hash
+	}
+	idx, err := r.Storer.Index()
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx.Cache = &index.Tree{Entries: []index.TreeEntry{
+		{Path: "", Entries: -1, Trees: 2},
+		{Path: "edit", Entries: -1},
+		{Path: "keep", Entries: 1, Hash: subtree("keep")},
+	}}
+	ht, err := readHeadTree(r, idx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, read := ht.entries["keep/a.txt"]; read || !ht.unchanged["keep"] || ht.unchanged["edit"] {
+		t.Errorf("only keep/ should be pruned: unchanged=%v entries=%v", ht.unchanged, ht.entries)
+	}
+	got, err := trackedStatus(r, tr.dir, idx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]pathStatus{"edit/b.txt": {statusModified, statusUnmodified}}
+	if !maps.Equal(got, want) {
+		t.Errorf("status = %v, want %v", got, want)
+	}
+
+	idx.Cache = &index.Tree{Entries: []index.TreeEntry{{Path: "", Entries: 2, Trees: 0, Hash: commit.TreeHash}}}
+	if got, err := trackedStatus(r, tr.dir, idx); err != nil || len(got) != 0 {
+		t.Errorf("a cache-tree root matching HEAD must report nothing staged: %v, %v", got, err)
+	}
+
+	idx.Cache = &index.Tree{Entries: []index.TreeEntry{{Path: "", Entries: -1, Trees: 1}}}
+	if _, err := trackedStatus(r, tr.dir, idx); err == nil {
+		t.Error("a truncated cache-tree extension must be an error")
+	}
+}
+
+func TestGitStatusShortSymlinkedParent(t *testing.T) {
+	tr := newTestRepo(t)
+	tr.write("dir/a.txt", "x\n")
+	tr.add("dir/a.txt")
+	tr.commit("c", "Alice")
+	tr.write("elsewhere/a.txt", "x\n")
+	if err := os.RemoveAll(filepath.Join(tr.dir, "dir")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("elsewhere", filepath.Join(tr.dir, "dir")); err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Join([]string{
+		" D dir/a.txt",
+		"?? dir",
+		"?? elsewhere/",
+	}, "\n")
+	if got := mustStatus(t, tr.dir); got != want {
+		t.Errorf("status:\n%s\nwant:\n%s", got, want)
 	}
 }

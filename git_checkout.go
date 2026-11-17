@@ -26,7 +26,7 @@ import (
 // go-git's own Checkout is not used: it refuses any dirty tree outright, and
 // when the tree is clean it resets the whole index, dropping staged changes.
 func safeCheckout(r *git.Repository, branch plumbing.ReferenceName) error {
-	wt, err := worktreeWithExcludes(r)
+	wt, err := r.Worktree()
 	if err != nil {
 		return err
 	}
@@ -52,19 +52,23 @@ func safeCheckout(r *git.Repository, branch plumbing.ReferenceName) error {
 	if err != nil {
 		return err
 	}
-	st, err := wt.Status()
+	idx, err := r.Storer.Index()
+	if err != nil {
+		return err
+	}
+	st, err := trackedStatus(r, wt.Filesystem.Root(), idx)
 	if err != nil {
 		return err
 	}
 	var blocked []string
 	for _, ch := range changes {
-		if fs, ok := st[ch.From.Name]; ch.From.Name != "" && ok && isDirty(fs) {
+		if ch.From.Name != "" && st[ch.From.Name].dirty() {
 			blocked = append(blocked, ch.From.Name)
 		}
 		if ch.To.Name == "" || ch.To.Name == ch.From.Name {
 			continue
 		}
-		if fs, ok := st[ch.To.Name]; ok && isDirty(fs) {
+		if st[ch.To.Name].dirty() {
 			blocked = append(blocked, ch.To.Name)
 		} else if ch.From.Name == "" {
 			// A file the target adds must not already exist untracked —
@@ -80,10 +84,6 @@ func safeCheckout(r *git.Repository, branch plumbing.ReferenceName) error {
 		return fmt.Errorf("your local changes to these files would be overwritten by checkout: %s — commit or stash them first", strings.Join(blocked, ", "))
 	}
 
-	idx, err := r.Storer.Index()
-	if err != nil {
-		return err
-	}
 	// Deletions first, so a directory the target replaces with a file (or
 	// the reverse) is out of the way before anything is written.
 	for _, ch := range changes {
@@ -105,10 +105,6 @@ func safeCheckout(r *git.Repository, branch plumbing.ReferenceName) error {
 		return err
 	}
 	return r.Storer.SetReference(plumbing.NewSymbolicReference(plumbing.HEAD, branch))
-}
-
-func isDirty(fs *git.FileStatus) bool {
-	return fs.Staging != git.Unmodified || fs.Worktree != git.Unmodified
 }
 
 // writeWorktreeFile materializes a tree entry on disk and records it in the

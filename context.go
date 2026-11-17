@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"strings"
+
+	"github.com/go-git/go-git/v5"
 )
 
 type committer struct {
@@ -13,8 +15,8 @@ type committer struct {
 
 // getTopCommitters returns the top recent committers from the last `lookback`
 // commits, ranked by count (descending), capped to `top`.
-func getTopCommitters(repoPath string, lookback, top int) []committer {
-	authors := gitRecentAuthors(repoPath, lookback)
+func getTopCommitters(r *git.Repository, lookback, top int) []committer {
+	authors := gitRecentAuthors(r, lookback)
 	if len(authors) == 0 {
 		return nil
 	}
@@ -70,23 +72,28 @@ func getDevContext(repoPath string) (toolResult, error) {
 	if repoPath == "" {
 		return textResult("No repo resolved. Pass repoPath, or connect a client that provides workspace roots (MCP roots)."), nil
 	}
-	if !isGitRepo(repoPath) {
+	r, err := openRepo(repoPath)
+	if err != nil {
 		return textResult("Not a git repository: " + repoPath), nil
 	}
 	var sections []string
 
-	branch := orValue(gitCurrentBranch(repoPath), "(unknown)")
-	remote := orValue(gitOriginURL(repoPath), "(no remote)")
-	recentCommits := orValue(gitOnelineLog(repoPath, 5), "(none)")
-	status := orValue(gitStatusShort(repoPath), "(clean)")
-	committers := getTopCommitters(repoPath, 50, 5)
+	branch := orValue(headBranch(r), "(unknown)")
+	remote := orValue(remoteURL(r, "origin"), "(no remote)")
+	recentCommits := orValue(gitOnelineLog(r, 5), "(none)")
+	status, err := gitStatusShort(r)
+	if err != nil {
+		status = "(status unavailable: " + err.Error() + ")"
+	}
+	status = orValue(status, "(clean)")
+	committers := getTopCommitters(r, 50, 5)
 
 	var parsed *bitbucketRemote
 	if bitbucket != nil && bitbucket.isRemoteForThisInstance(remote) {
 		parsed = parseBitbucketRemote(remote)
 	}
 
-	upstreamLine := gitUpstreamLine(repoPath)
+	upstreamLine := gitUpstreamLine(r)
 
 	// Identity (best-effort).
 	var youParts []string

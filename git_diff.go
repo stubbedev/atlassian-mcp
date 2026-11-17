@@ -26,11 +26,7 @@ import (
 // arguments: from..to between two commits when to is set, otherwise from
 // against the working tree. from may be a symmetric range "a...b" (changes on
 // b since it forked from a) or "a..b" (same as passing both ends).
-func gitDiff(repoPath, from, to string) (string, error) {
-	r, err := openRepo(repoPath)
-	if err != nil {
-		return "", err
-	}
+func gitDiff(r *git.Repository, from, to string) (string, error) {
 	if to == "" {
 		if a, b, ok := strings.Cut(from, "..."); ok {
 			return diffSymmetric(r, a, b)
@@ -127,11 +123,7 @@ func sideContent(r *git.Repository, s *diffSide) ([]byte, error) {
 
 // gitDiffStatSummary is the summary line of `git diff HEAD --stat`, e.g.
 // "3 files changed, 10 insertions(+), 2 deletions(-)", or "" when clean.
-func gitDiffStatSummary(repoPath string) string {
-	r, err := openRepo(repoPath)
-	if err != nil {
-		return ""
-	}
+func gitDiffStatSummary(r *git.Repository) string {
 	head, err := resolveCommit(r, "HEAD")
 	if err != nil {
 		return ""
@@ -259,8 +251,7 @@ func worktreeSide(fs billy.Filesystem, p string, ie *index.Entry, from *diffSide
 		return nil, nil, err
 	}
 	mode := worktreeMode(info, ie.Mode)
-	if from != nil && ie.Hash == from.hash && mode == ie.Mode &&
-		uint32(info.Size()) == ie.Size && info.ModTime().Equal(ie.ModifiedAt) { //nolint:gosec // index sizes are mod 2^32
+	if from != nil && ie.Hash == from.hash && statMatchesIndex(info, mode, ie) {
 		return &diffSide{path: p, hash: ie.Hash, mode: mode}, nil, nil
 	}
 	var content []byte

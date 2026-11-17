@@ -8,10 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
-	"os"
-	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -19,7 +16,6 @@ import (
 	"github.com/go-git/go-git/v5"
 	gitconfig "github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
 	"github.com/go-git/go-git/v5/plumbing/format/index"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/storer"
@@ -98,11 +94,8 @@ func isGitRepo(repoPath string) bool {
 	return err == nil
 }
 
-func validateRepoPath(repoPath string) error {
-	if !isGitRepo(repoPath) {
-		return fmt.Errorf("Not a git repository: %s", repoPath)
-	}
-	return nil
+func notARepo(repoPath string, err error) error {
+	return fmt.Errorf("Not a git repository: %s: %w", repoPath, err)
 }
 
 // headBranch is the checked-out branch's short name, "HEAD" when detached,
@@ -173,11 +166,7 @@ func commitSubject(c *object.Commit) string {
 
 // gitOnelineLog lists the last n commits reachable from HEAD as
 // "<short hash> <subject>" lines, newest first.
-func gitOnelineLog(repoPath string, n int) string {
-	r, err := openRepo(repoPath)
-	if err != nil {
-		return ""
-	}
+func gitOnelineLog(r *git.Repository, n int) string {
 	var lines []string
 	_ = walkLog(r, n, func(c *object.Commit) {
 		lines = append(lines, shortHash(c.Hash)+" "+commitSubject(c))
@@ -211,11 +200,7 @@ type commitAuthor struct{ name, email string }
 
 // gitRecentAuthors returns the authors of the last n commits, newest first,
 // mapped through the repository's .mailmap like git's %aN/%aE.
-func gitRecentAuthors(repoPath string, n int) []commitAuthor {
-	r, err := openRepo(repoPath)
-	if err != nil {
-		return nil
-	}
+func gitRecentAuthors(r *git.Repository, n int) []commitAuthor {
 	mm := loadMailmap(r)
 	var out []commitAuthor
 	_ = walkLog(r, n, func(c *object.Commit) {
@@ -223,130 +208,6 @@ func gitRecentAuthors(repoPath string, n int) []commitAuthor {
 		out = append(out, commitAuthor{name, email})
 	})
 	return out
-}
-
-// ── status ───────────────────────────────────────────────────────────────────
-
-// worktreeWithExcludes opens the worktree with the ignore rules git applies
-// beyond .gitignore and .git/info/exclude: the user's core.excludesFile, or
-// its XDG default when unset.
-func worktreeWithExcludes(r *git.Repository) (*git.Worktree, error) {
-	wt, err := r.Worktree()
-	if err != nil {
-		return nil, err
-	}
-	wt.Excludes = append(wt.Excludes, globalIgnorePatterns()...)
-	return wt, nil
-}
-
-func globalIgnorePatterns() []gitignore.Pattern {
-	path := ""
-	if global, err := gitconfig.LoadConfig(gitconfig.GlobalScope); err == nil {
-		path = expandHome(global.Raw.Section("core").Option("excludesfile"))
-	}
-	if path == "" {
-		base := os.Getenv("XDG_CONFIG_HOME")
-		if base == "" {
-			home, err := os.UserHomeDir()
-			if err != nil {
-				return nil
-			}
-			base = filepath.Join(home, ".config")
-		}
-		path = filepath.Join(base, "git", "ignore")
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil
-	}
-	var ps []gitignore.Pattern
-	for line := range strings.SplitSeq(string(data), "\n") {
-		line = strings.TrimRight(line, "\r")
-		if strings.TrimSpace(line) == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		ps = append(ps, gitignore.ParsePattern(line, nil))
-	}
-	return ps
-}
-
-// gitStatusShort renders the working tree like `git status --short`: one
-// "XY path" line per changed file, untracked directories collapsed to "dir/".
-func gitStatusShort(repoPath string) string {
-	r, err := openRepo(repoPath)
-	if err != nil {
-		return ""
-	}
-	wt, err := worktreeWithExcludes(r)
-	if err != nil {
-		return ""
-	}
-	st, err := wt.Status()
-	if err != nil {
-		return ""
-	}
-	tracked := trackedDirs(r)
-	seen := map[string]bool{}
-	var lines []string
-	for path, fs := range st {
-		if fs.Staging == git.Unmodified && fs.Worktree == git.Unmodified {
-			continue
-		}
-		if fs.Worktree == git.Untracked {
-			path = collapseUntracked(path, tracked)
-			if seen[path] {
-				continue
-			}
-			seen[path] = true
-			lines = append(lines, "?? "+path)
-			continue
-		}
-		lines = append(lines, string(statusCode(fs.Staging))+string(statusCode(fs.Worktree))+" "+path)
-	}
-	sort.Slice(lines, func(i, j int) bool {
-		// git lists tracked changes before untracked ones, each by path.
-		ui, uj := strings.HasPrefix(lines[i], "??"), strings.HasPrefix(lines[j], "??")
-		if ui != uj {
-			return uj
-		}
-		return lines[i][3:] < lines[j][3:]
-	})
-	return strings.Join(lines, "\n")
-}
-
-func statusCode(c git.StatusCode) byte {
-	if c == git.Unmodified {
-		return ' '
-	}
-	return byte(c)
-}
-
-// trackedDirs is every directory that holds at least one indexed file.
-func trackedDirs(r *git.Repository) map[string]bool {
-	dirs := map[string]bool{}
-	idx, err := r.Storer.Index()
-	if err != nil {
-		return dirs
-	}
-	for _, e := range idx.Entries {
-		for d := filepath.ToSlash(filepath.Dir(e.Name)); d != "." && d != "/" && !dirs[d]; d = filepath.ToSlash(filepath.Dir(d)) {
-			dirs[d] = true
-		}
-	}
-	return dirs
-}
-
-// collapseUntracked reports an untracked file the way git does: as its
-// outermost parent directory that holds no tracked files.
-func collapseUntracked(path string, tracked map[string]bool) string {
-	parts := strings.Split(path, "/")
-	for i := 1; i < len(parts); i++ {
-		dir := strings.Join(parts[:i], "/")
-		if !tracked[dir] {
-			return dir + "/"
-		}
-	}
-	return path
 }
 
 // ── upstream, ahead/behind ───────────────────────────────────────────────────
@@ -371,11 +232,7 @@ func upstreamOf(r *git.Repository, branch string) (display string, ref plumbing.
 
 // gitUpstreamLine describes how HEAD's branch relates to its upstream, e.g.
 // "origin/main (2 ahead, 1 behind)", or "" when there is no upstream.
-func gitUpstreamLine(repoPath string) string {
-	r, err := openRepo(repoPath)
-	if err != nil {
-		return ""
-	}
+func gitUpstreamLine(r *git.Repository) string {
 	display, refName := upstreamOf(r, headBranch(r))
 	if display == "" {
 		return ""
@@ -584,14 +441,15 @@ func gitGetContext(args map[string]any, repoPath string) toolResult {
 	} else if limit > 100 {
 		limit = 100
 	}
-	if err := validateRepoPath(repoPath); err != nil {
-		return textResult("Error reading git context: " + err.Error())
+	r, err := openRepo(repoPath)
+	if err != nil {
+		return textResult("Error reading git context: " + notARepo(repoPath, err).Error())
 	}
-	branch := orValue(gitCurrentBranch(repoPath), "(unknown)")
-	remote := orValue(gitOriginURL(repoPath), "(no remote)")
-	commits := orValue(gitOnelineLog(repoPath, limit), "(no commits)")
-	status := gitStatusShort(repoPath)
-	upstreamLine := gitUpstreamLine(repoPath)
+	branch := orValue(headBranch(r), "(unknown)")
+	remote := orValue(remoteURL(r, "origin"), "(no remote)")
+	commits := orValue(gitOnelineLog(r, limit), "(no commits)")
+	status, statusErr := gitStatusShort(r)
+	upstreamLine := gitUpstreamLine(r)
 
 	jiraKeys := uniqueStrings(jiraKeyRe.FindAllString(branch, -1))
 
@@ -608,17 +466,20 @@ func gitGetContext(args map[string]any, repoPath string) toolResult {
 	}
 	lines = append(lines, "", fmt.Sprintf("Recent commits (last %d):", limit), orValue(commits, "(none)"), "", "Working tree:")
 
-	if status != "" {
+	switch {
+	case statusErr != nil:
+		lines = append(lines, "(status unavailable: "+statusErr.Error()+")")
+	case status != "":
 		lines = append(lines, status)
-		if stat := gitDiffStatSummary(repoPath); stat != "" {
+		if stat := gitDiffStatSummary(r); stat != "" {
 			lines = append(lines, "", "Diff stat:  "+stat)
 		}
-	} else {
+	default:
 		lines = append(lines, "(clean)")
 	}
 
 	if argBool(args, "includeDiff") && status != "" {
-		diff, _ := gitDiff(repoPath, "HEAD", "")
+		diff, _ := gitDiff(r, "HEAD", "")
 		if diff != "" {
 			const maxDiffChars = 6000
 			body := diff
@@ -637,8 +498,9 @@ func getDiff(args map[string]any, repoPath string) toolResult {
 	if repoPath == "" {
 		return textResult("Error reading diff: no repo path — pass repoPath, or connect a client that provides workspace roots.")
 	}
-	if err := validateRepoPath(repoPath); err != nil {
-		return textResult("Error reading diff: " + err.Error())
+	r, err := openRepo(repoPath)
+	if err != nil {
+		return textResult("Error reading diff: " + notARepo(repoPath, err).Error())
 	}
 	fromRef := argString(args, "fromRef")
 	toRef := argString(args, "toRef")
@@ -656,7 +518,7 @@ func getDiff(args map[string]any, repoPath string) toolResult {
 			return textResult("Error reading diff: " + err.Error())
 		}
 	}
-	diff, err := gitDiff(repoPath, fromRef, toRef)
+	diff, err := gitDiff(r, fromRef, toRef)
 	if err != nil {
 		return textResult("Error reading diff: " + err.Error())
 	}
@@ -723,11 +585,7 @@ func checkRemoteBranch(branchName, repoPath string) (remoteBranchInfo, error) {
 }
 
 // gitOriginHead is the branch origin/HEAD points at, or "" when unset.
-func gitOriginHead(repoPath string) string {
-	r, err := openRepo(repoPath)
-	if err != nil {
-		return ""
-	}
+func gitOriginHead(r *git.Repository) string {
 	ref, err := r.Reference(plumbing.NewRemoteHEADReferenceName("origin"), false)
 	if err != nil || ref.Type() != plumbing.SymbolicReference {
 		return ""
@@ -738,22 +596,20 @@ func gitOriginHead(repoPath string) string {
 // getDefaultBranch resolves the branch a new branch should fork from, without
 // assuming any naming convention: git's own origin/HEAD first, then the server's
 // answer for this repository, and only then a guess.
-func getDefaultBranch(repoPath string) string {
-	if head := gitOriginHead(repoPath); head != "" {
+func getDefaultBranch(r *git.Repository) string {
+	if head := gitOriginHead(r); head != "" {
 		return head
 	}
 	if bitbucket != nil {
-		if parsed := parseBitbucketRemote(gitOriginURL(repoPath)); parsed != nil {
+		if parsed := parseBitbucketRemote(remoteURL(r, "origin")); parsed != nil {
 			if name := bitbucket.defaultBranchName(parsed.projectKey, parsed.repoSlug); name != "" {
 				return name
 			}
 		}
 	}
-	if r, err := openRepo(repoPath); err == nil {
-		for _, guess := range []string{"main", "master"} {
-			if refExists(r, plumbing.NewRemoteReferenceName("origin", guess)) {
-				return guess
-			}
+	for _, guess := range []string{"main", "master"} {
+		if refExists(r, plumbing.NewRemoteReferenceName("origin", guess)) {
+			return guess
 		}
 	}
 	return "master"
@@ -815,21 +671,18 @@ func createBranch(branchName, baseBranch, repoPath string, push bool) toolResult
 	if repoPath == "" {
 		repoPath = mustGetwd()
 	}
-	if err := validateRepoPath(repoPath); err != nil {
-		return textResult("Error creating branch: " + err.Error())
+	r, err := openRepo(repoPath)
+	if err != nil {
+		return textResult("Error creating branch: " + notARepo(repoPath, err).Error())
 	}
 	if !safeBranchRe.MatchString(branchName) {
 		return textResult(fmt.Sprintf("Invalid branch name %q. Use only letters, numbers, /, _, ., -", branchName))
 	}
 	if baseBranch == "" {
-		baseBranch = getDefaultBranch(repoPath)
+		baseBranch = getDefaultBranch(r)
 	}
 	if !safeBranchRe.MatchString(baseBranch) {
 		return textResult(fmt.Sprintf("Invalid base branch name %q. Use only letters, numbers, /, _, ., -", baseBranch))
-	}
-	r, err := openRepo(repoPath)
-	if err != nil {
-		return textResult("Error creating branch: " + err.Error())
 	}
 	local := plumbing.NewBranchReferenceName(branchName)
 	if refExists(r, local) {
