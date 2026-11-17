@@ -64,10 +64,10 @@ func validateToolArgs(name string, args map[string]any) *rpcError {
 	return checkNode(schema, name, "", args)
 }
 
-func checkNode(n schemaNode, tool, prefix string, args map[string]any) *rpcError {
+func checkNode(n schemaNode, toolName, prefix string, args map[string]any) *rpcError {
 	for _, key := range n.Required {
 		if isBlankArg(args[key]) {
-			return &rpcError{Code: codeInvalidParams, Message: fmt.Sprintf("%s: %s%s is required.", tool, prefix, key)}
+			return &rpcError{Code: codeInvalidParams, Message: fmt.Sprintf("%s: %s%s is required.", toolName, prefix, key)}
 		}
 	}
 	for key, prop := range n.Properties {
@@ -80,14 +80,14 @@ func checkNode(n schemaNode, tool, prefix string, args map[string]any) *rpcError
 			if isStr && s != "" {
 				canonical, ok := matchEnum(prop.Enum, s)
 				if !ok {
-					return &rpcError{Code: codeInvalidParams, Message: fmt.Sprintf("%s: %s%s=%q is not valid. Use one of: %s.", tool, prefix, key, s, strings.Join(enumStrings(prop.Enum), ", "))}
+					return &rpcError{Code: codeInvalidParams, Message: fmt.Sprintf("%s: %s%s=%q is not valid. Use one of: %s.", toolName, prefix, key, s, strings.Join(enumStrings(prop.Enum), ", "))}
 				}
 				args[key] = canonical
 			}
 		}
 		if len(prop.Properties) > 0 || len(prop.Required) > 0 {
 			if nested, ok := v.(map[string]any); ok {
-				if rerr := checkNode(prop, tool, prefix+key+".", nested); rerr != nil {
+				if rerr := checkNode(prop, toolName, prefix+key+".", nested); rerr != nil {
 					return rerr
 				}
 			}

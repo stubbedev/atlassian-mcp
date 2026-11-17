@@ -96,7 +96,22 @@ func (tr *testRepo) withRemote() string {
 	if _, err := tr.repo.CreateRemote(&gitconfig.RemoteConfig{Name: "origin", URLs: []string{bare}}); err != nil {
 		tr.t.Fatal(err)
 	}
-	if err := pushBranch(tr.repo, "origin", "master", nil); err != nil {
+	if err := tr.repo.Push(&git.PushOptions{RemoteName: "origin", RefSpecs: []gitconfig.RefSpec{"refs/heads/master:refs/heads/master"}}); err != nil {
+		tr.t.Fatal(err)
+	}
+	head, err := tr.repo.Reference(plumbing.NewBranchReferenceName("master"), true)
+	if err != nil {
+		tr.t.Fatal(err)
+	}
+	if err := tr.repo.Storer.SetReference(plumbing.NewHashReference(plumbing.NewRemoteReferenceName("origin", "master"), head.Hash())); err != nil {
+		tr.t.Fatal(err)
+	}
+	cfg, err := tr.repo.Config()
+	if err != nil {
+		tr.t.Fatal(err)
+	}
+	cfg.Branches["master"] = &gitconfig.Branch{Name: "master", Remote: "origin", Merge: plumbing.NewBranchReferenceName("master")}
+	if err := tr.repo.Storer.SetConfig(cfg); err != nil {
 		tr.t.Fatal(err)
 	}
 	return bare
@@ -372,11 +387,11 @@ func TestGitBranchCheckoutAndPush(t *testing.T) {
 		t.Error("refused checkout changed state")
 	}
 
-	info, err := checkRemoteBranch("feature/X-1", tr.dir)
+	info, err := checkRemoteBranch("feature/X-1", tr.dir, nil)
 	if err != nil || !info.exists || info.author == "" {
 		t.Errorf("checkRemoteBranch = %+v, %v", info, err)
 	}
-	if info, _ := checkRemoteBranch("nope", tr.dir); info.exists {
+	if info, _ := checkRemoteBranch("nope", tr.dir, nil); info.exists {
 		t.Error("missing branch reported as existing")
 	}
 }

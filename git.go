@@ -547,7 +547,7 @@ type remoteBranchInfo struct {
 // gitDateLayout is git's default %ad format.
 const gitDateLayout = "Mon Jan 2 15:04:05 2006 -0700"
 
-func checkRemoteBranch(branchName, repoPath string) (remoteBranchInfo, error) {
+func checkRemoteBranch(branchName, repoPath string, creds Credentials) (remoteBranchInfo, error) {
 	if err := validateBranch(branchName, "branchName"); err != nil {
 		return remoteBranchInfo{}, err
 	}
@@ -555,12 +555,12 @@ func checkRemoteBranch(branchName, repoPath string) (remoteBranchInfo, error) {
 	if err != nil {
 		return remoteBranchInfo{exists: false}, nil
 	}
-	sha, ok := lsRemoteHead(r, "origin", branchName, credentials)
+	sha, ok := lsRemoteHead(r, "origin", branchName, creds)
 	if !ok {
 		return remoteBranchInfo{exists: false}, nil
 	}
 	shortSha := sha.String()[:8]
-	if err := fetchBranch(r, "origin", branchName, credentials); err != nil {
+	if err := fetchBranch(r, "origin", branchName, creds); err != nil {
 		return remoteBranchInfo{exists: true, sha: shortSha}, nil
 	}
 	ref, err := r.Reference(plumbing.NewRemoteReferenceName("origin", branchName), true)

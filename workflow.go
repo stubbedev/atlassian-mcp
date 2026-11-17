@@ -109,7 +109,7 @@ func startWork(session *sessionState, args map[string]any, repoRoot string) (too
 		return toolResult{}, errors.New("No repo resolved for branch creation. Pass repoPath, or connect a client that provides workspace roots.")
 	}
 
-	remote, err := checkRemoteBranch(branchName, repoPath)
+	remote, err := checkRemoteBranch(branchName, repoPath, credentials)
 	if err != nil {
 		return toolResult{}, err
 	}

@@ -59,23 +59,23 @@ var (
 )
 
 func run(version string) {
-	config := loadConfig()
-	markAITextEnabled = config.MarkAIText
-	credentials = config.Credentials()
-	if config.Jira != nil {
-		jiraClient = NewJiraClient(config.Jira.URL, config.Jira.Token, credentials)
+	cfg := loadConfig()
+	markAITextEnabled = cfg.MarkAIText
+	credentials = cfg.Credentials()
+	if cfg.Jira != nil {
+		jiraClient = NewJiraClient(cfg.Jira.URL, cfg.Jira.Token, credentials)
 	}
 	// Bitbucket tools register whenever Bitbucket is configured — they are no
 	// longer gated on the process cwd's git remote. Per-call resolution still
 	// validates the remote host when auto-detecting project/repo from a repo.
-	if config.Bitbucket != nil {
-		bitbucketClient = NewBitbucketClient(config.Bitbucket.URL, config.Bitbucket.Token, credentials)
+	if cfg.Bitbucket != nil {
+		bitbucketClient = NewBitbucketClient(cfg.Bitbucket.URL, cfg.Bitbucket.Token, credentials)
 	}
 	if jiraClient == nil && bitbucketClient == nil {
 		logf("No Jira or Bitbucket configuration found. Set jira.{url,token} / bitbucket.{url,token} in ~/.atlassian-mcp.json or JIRA_URL/JIRA_ACCESS_TOKEN/BITBUCKET_URL/BITBUCKET_ACCESS_TOKEN env vars. Only git tools will be available.")
 	}
 
-	instructions := buildInstructions(config)
+	instructions := buildInstructions(cfg)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -120,7 +120,7 @@ func httpAddr() string {
 
 // buildInstructions runs before any client handshake, so it cannot know the
 // client's repo — repo state is surfaced dynamically by get_dev_context.
-func buildInstructions(config Config) string {
+func buildInstructions(cfg Config) string {
 	var b strings.Builder
 	w := func(s string) { b.WriteString(s); b.WriteByte('\n') }
 
@@ -131,15 +131,15 @@ func buildInstructions(config Config) string {
 	// and wait only briefly; if they're not back in time, serve instructions
 	// without the identity line (the background fetch is harmless and discarded).
 	type identity struct {
-		jira *jiraCurrentUser
-		bb   string
+		jiraUser *jiraCurrentUser
+		bb       string
 	}
 	idCh := make(chan identity, 1)
 	go func() {
 		var id identity
 		var wg sync.WaitGroup
 		if jiraClient != nil {
-			wg.Go(func() { id.jira, _ = jiraClient.whoami() })
+			wg.Go(func() { id.jiraUser, _ = jiraClient.whoami() })
 		}
 		if bitbucketClient != nil {
 			wg.Go(func() { id.bb, _ = bitbucketClient.whoami() })
@@ -152,7 +152,7 @@ func buildInstructions(config Config) string {
 	case who = <-idCh:
 	case <-time.After(3 * time.Second):
 	}
-	jiraMe := who.jira
+	jiraMe := who.jiraUser
 	bbMe := who.bb
 
 	w("# atlassian-mcp")
@@ -162,7 +162,7 @@ func buildInstructions(config Config) string {
 	w("## Configured services")
 	jiraLine := "- Jira:      "
 	if jiraClient != nil {
-		jiraLine += config.Jira.URL
+		jiraLine += cfg.Jira.URL
 		if jiraMe != nil {
 			id := jiraMe.Name
 			if id == "" {
@@ -183,7 +183,7 @@ func buildInstructions(config Config) string {
 
 	bbLine := "- Bitbucket: "
 	if bitbucketClient != nil {
-		bbLine += config.Bitbucket.URL
+		bbLine += cfg.Bitbucket.URL
 		if bbMe != "" {
 			bbLine += " — you are " + bbMe
 		}

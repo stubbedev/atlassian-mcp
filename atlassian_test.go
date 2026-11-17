@@ -962,7 +962,7 @@ func TestCheckProjectNames(t *testing.T) {
 }
 
 func TestSessionRemembersReviewedHashes(t *testing.T) {
-	s := (&sessionState{}).prReviews()
+	s := &prReviews{}
 	key := reviewKey("ENG", "api", 7)
 	if _, _, ok := s.last(key); ok {
 		t.Error("nothing should be remembered yet")
@@ -976,10 +976,10 @@ func TestSessionRemembersReviewedHashes(t *testing.T) {
 	if _, _, ok := s.last(reviewKey("ENG", "web", 7)); ok {
 		t.Error("review state leaked across repos")
 	}
-	var nilSession *sessionState
-	nilSession.prReviews().remember(key, "a", "b")
-	if _, _, ok := nilSession.prReviews().last(key); ok {
-		t.Error("nil session should be inert")
+	var none *prReviews
+	none.remember(key, "a", "b")
+	if _, _, ok := none.last(key); ok {
+		t.Error("a session without review state should be inert")
 	}
 }
 
