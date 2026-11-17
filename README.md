@@ -1,826 +1,210 @@
+<p align="center"><img src="assets/logo.svg" alt="" width="128"></p>
+
 # atlassian-mcp
 
-A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **self-hosted Jira** (Server / Data Center) and **self-hosted Bitbucket** (Server / Data Center). Exposes tools for natural-language workflows around tickets, pull requests, review threads, and git context.
+An [MCP](https://modelcontextprotocol.io) server for **self-hosted Jira and Bitbucket**
+(Server / Data Center): tickets, sprints, pull requests, review threads and local git
+context, in one static binary with no runtime dependencies.
 
-> **Note:** This server only supports self-hosted instances. Jira Cloud and Bitbucket Cloud use different APIs and are not supported.
-
----
+> Jira Cloud and Bitbucket Cloud use different APIs and are not supported.
 
 ## Tools
 
-### Workflow
-
-| Tool | Description |
+| Tool | What it does |
 |---|---|
-| `get_dev_context` | Master entry point: git state + linked Jira ticket + open PR with reviewer/blocker status and next-step hints |
-| `start_work` | Start a Jira ticket: resolves it by key or free-text `query` (with a picker when several match), creates a local branch (`feature/FOO-123-slug`) off the repository default branch, fetches the project README from Bitbucket so commit/PR conventions are in context, and optionally transitions the ticket |
-| `complete_work` | Close out finished work: merges the open PR and transitions the Jira ticket to Done. Refuses to merge while reviewers have not approved or a build failed (`force=true` overrides) |
+| `get_dev_context` | Start here: git state, the linked Jira ticket and the open PR with approvals, blockers and next steps. Also readable as the resource `dev-context://current` |
+| `start_work` | Resolve a ticket (key or free text), branch off the default branch, load the repo README, optionally transition the ticket |
+| `complete_work` | Merge the PR and move the ticket to Done; refuses while approvals are missing or a build failed (`force=true` overrides) |
+| `git_get_context` | Branch, upstream, recent commits, status, diff stat; or a paged diff between refs |
+| `jira_search` | `issues`, `projects`, `issue_types`, `boards`, `sprints`, `board_overview`, `field_history`, `versions`, `components`, `fields`, `users` |
+| `jira_get` | One issue in full: fields, sprint, transitions, comments, attachments; `customFields` for any field, `includeChangelog` for its history |
+| `jira_mutate` | Create, update, transition, comment, link, log work, add to sprint, set custom fields, attach files, delete, manage fix versions; several in one call |
+| `bitbucket_search` | `pull_requests` (default), `repos`, `branches`, `users`; `mine=true` for your inbox |
+| `bitbucket_get_pr` | PR metadata, commits, comments, blockers, builds, optional diff, attachments |
+| `bitbucket_mutate` | Create or update a PR; `approve`, `unapprove`, `needs_work`, `merge`, `decline` |
+| `bitbucket_comment` | Add, edit or delete PR comments, including suggestions and draft-review comments |
+| `bitbucket_get_file` | A file at a branch, tag, commit or PR source branch, paged |
+| `bitbucket_pr_tasks` | List, create, resolve, reopen or delete PR tasks |
+| `get_attachment` | A Jira or Bitbucket attachment, decoded so the model can see it: images, video and animation frames, audio, PDFs, text |
+| `attach_files` | An in-chat upload panel for files the server cannot read itself, e.g. a pasted screenshot (hosts with MCP Apps) |
 
-### Git
+Things to ask for:
 
-| Tool | Description |
-|---|---|
-| `git_get_context` | Branch, upstream state, remote URL, recent commits, working tree status, diff stat, and Jira keys in branch name. Pass `fromRef`/`toRef` for a diff between refs instead, paged via `charOffset` |
+- "what am I working on?" · "make a branch for FOO-123" · "ship this"
+- "what's in the current sprint?" · "which estimates changed since the sprint started?"
+- "show my PRs waiting for review" · "approve PR 42" · "reply to comment 123 on PR 42"
+- "move FOO-123 to In Progress" · "log 2h on FOO-123" · "set story points to 5"
+- "what can I set on an Epic in PAY?" · "create version 9.1.0 in PAY and release it"
 
-### Jira
+## Guarantees
 
-| Tool | Description |
-|---|---|
-| `jira_search` | Discover resources: `issues`, `projects`, `issue_types`, `boards`, `sprints`, `board_overview`, `versions`, `components`, `fields`, or `users` via `resource` param |
-| `jira_get` | Full details for one issue: summary, description, status, sprint, transitions, comments, and attachment list; `customFields` adds any custom field value (e.g. Story Points) |
-| `jira_mutate` | Create, update, transition, comment (`commentAction`: `add` / `update` / `delete`), upload attachments from a local path, URL, or `data:` URI, link, add to sprint, log work, change issue type, set any custom field by name (`create.customFields` / `update.customFields`), delete an issue (`delete=true`), or manage a fix version (`version.action`: `create` / `update` / `release` / `archive` / `delete`) — several in one call. Markdown in any text field is converted to Jira wiki markup |
+Enforced in code, not left to the model:
 
-### Bitbucket
-
-| Tool | Description |
-|---|---|
-| `bitbucket_search` | Discover resources: `pull_requests` (default), `repos`, `branches`, or `users` via `resource` param; `mine=true` for your inbox, narrowed with `role=author` / `reviewer` / `participant` |
-| `bitbucket_get_pr` | Full PR details: metadata, commits, comments, blockers, build status, optional diff, and any attachments referenced from the description or comments |
-| `bitbucket_mutate` | Create/update a PR, or perform lifecycle actions: `approve`, `unapprove`, `needs_work`, `merge`, `decline`. Reviewer names are verified against Bitbucket, and an update that would drop existing reviewers needs `update.replaceReviewers=true`. `create.attachments` / `update.attachments` upload files (local path, URL, or `data:` URI) to the repo and reference them from the description |
-| `bitbucket_comment` | Add, update, or delete a PR comment; for code changes use `suggestion` so Bitbucket shows Apply suggestion. Enforced here: one reply per thread, no new top-level comment on your own PR (`asAuthor=true` to override), `#123` references rewritten as links. `pending=true` posts an unpublished draft-review comment. `attachments` uploads files (local path, URL, or `data:` URI) and references them from the comment |
-| `bitbucket_get_file` | Raw file content at a branch, tag, or commit — or pass `prId` to read the PR source branch. Every response names the path and ref it came from, and pages via `maxChars`/`charOffset` |
-| `bitbucket_pr_tasks` | Manage PR tasks (checklist items): `list`, `create`, `resolve`, `reopen`, `delete` |
-
-### Shared
-
-| Tool | Description |
-|---|---|
-| `get_attachment` | Fetch an attachment by ID from Jira (`source=jira`, IDs from `jira_get`) or Bitbucket (`source=bitbucket`, IDs from `bitbucket_get_pr`). Images, videos, animated images (GIF/APNG/animated WebP), audio, and PDFs are decoded inline so the model can see/hear them; text/JSON inline. Oversized or non-renderable attachments are auto-saved to a temp file and the path is returned. `saveTo=/absolute/path` streams the original to disk |
-| `attach_files` | Open an upload panel in the chat so the user can pick, drag or **paste** files onto a Jira issue or Bitbucket PR. The panel runs in the host (MCP Apps) and uploads directly, so it works where this server cannot read the filesystem — notably sandboxed Claude Desktop extensions. Degrades to a text answer on hosts without MCP Apps |
-
-### Resources
-
-| URI | Description |
-|---|---|
-| `dev-context://current` | The same live report as `get_dev_context` — branch state, linked Jira tickets, open PR — as an MCP resource. Re-read it for fresh state instead of spending another tool call. The repo is resolved per read from the caller's session, so the static URI serves whatever workspace the client is in |
-
-### Natural language examples
-
-- "what am I working on?" → `get_dev_context`
-- "make a branch for FOO-123" → `start_work`
-- "ship this / merge and close the ticket" → `complete_work`
-- "show my PRs waiting for review" → `bitbucket_search` with `mine=true`
-- "list open PRs for this repo from feature/ABC-123" → `bitbucket_search` with `fromBranch`
-- "give me a full overview of PR 42" → `bitbucket_get_pr`
-- "open a PR from my current branch to master" → `bitbucket_mutate` with `create`
-- "approve / merge / decline PR 42" → `bitbucket_mutate` with `action`
-- "reply to comment 123 on PR 42" → `bitbucket_comment` with `commentId=123`
-- "resolve this blocker on PR 42" → `bitbucket_comment` with `action=update`, `severity=BLOCKER`, `state=RESOLVED`
-- "list PR checklist tasks" → `bitbucket_pr_tasks` with `action=list`
-- "find bugs assigned to me in PAY project" → `jira_search` with `mine=true`, `issueType=Bug`
-- "what's in the current sprint?" → `jira_search` with `resource=board_overview` (each issue shows the board's estimate, e.g. Story Points)
-- "how many story points are in sprint 42?" → `jira_search` with `jql="sprint = 42"`, `customFields=["Story Points"]`
-- "move FOO-123 to In Progress" → `jira_mutate` with `transitionName="In Progress"`
-- "log 2h on FOO-123" → `jira_mutate` with `worklog`
-- "create version 9.1.0 in PAY" → `jira_mutate` with `version.action=create`, `version.projectKey=PAY`, `version.name=9.1.0`
-- "list releases for PAY" → `jira_search` with `resource=versions`, `project=PAY`
-- "release version 12345" → `jira_mutate` with `version.action=release`, `version.id=12345`
-- "set fix version 9.1.0 on FOO-123" → `jira_mutate` with `update.fixVersion=9.1.0`
-- "create a task under epic FOO-100" → `jira_mutate` with `create.issueType=Task`, `create.parent=FOO-100` (auto-detects Epic and sets Epic Link)
-- "move FOO-123 under epic FOO-100" → `jira_mutate` with `update.epicLink=FOO-100`
-- "delete FOO-123" → `jira_mutate` with `delete=true` (irreversible; add `deleteSubtasks=true` for a parent). Closing the ticket is usually what is wanted instead
-- "FOO-123 relates to FOO-100" → `jira_mutate` with `link={linkType: "Relates", targetIssueKey: "FOO-100"}` — the phrase ("is blocked by") works too and sets the direction
-- "create an epic" → `jira_mutate` with `create.issueType=Epic` (Epic Name defaults to the summary)
-- "set story points to 5" → `jira_mutate` with `update.customFields={"Story Points": 5}` — values are plain (option label, username, date, array of labels); the server wraps them per the field schema
-- "what can I set on this ticket / on an Epic?" → `jira_search resource=fields` with `issueKey=FOO-123` (edit screen) or `project=FOO`+`issueType=Epic` (create screen): required and optional fields, value shapes, allowed values
-
----
-
-## What the server enforces
-
-These are guarantees in the code, not advice in a tool description — a client
-cannot get them wrong, and they need no prompting:
-
-- **Arguments are validated before a call runs.** Enum values and required
-  fields are checked against each tool's schema, with case and `-`/`_`
-  differences normalised. An unknown `action`/`resource` is an error, never a
-  silent fallback to some default branch of the handler.
-- **Names are resolved before anything is written.** Jira `assignee`/`reporter`,
-  components and fix versions, and Bitbucket reviewers are checked first; a bad
-  one comes back with the valid options instead of an opaque 400.
-- **Markdown is converted to Jira wiki markup** on every Jira write (comments,
-  descriptions, environments, worklogs): fenced code blocks in any style
-  (```` ``` ````/```` ```` ````/`~~~`, any info string), inline code, headings,
-  bold/bold-italic, strikethrough, links, autolinks and images, blockquotes
-  (`bq.`/`{quote}`), tables, and bullet or ordered lists (`-`/`*`/`+` and
-  `1.`/`1)`). Text that is already wiki markup is left alone.
-- **PR comment hygiene:** one reply per thread per author, no duplicate of a
-  comment you already posted, no new top-level comment on a PR you authored
-  (`asAuthor=true` to override), no tasks via `severity`, no emoji, and bare
-  `#123` references are rewritten as links to that comment.
-- **Inline comments anchor to what was reviewed.** Reading a PR records the
-  commit pair for that session; inline comments bind to it and are remapped onto
-  current head when the branch has moved, so a comment never lands on unrelated
-  code.
-- **Reviewers are never dropped by accident** — an update that would remove one
-  needs `update.replaceReviewers=true`.
-- **`complete_work` will not merge** while reviewers have not approved or a build
-  on the PR head has failed, unless `force=true`.
-- **Truncated output always says how to continue**, naming the argument that
-  fetches the rest. `bitbucket_get_file` also states the path and ref it read,
-  so reading the wrong branch is visible rather than silent.
-- **Tool annotations** (`readOnlyHint`, `destructiveHint`, `idempotentHint`) are
-  published for every tool, so hosts can gate confirmation on metadata.
-- **AI-written text is attributed.** Every Jira ticket description, Jira comment
-  (including worklog comments) and Bitbucket PR description / PR comment posted
-  through this server ends with a bold `[AI]` line, added after markdown→wiki
-  conversion so it never lands inside a code block, and skipped rather than
-  mangled when the text ends inside an open code fence. A comment the user
-  explicitly asked the agent to post for them is left unmarked via
-  `commentUserAuthored=true` (`jira_mutate`) or `userAuthored=true`
-  (`bitbucket_comment`), so `[AI]` only flags text the agent wrote on its own.
-  Disable marking entirely with `"markAIText": false` in the config file or
-  `ATLASSIAN_MCP_MARK_AI_TEXT=false`.
+- Arguments are checked against each tool's schema; an unknown `action` or `resource` is an error, never a fallback.
+- Assignees, components, fix versions and reviewers are resolved before anything is written; a bad one comes back with the valid choices.
+- Markdown is converted to Jira wiki markup on every Jira write.
+- PR comments: one reply per thread, no duplicates, no new top-level comment on your own PR (`asAuthor=true` overrides), `#123` becomes a link.
+- Inline comments stay anchored to the commit you reviewed, remapped if the branch moved.
+- Reviewers are only dropped with `update.replaceReviewers=true`.
+- Truncated output always names the argument that fetches the rest.
+- Text the agent writes ends with a bold `[AI]` line, unless the user dictated it (`commentUserAuthored` / `userAuthored`) or marking is off (`"markAIText": false`).
 
 ## Setup
 
-### 1. Create a config file
+### 1. Configure
 
-Create `~/.atlassian-mcp.json`:
+Create `~/.atlassian-mcp.json` with a [personal access token](#personal-access-tokens) for each service:
 
 ```json
 {
   "$schema": "https://raw.githubusercontent.com/stubbedev/atlassian-mcp/master/atlassian-mcp.schema.json",
-  "jira": {
-    "url": "https://jira.example.com",
-    "token": "your-jira-personal-access-token"
-  },
-  "bitbucket": {
-    "url": "https://bitbucket.example.com",
-    "token": "your-bitbucket-personal-access-token"
-  }
+  "jira": { "url": "https://jira.example.com", "token": "…" },
+  "bitbucket": { "url": "https://bitbucket.example.com", "token": "…" }
 }
 ```
 
-The `$schema` field is optional but enables editor autocomplete and validation.
+Or set `JIRA_URL`, `JIRA_ACCESS_TOKEN`, `BITBUCKET_URL`, `BITBUCKET_ACCESS_TOKEN`. The
+config is looked up at `--config <path>`, `$ATLASSIAN_MCP_CONFIG`, `~/.atlassian-mcp.json`,
+`$XDG_CONFIG_HOME/atlassian-mcp/config.json`, then `./.atlassian-mcp.json`; values in the
+file win, environment variables fill the gaps.
 
-- `projectKey` means a project code:
-  - Jira example: `PAY` in ticket `PAY-123`
-  - Bitbucket example: project `ENG` in repo path `ENG/payments-service`
-- You can also use ergonomic aliases:
-  - Jira: `project` (alias of `projectKey`)
-  - Bitbucket: `project` and `repo` (aliases of `projectKey` and `repoSlug`)
-- For Bitbucket tools, `projectKey` and `repoSlug` are usually auto-detected from your local `origin` remote.
-- `bitbucket_mutate` with `create` auto-detects `fromBranch` from your current branch and returns the existing open PR if one already exists for that branch. Other Bitbucket tools auto-target that PR when `prId` is omitted.
-- Jira project-scoped calls accept `projectKey` and work best when provided.
-- If `projectKey` is omitted for Jira issue creation/type lookup, the server tries to infer it from your current branch ticket key, falls back to auto-select when only one project is visible, and otherwise returns a numbered project list to pick from.
-
-Alternatively, use environment variables (or a `.env` file in this directory):
-
-```env
-JIRA_URL=https://jira.example.com
-JIRA_ACCESS_TOKEN=your-jira-personal-access-token
-BITBUCKET_URL=https://bitbucket.example.com
-BITBUCKET_ACCESS_TOKEN=your-bitbucket-personal-access-token
-```
-
-Config is resolved in this order: `--config <path>` CLI arg → `ATLASSIAN_MCP_CONFIG` env var → `~/.atlassian-mcp.json` → `$XDG_CONFIG_HOME/atlassian-mcp/config.json` (default `~/.config/atlassian-mcp/config.json`) → `.atlassian-mcp.json` in cwd → environment variables. A leading `~` in the first two is expanded by the server, so a client that spawns it without a shell still resolves the path. Within a file, per-field: a value in the config file wins, environment variables fill the gaps.
+Bitbucket project and repo are detected from your `origin` remote, and the Jira project from
+the ticket key in your branch, so most calls need neither.
 
 ### 2. Install
 
-Every option below runs the same single static Go binary — no `git`, `ffmpeg` or other
-program needed on the machine. Pick whichever package manager you already have:
-
-| Option | Install | Command for your MCP client |
+| Option | Install | Command for your client |
 |---|---|---|
-| **npx** (Node 18+) | nothing — fetched on first run | `npx -y @stubbedev/atlassian-mcp@latest` |
-| **npm global** (Node 18+) | `npm install -g @stubbedev/atlassian-mcp` | `atlassian-mcp` |
-| **Composer** (PHP 8.1+) | `composer global require stubbedev/atlassian-mcp` | the native binary it downloads — see [Composer](#composer) |
-| **Composer, per project** | `composer require --dev stubbedev/atlassian-mcp` | `vendor/stubbedev/atlassian-mcp/bin/atlassian-mcp-native` |
-| **Claude Desktop bundle** | double-click the `.mcpb` from the [latest release](https://github.com/stubbedev/atlassian-mcp/releases/latest) | — (see [Claude Desktop](#claude-desktop)) |
-| **Prebuilt binary** | download `atlassian-mcp_<os>_<arch>` from the [latest release](https://github.com/stubbedev/atlassian-mcp/releases/latest) | path to that file |
-| **Go** | `go install -tags nodynamic github.com/stubbedev/atlassian-mcp@latest` | `atlassian-mcp` (in `$GOBIN`) |
-| **Nix** | `nix profile install github:stubbedev/atlassian-mcp` | `atlassian-mcp` |
+| npx (Node 18+) | nothing | `npx -y @stubbedev/atlassian-mcp@latest` |
+| npm | `npm install -g @stubbedev/atlassian-mcp` | `atlassian-mcp` |
+| Composer (PHP 8.1+) | `composer require --dev stubbedev/atlassian-mcp` | `vendor/stubbedev/atlassian-mcp/bin/atlassian-mcp-native` |
+| Claude Desktop | open the `.mcpb` from the [latest release](https://github.com/stubbedev/atlassian-mcp/releases/latest) | — |
+| Binary | `atlassian-mcp_<os>_<arch>` from the [latest release](https://github.com/stubbedev/atlassian-mcp/releases/latest) | its path |
+| Go | `go install -tags nodynamic github.com/stubbedev/atlassian-mcp@latest` | `atlassian-mcp` |
+| Nix | `nix profile install github:stubbedev/atlassian-mcp` | `atlassian-mcp` |
 
-The client examples in [step 3](#3-connect-to-your-ai-tool) use `npx`. With any other
-option, replace `npx -y @stubbedev/atlassian-mcp@latest` (or `"command": "npx"` plus its
-`args`) with that option's command. MCP clients often start servers without your shell's
-`PATH`, so an absolute path is the safest choice (`which atlassian-mcp`).
+npm and Composer download the release binary for your platform, verify its checksum and
+cache it per version under `$XDG_CACHE_HOME/atlassian-mcp/`. Composer asks once to trust the
+plugin (`composer config allow-plugins.stubbedev/atlassian-mcp true` for CI); `composer
+global require` works too. To update, re-run the install, or `npx clear-npx-cache` for npx.
 
-#### npm / npx
-
-`npx` downloads the package and the prebuilt binary for your platform on first run, so
-there is nothing to install up front. `npm install -g` does the same once and puts
-`atlassian-mcp` on your `PATH`.
-
-#### Composer
-
-The Composer package `stubbedev/atlassian-mcp` is for PHP projects, or machines with PHP
-but no Node. It is a Composer plugin: on `composer install` / `update` it downloads the
-prebuilt binary for your OS and architecture (the same 13 targets as npm), from the release
-matching the installed version, so a pinned version pins the binary. Your MCP client then
-runs that native binary directly, and PHP is never in the request path:
+### 3. Connect
 
 ```bash
-composer require --dev stubbedev/atlassian-mcp      # per project
-composer global require stubbedev/atlassian-mcp     # per user
-```
-
-Composer asks once whether to trust the plugin. For non-interactive installs (CI,
-provisioning), allow it up front:
-
-```bash
-composer config allow-plugins.stubbedev/atlassian-mcp true          # per project
-composer global config allow-plugins.stubbedev/atlassian-mcp true   # per user
-```
-
-The install prints the binary's path. Point your client at it:
-
-| Install | Native binary (no PHP at runtime) | PHP launcher |
-|---|---|---|
-| per project | `vendor/stubbedev/atlassian-mcp/bin/atlassian-mcp-native` | `vendor/bin/atlassian-mcp` |
-| per user | `$(composer global config home)/vendor/stubbedev/atlassian-mcp/bin/atlassian-mcp-native` | `$(composer global config bin-dir --absolute)/atlassian-mcp` |
-
-```bash
-claude mcp add atlassian -- "$PWD/vendor/stubbedev/atlassian-mcp/bin/atlassian-mcp-native" --config ~/.atlassian-mcp.json
-```
-
-On Windows the binary is `atlassian-mcp-native.exe`. The PHP launcher works even if
-you declined the plugin: it downloads the binary on its first run, then hands over to it.
-Clients start the server from their own working directory, so use absolute paths. Set
-`ATLASSIAN_MCP_SKIP_DOWNLOAD=1` to skip the install-time download.
-
-#### Binary cache
-
-npm and Composer download each release's binary once per user, verify it against the
-release's `checksums.txt`, and keep it in `$XDG_CACHE_HOME/atlassian-mcp/<version>/` (by
-default `~/.cache` on Linux and FreeBSD, `~/Library/Caches` on macOS, `%LOCALAPPDATA%` on
-Windows), and hardlink it into every install, or copy it where the install is on another
-filesystem. Further projects and git worktrees on the same version install without
-downloading anything. Delete old version directories to reclaim their space; installs keep
-their own link.
-
-#### Standalone binary (Go, Nix, release download)
-
-```bash
-go install -tags nodynamic github.com/stubbedev/atlassian-mcp@latest   # → $GOBIN / $GOPATH/bin
-nix run github:stubbedev/atlassian-mcp -- --config ~/.atlassian-mcp.json
-```
-
-Or download `atlassian-mcp_<os>_<arch>` from the
-[latest release](https://github.com/stubbedev/atlassian-mcp/releases/latest), then
-`chmod +x` it (macOS/Linux/FreeBSD).
-
-#### Updating
-
-| Option | Update |
-|---|---|
-| npx | `npx clear-npx-cache`, then restart your MCP client |
-| npm global | `npm update -g @stubbedev/atlassian-mcp` |
-| Composer | `composer global update stubbedev/atlassian-mcp` (or `composer update stubbedev/atlassian-mcp` in the project) |
-| Claude Desktop | install the newer `.mcpb` over the old one |
-| Go / Nix / binary | re-run the install command or download the newer release |
-
-### 3. Connect to your AI tool
-
-The examples below use `npx`. If you installed another way, swap in that option's command
-from the [table above](#2-install).
-
-CLI-driven clients need one line:
-
-```bash
-claude mcp add atlassian -- npx -y @stubbedev/atlassian-mcp@latest       # Claude Code
-codex mcp add atlassian -- npx -y @stubbedev/atlassian-mcp@latest        # Codex CLI / IDE / app
-code --add-mcp '{"name":"atlassian","command":"npx","args":["-y","@stubbedev/atlassian-mcp@latest"]}'   # VS Code
-
-claude mcp add atlassian -- atlassian-mcp                                 # e.g. after npm -g / Composer / Go / Nix
-```
-
-Desktop apps: **Claude Desktop** installs a one-click [`.mcpb` bundle](#claude-desktop) —
-no Node, no JSON. Everything else takes a config file; see below.
-
-> Note: `--prefer-online` can break MCP startup in some clients. Keep the command simple and use the [update steps](#updating) when you want to refresh.
-
----
-
-#### Claude Code
-
-```bash
-claude mcp add atlassian -- npx -y @stubbedev/atlassian-mcp@latest --config ~/.atlassian-mcp.json
-```
-
----
-
-#### Claude Desktop
-
-**One-click (recommended).** Grab the `.mcpb` bundle for your platform from the
-[latest release](https://github.com/stubbedev/atlassian-mcp/releases/latest) —
-`atlassian-mcp_darwin_arm64.mcpb` (Apple Silicon), `atlassian-mcp_windows_amd64.mcpb` — then
-**double-click it**, drag it onto the Claude Desktop window, or use **Settings → Extensions →
-Advanced settings → Install Extension…**. The install dialog asks for Jira/Bitbucket URL and token (tokens are stored
-by Claude Desktop, not in a file) plus **Repository**, the working tree the git and PR tools
-default to. Leaving URL/token blank reuses an existing `~/.atlassian-mcp.json`.
-
-The bundle carries the binary, so there is no Node, no `npx`, no `PATH` to fix and no JSON
-to edit. [MCP Bundles](https://github.com/modelcontextprotocol/mcpb) are a Claude Desktop
-feature today; other clients use the config files below.
-
-**Manual config.** Claude Desktop is a GUI app: it launches the server with a minimal
-`PATH`, no shell, and `/` as the working directory. So `command` must be an **absolute
-path** (a bare `npx` fails with `spawn npx ENOENT`), a `.env` file or relative
-`--config` path never resolves, and nothing expands `~` for you — the server expands a
-leading `~` in `--config` / `ATLASSIAN_MCP_CONFIG` itself, but a client that inserts `~`
-anywhere else will not. Config file:
-
-- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
-- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
-
-```json
-{
-  "mcpServers": {
-    "atlassian": {
-      "command": "/absolute/path/to/atlassian-mcp",
-      "env": {
-        "JIRA_URL": "https://jira.example.com",
-        "JIRA_ACCESS_TOKEN": "your-jira-personal-access-token",
-        "BITBUCKET_URL": "https://bitbucket.example.com",
-        "BITBUCKET_ACCESS_TOKEN": "your-bitbucket-personal-access-token",
-        "ATLASSIAN_MCP_REPO_ROOT": "/Users/you/code/my-repo"
-      }
-    }
-  }
-}
-```
-
-To keep `npx`, set `command` to the absolute path of your launcher (`which npx`, e.g.
-`/opt/homebrew/bin/npx`) with `"args": ["-y", "@stubbedev/atlassian-mcp@latest"]`.
-
-`ATLASSIAN_MCP_REPO_ROOT` is what makes `get_dev_context`, `git_get_context`,
-`start_work`, `complete_work` and Bitbucket repo auto-detection usable here: a desktop app
-has no workspace, so it advertises no MCP roots and there is no useful cwd to fall back to.
-Comma-separate several worktrees (first git repo wins); a per-call `repoPath` still
-overrides it.
-
-Server stderr is logged to `~/Library/Logs/Claude/mcp-server-atlassian.log` (macOS) or
-`%APPDATA%\Claude\logs\mcp-server-atlassian.log` (Windows) — read that first when a
-connection fails.
-
----
-
-#### Cursor
-
-Add to `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (project-only):
-
-```json
-{
-  "mcpServers": {
-    "atlassian": {
-      "command": "npx",
-      "args": ["-y", "@stubbedev/atlassian-mcp@latest", "--config", "/Users/you/.atlassian-mcp.json"]
-    }
-  }
-}
-```
-
----
-
-#### Windsurf
-
-Add to `~/.codeium/windsurf/mcp_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "atlassian": {
-      "command": "npx",
-      "args": ["-y", "@stubbedev/atlassian-mcp@latest", "--config", "/Users/you/.atlassian-mcp.json"]
-    }
-  }
-}
-```
-
----
-
-#### Zed
-
-Add to `~/.config/zed/settings.json`:
-
-```json
-{
-  "context_servers": {
-    "atlassian": {
-      "command": {
-        "path": "npx",
-        "args": ["-y", "@stubbedev/atlassian-mcp@latest", "--config", "/home/you/.atlassian-mcp.json"]
-      }
-    }
-  }
-}
-```
-
----
-
-#### OpenCode
-
-Add to `opencode.json` in your project root (or `~/.config/opencode/opencode.json` for global):
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "mcp": {
-    "atlassian": {
-      "type": "local",
-      "command": ["npx", "-y", "@stubbedev/atlassian-mcp@latest", "--config", "/home/you/.atlassian-mcp.json"],
-      "environment": { "ATLASSIAN_MCP_REPO_ROOT": "/home/you/code/my-repo" }
-    }
-  }
-}
-```
-
-`environment` also accepts the `JIRA_*` / `BITBUCKET_*` variables if you would rather not
-keep a config file. Set `"type": "remote"` with `"url"` and `"headers"` to point at a
-shared [HTTP server](#running-as-an-http-server-shared--behind-a-proxy) instead.
-
----
-
-#### Codex (CLI, IDE extension, app)
-
-One command — it writes the config for all three:
-
-```bash
+claude mcp add atlassian -- npx -y @stubbedev/atlassian-mcp@latest
 codex mcp add atlassian -- npx -y @stubbedev/atlassian-mcp@latest
-```
-
-Or edit `~/.codex/config.toml` directly (`.codex/config.toml` in a trusted project for a
-project-scoped server). Note the TOML table name is `mcp_servers`, with an underscore:
-
-```toml
-[mcp_servers.atlassian]
-command = "npx"
-args = ["-y", "@stubbedev/atlassian-mcp@latest", "--config", "/home/you/.atlassian-mcp.json"]
-
-# Optional — instead of a config file, and to pin the repo for the git/PR tools:
-[mcp_servers.atlassian.env]
-JIRA_URL = "https://jira.example.com"
-JIRA_ACCESS_TOKEN = "…"
-ATLASSIAN_MCP_REPO_ROOT = "/home/you/code/my-repo"
-```
-
-Codex picks the transport from the keys present: `command` means stdio, `url` means
-streamable HTTP. To share one [HTTP server](#running-as-an-http-server-shared--behind-a-proxy):
-
-```toml
-[mcp_servers.atlassian]
-url = "http://127.0.0.1:7337/mcp"
-bearer_token_env_var = "ATLASSIAN_MCP_HTTP_TOKEN"
-```
-
----
-
-#### VS Code / GitHub Copilot
-
-```bash
 code --add-mcp '{"name":"atlassian","command":"npx","args":["-y","@stubbedev/atlassian-mcp@latest"]}'
 ```
 
-Or commit `.vscode/mcp.json` with a `servers` object of the same shape to share it with the
-repo.
-
----
-
-#### Any other MCP-compatible tool
-
-Most clients accept the Claude Desktop shape — an `mcpServers` object keyed by name, with
-`command`, `args` and `env`:
+Other clients take the common `mcpServers` shape:
 
 ```json
 {
   "mcpServers": {
     "atlassian": {
       "command": "npx",
-      "args": ["-y", "@stubbedev/atlassian-mcp@latest"],
-      "env": {
-        "JIRA_URL": "https://jira.example.com",
-        "JIRA_ACCESS_TOKEN": "…",
-        "BITBUCKET_URL": "https://bitbucket.example.com",
-        "BITBUCKET_ACCESS_TOKEN": "…",
-        "ATLASSIAN_MCP_REPO_ROOT": "/home/you/code/my-repo"
-      }
+      "args": ["-y", "@stubbedev/atlassian-mcp@latest", "--config", "/home/you/.atlassian-mcp.json"],
+      "env": { "ATLASSIAN_MCP_REPO_ROOT": "/home/you/code/my-repo" }
     }
   }
 }
 ```
 
-LM Studio uses exactly that shape in its own `mcp.json` (edit it from the app's plugin
-panel); Cherry Studio, Witsy, Jan and 5ire have in-app MCP dialogs with the same fields.
+| Client | Where |
+|---|---|
+| Claude Desktop | `.mcpb` bundle, or `claude_desktop_config.json` (macOS `~/Library/Application Support/Claude/`, Windows `%APPDATA%\Claude\`) |
+| Cursor | `~/.cursor/mcp.json` or `.cursor/mcp.json` |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` |
+| LM Studio, Cherry Studio, Witsy, Jan, 5ire | in-app MCP settings, same fields |
 
-Goose is the exception — its `~/.config/goose/config.yaml` uses `extensions:` with `cmd`
-rather than `command`:
+<details>
+<summary>Zed, OpenCode, Codex and Goose use their own shapes</summary>
+
+```jsonc
+// Zed: ~/.config/zed/settings.json
+{ "context_servers": { "atlassian": { "command": { "path": "npx", "args": ["-y", "@stubbedev/atlassian-mcp@latest"] } } } }
+
+// OpenCode: opencode.json
+{ "mcp": { "atlassian": { "type": "local", "command": ["npx", "-y", "@stubbedev/atlassian-mcp@latest"] } } }
+```
+
+```toml
+# Codex: ~/.codex/config.toml (note the underscore)
+[mcp_servers.atlassian]
+command = "npx"
+args = ["-y", "@stubbedev/atlassian-mcp@latest"]
+```
 
 ```yaml
+# Goose: ~/.config/goose/config.yaml
 extensions:
-  atlassian:
-    enabled: true
-    type: stdio
-    cmd: npx
-    args: ["-y", "@stubbedev/atlassian-mcp@latest"]
-    envs:
-      ATLASSIAN_MCP_REPO_ROOT: /home/you/code/my-repo
+  atlassian: { enabled: true, type: stdio, cmd: npx, args: ["-y", "@stubbedev/atlassian-mcp@latest"] }
 ```
 
-Every GUI client brings the caveats from the [Claude Desktop](#claude-desktop) section:
-absolute `command` path, no usable cwd, no MCP roots — so set `ATLASSIAN_MCP_REPO_ROOT`.
+</details>
 
----
+**Desktop apps** start the server with no shell, a minimal `PATH` and no workspace. Use
+absolute paths (`which npx`), and set `ATLASSIAN_MCP_REPO_ROOT` so the git and PR tools know
+which repository you mean (comma-separate several; `repoPath` on a call still wins). Claude
+Desktop logs server output to `~/Library/Logs/Claude/mcp-server-atlassian.log`.
 
-#### ChatGPT (desktop / web) — not supported
+ChatGPT only accepts remote HTTPS servers with OAuth, so it is not supported.
 
-ChatGPT connectors accept **remote HTTPS MCP servers only** (streamable HTTP or SSE, with
-OAuth or no auth); it cannot spawn a local stdio server. This server's `--http` mode speaks
-the right protocol, but making it work would mean exposing an endpoint that reaches your
-self-hosted Jira/Bitbucket to OpenAI's servers, and ChatGPT offers no place for the static
-bearer token this server uses. Use a client from the list above.
+### Personal access tokens
 
----
+- **Jira 8.14+**: profile avatar → **Profile** → **Personal Access Tokens** → **Create token**.
+- **Bitbucket 5.5+**: profile avatar → **Manage account** → **Personal access tokens** →
+  **Create a token**, with Projects: Read and Repositories: Write (to open PRs and comment).
 
-### Running as an HTTP server (shared / behind a proxy)
+## HTTP mode
 
-By default the server speaks MCP over **stdio** (one process per client, launched
-by your editor). It can instead run as a long-lived **Streamable HTTP** server that
-many clients share — useful behind a reverse proxy:
+One long-lived server can serve many clients over Streamable HTTP:
 
 ```bash
-atlassian-mcp --http                 # binds 127.0.0.1:7337
-atlassian-mcp --http 127.0.0.1:9000  # custom address
-ATLASSIAN_MCP_HTTP=1 atlassian-mcp   # same, via env
-```
-
-- Single endpoint `POST /mcp` (JSON-RPC) plus an optional `GET /mcp` SSE stream that
-  carries server→client requests (`roots/list`, elicitation). The server is **stateful**:
-  `initialize` mints a session and returns an `Mcp-Session-Id` header, which the client
-  **must** echo on every subsequent request and on the SSE stream. Requests with a
-  missing/unknown/expired session id get **HTTP 404** so the client re-initializes
-  (standard MCP-client behaviour). Each connected client/worktree is an isolated session;
-  per-session state (cached roots, PR review anchors) is dropped once the session ends.
-- **Auth:** on a loopback bind no token is needed. Binding a non-loopback address
-  **requires** `ATLASSIAN_MCP_HTTP_TOKEN` (sent by clients as `Authorization: Bearer …`);
-  the server refuses to start otherwise. Terminate TLS at your proxy.
-- **`GET /healthz`** is an unauthenticated liveness probe (returns `ok`) for proxies/load
-  balancers.
-
-**Repo context comes from the client, not the server's working directory.** Tools that
-need a repo (`git_get_context`, `get_dev_context`, `start_work`, `complete_work`, and
-Bitbucket project/repo auto-detection) resolve it in this order: an explicit `repoPath`
-argument → a **root pinned via request header** (see below) → **`ATLASSIAN_MCP_REPO_ROOT`**
-(comma-separated for several worktrees — the only workspace signal a GUI desktop client
-can give) → the client's **MCP workspace roots** (the server asks via `roots/list`, caches
-per session, and refreshes on `notifications/roots/list_changed`) → the process cwd (stdio
-only). So one shared HTTP server handles many worktrees: each client's own workspace drives
-its calls. When a session exposes **several** roots (multiple worktrees), a tool with no
-`repoPath` uses the first git-repo root; pass `repoPath` (an absolute path, or a worktree
-name/basename that matches one of the roots) to target a specific worktree. For Bitbucket,
-passing `projectKey`+`repoSlug` explicitly skips repo detection entirely. The repos must be
-reachable on the server's host (the git tools run `git` locally).
-
-**Pinning the root via a request header (HTTP).** A reverse proxy or harness that already
-knows the working tree can hand it to the server directly, skipping the `roots/list`
-round-trip (and working even when the client never advertised the `roots` capability).
-Send a `file://` URI or absolute path (comma-separated for multiple; first git repo wins):
-
-```
-X-Repo-Root: /srv/myrepo
-X-Mcp-Root: file:///srv/myrepo
-X-Mcp-Roots: /srv/a, /srv/b
-```
-
-Accepted header names, in precedence order: `X-Repo-Root`, `X-Mcp-Roots`, `X-Mcp-Root`,
-`Mcp-Roots`, `Mcp-Root`. A header value is authoritative — it takes precedence over
-`roots/list` and survives `list_changed`.
-
-> **Protocol note:** MCP revision **2026-07-28** (SEP-2322/2575) forbids server-initiated
-> JSON-RPC requests, so `roots/list` is unavailable on that revision — the server says so
-> explicitly instead of hanging. On 2026-07-28 clients, a root **header** (or an explicit
-> `repoPath` / `projectKey`+`repoSlug`) is the only way to give the server repo context.
-
-Client config for an already-running HTTP server (Claude Code example):
-
-```bash
+atlassian-mcp --http                  # 127.0.0.1:7337, same as ATLASSIAN_MCP_HTTP=1
 claude mcp add --transport http atlassian http://127.0.0.1:7337/mcp
 ```
 
-### Attachment upload sources
+The endpoint is `POST /mcp` with an optional `GET /mcp` event stream; sessions are isolated
+by `Mcp-Session-Id`, and `GET /healthz` is an unauthenticated liveness probe. Binding a
+non-loopback address requires `ATLASSIAN_MCP_HTTP_TOKEN` (sent as a bearer token); terminate
+TLS at your proxy.
 
-Every `attachments` argument — `jira_mutate`, `bitbucket_mutate` (`create`/`update`) and
-`bitbucket_comment` — takes *sources*, not only paths. Each entry is one of:
+The repository a call works on comes from, in order: `repoPath`, a root header
+(`X-Repo-Root`, `X-Mcp-Roots`, `X-Mcp-Root`, `Mcp-Roots` or `Mcp-Root`; a path or `file://`
+URI), `ATLASSIAN_MCP_REPO_ROOT`, the client's MCP roots, then the working directory (stdio
+only). Repositories must be on the server's machine. MCP revision 2026-07-28 drops
+server-to-client requests, so there a root header or `repoPath` is the only way to name one.
 
-| Source | Example | Notes |
-| --- | --- | --- |
-| Local file path | `/tmp/shot.png`, `file:///tmp/shot.png` | Requires the server to share a filesystem with the file |
-| `http(s)` URL | `https://example.com/diagram.png` | Downloaded by the server. Filename comes from `Content-Disposition`, else the URL's last path segment, with an extension filled in from `Content-Type` |
-| `data:` URI | `data:text/plain;name=run.log;base64,Ym9vbQ==` | Bytes inlined in the argument. `;name=` titles the file; without it the name is derived from the media type |
+## Attachments
 
-A URL whose host matches the configured Jira or Bitbucket instance is fetched **with your token**,
-so an attachment that already lives on one service can be re-attached to the other by URL. Tokens
-are never sent to any other host. Downloads are capped at 250 MB.
+`attachments` arguments on `jira_mutate`, `bitbucket_mutate` and `bitbucket_comment` accept a
+local path, an `http(s)` URL, or a `data:` URI. URLs on your Jira or Bitbucket host are
+fetched with your token, which is never sent anywhere else; downloads are capped at 250 MB.
+Files pasted into the chat have no path, so use `attach_files` for those.
 
-For Bitbucket, a source that already appears in the description or comment text is replaced in place
-by the attachment markup — that works for URLs too, so writing `![the widget](https://…/shot.png)`
-and passing the same URL in `attachments` keeps your caption and swaps in the uploaded file.
+`get_attachment` decodes in-process, with no `ffmpeg` or other tools: images (including
+AVIF, HEIC and JPEG XL) are resized; animations and video (H.264, Motion JPEG, VP8 keyframes)
+become sampled frames; PDFs become text, or page images when scanned. Anything else is saved
+to a temp file whose path is returned; `saveTo` keeps the original.
 
-**Confined hosts.** A host may run this server sandboxed, in which case a path it was not granted
-comes back as a permission error while URL and `data:` sources keep working — neither needs the
-filesystem. The startup log names the config file it read, or the error it got trying, which is the
-quickest way to tell whether the filesystem is restricted on your setup. The same applies to
-chaining with another MCP server: a screenshot another server wrote to *its* temp directory is only
-reachable here if this process is allowed to read that path.
+Git also runs in-process. Fetch and push use ssh-agent, `~/.ssh` keys and `known_hosts`,
+`~/.git-credentials`, `~/.netrc`, or the Bitbucket token; credential helpers, hooks and LFS
+do not run.
 
-> Files a user attaches to the chat itself cannot be uploaded from these arguments: MCP has no
-> mechanism for passing conversation attachments to a server, and the model cannot re-emit image
-> bytes it was shown. Use [`attach_files`](#the-upload-panel-mcp-apps) — the user re-picks or pastes
-> the file into a panel that uploads it directly — or give this server a URL or a readable path.
-
-### The upload panel (MCP Apps)
-
-`attach_files` opens a file picker **inside the chat**. It exists for the file that has no
-path to pass:
-
-- a screenshot the user pasted or dragged into the conversation is not on disk anywhere
-  this server could look, and MCP has no client-to-server file transfer to carry it — the
-  model cannot re-emit bytes it was shown.
-  [SEP-2631](https://github.com/modelcontextprotocol/modelcontextprotocol/issues/2631)
-  would add one; it is still a draft;
-- and a local path only works if the server is both on the same machine *and* permitted to
-  read it, which a host that confines the server may not allow.
-
-Where a readable path or a URL does exist, the `attachments` arguments remain the better
-route — no user interaction at all.
-
-[MCP Apps](https://github.com/modelcontextprotocol/ext-apps) routes around both. The tool
-declares a `ui://` resource, the host renders it as an iframe, and that iframe is an
-ordinary browser: its file picker, drop target and paste handler sit outside the server's
-sandbox. It hands the bytes back as `data:` URIs through `tools/call`, which is the same
-source format the `attachments` arguments take.
-
-```
-attach_files { issueKey: "KON-123" }        →  panel renders in the chat
-  user picks / drops / pastes               →  FileReader
-  panel calls attach_files { files: [...] } →  data: URI → upload
-```
-
-The model passes only the target (`issueKey`, or `prId` with an optional `commentId`); it
-never fills in `files` and never sees the file contents. Files are capped at 12 MB each,
-since the bytes ride the JSON-RPC channel as base64 — anything larger should go up by URL.
-
-Support is negotiated: hosts advertise MCP Apps through the `io.modelcontextprotocol/ui`
-extension at `initialize`. Where it is absent — **Claude Code today** — the whole surface is
-hidden rather than merely degraded: `attach_files` is filtered out of `tools/list`, the
-widget is filtered out of `resources/list`, and reading it is refused (a client that fetched
-it anyway would take a few hundred KB of inlined SDK into its context for a page it cannot
-draw). Such a host sees exactly the tools it saw before, and is told to ask for a path or
-URL instead.
-
-The panel is one self-contained HTML document (`ui/upload.html`, ~19 KB), because the host
-serves it under `default-src 'none'`: no CDN, no second resource, no build step. It carries
-its own ~2 KB MCP Apps bridge rather than the official browser SDK — a view only needs one
-`ui/initialize` round trip, an `initialized` notification, `tool-input` notifications in and
-`tools/call` requests out, and the SDK brings ~400 KB of zod to validate messages this page
-already treats as untrusted. Bundling it with esbuild makes it larger, not smaller.
-
-### Attachment decoding pipeline
-
-The `get_attachment` tool decodes binary attachments into model-readable content before returning them:
-
-| Input | What gets returned | How |
-| --- | --- | --- |
-| Static images (PNG/JPEG/WebP/BMP/TIFF/GIF/SVG/AVIF/HEIC/JPEG XL…) | Resized image content blocks | `imaging`, long edge ≤ `maxDimension`, default 1568; EXIF auto-orient; PNG for alpha, else JPEG. AVIF/HEIC/JPEG XL via [`gen2brain`](https://github.com/gen2brain) decoders (libavif/libheif/libjxl compiled to WebAssembly) |
-| Animated images (GIF/APNG/animated WebP) | N sampled frames as image content blocks | composited in Go, as a browser shows them (default 6 frames @ 768 px) |
-| Video (MP4/MOV, MKV/WebM, AVI) | N sampled frames as image content blocks | H.264 via [`goh264`](https://github.com/thesyncim/goh264) (GOPs decoded in parallel), Motion JPEG, and VP8 keyframes only (`x/image/vp8` has no inter frames); MP4 demuxed by [`mp4ff`](https://github.com/Eyevinn/mp4ff), Matroska and AVI in-tree. Uniform or scene-change sampling (ffmpeg's scene metric), near-duplicate frames dropped. Re-call with `start`, `end`, `frames`, `mode`, `sceneThreshold` to zoom in. HEVC, VP9, AV1 and MPEG-4 Part 2 are reported as unsupported; pass `saveTo` to keep the original |
-| Audio (mp3/wav/ogg/…) | MCP audio content block | passthrough |
-| PDFs | Extracted text — or rasterized pages if text is empty (scanned PDFs) | text via `ledongthuc/pdf`; pages rendered by PDFium compiled to WebAssembly ([`go-pdfium`](https://github.com/klippa-app/go-pdfium)) |
-| Text-like (json/xml/yaml/…) | Text content block | passthrough |
-| Everything else (or oversized) | Auto-saved to a temp file; path is returned | `os.TempDir()` with `atlmcp-` prefix |
-
-Auto-saved files are periodically pruned by TTL and total-size quota — see *Environment overrides* below.
-
-### No external tools
-
-The binary is self-contained and built without cgo (release builds use `-tags nodynamic`, so the image decoders never look for system libraries). Git access goes through
-[`go-git`](https://github.com/go-git/go-git) (status, log, diff, branch, checkout, fetch, push);
-the C libraries some formats need (PDFium, libavif, libheif, libjxl) run as embedded
-WebAssembly under [`wazero`](https://wazero.io).
-
-Git credentials for fetch/push come from where git keeps them, minus anything that needs another
-program: ssh-agent, `IdentityFile` entries in `~/.ssh/config` and unencrypted `~/.ssh/id_*`
-keys (host keys checked against `~/.ssh/known_hosts`); for https, credentials in the URL,
-`~/.git-credentials`, `~/.netrc`, and the Bitbucket token itself for the configured Bitbucket
-host. Credential helpers, passphrase prompts, git hooks and Git LFS smudging do not run.
-
-`goh264` is LGPL-2.1; it is linked unmodified and the full source of this server is public, so
-the binary can be rebuilt against a modified copy.
-
-### Environment overrides
+## Environment
 
 | Variable | Purpose | Default |
-| --- | --- | --- |
-| `ATLASSIAN_MCP_HTTP` | Run as a Streamable HTTP server instead of stdio. `1`/`true` → `127.0.0.1:7337`; or set an explicit `host:port`. Same as `--http`. | unset (stdio) |
-| `ATLASSIAN_MCP_HTTP_TOKEN` | Bearer token for HTTP mode. Optional on loopback binds; **required** on non-loopback binds. | unset |
-| `ATLASSIAN_MCP_REPO_ROOT` | Default workspace root(s) for the git/PR tools, comma-separated. `file://` URIs, absolute paths, `~/…` and Windows drive paths all work. Needed by clients that expose no MCP roots (desktop apps). Overridden by a `repoPath` argument or a root header. | unset |
-| `ATLASSIAN_MCP_MARK_AI_TEXT` | Set `false` to stop appending the bold `[AI]` attribution line to Jira/Bitbucket text this server posts. | `true` |
-| `ATLASSIAN_MCP_TMP_TTL_DAYS` | Auto-saved attachments older than this are pruned. | `7` |
-| `ATLASSIAN_MCP_TMP_MAX_BYTES` | Total-size quota for auto-saved attachments in `os.tmpdir()`. When exceeded, oldest are evicted. | `1073741824` (1 GB) |
+|---|---|---|
+| `ATLASSIAN_MCP_CONFIG` | Config file path | see [Configure](#1-configure) |
+| `ATLASSIAN_MCP_REPO_ROOT` | Default repository root(s), comma-separated | unset |
+| `ATLASSIAN_MCP_HTTP` | Serve HTTP: `1` or `host:port` | stdio |
+| `ATLASSIAN_MCP_HTTP_TOKEN` | Bearer token; required off loopback | unset |
+| `ATLASSIAN_MCP_MARK_AI_TEXT` | `false` drops the `[AI]` attribution line | `true` |
+| `ATLASSIAN_MCP_TMP_TTL_DAYS` | Age limit for auto-saved attachments | `7` |
+| `ATLASSIAN_MCP_TMP_MAX_BYTES` | Size limit for auto-saved attachments | 1 GB |
+| `ATLASSIAN_MCP_SKIP_DOWNLOAD` | `1` skips the npm/Composer install-time download | unset |
 
 ---
 
-## Releases (Maintainers)
-
-This package is published to npm as `@stubbedev/atlassian-mcp` and to Packagist as
-`stubbedev/atlassian-mcp`.
-
-Use semantic versioning for releases. Breaking tool-surface changes should bump the minor version while `<1.0.0` (for example `0.0.x` -> `0.1.0`).
-
-On a pushed `v*` tag, `.github/workflows/publish.yml` cross-compiles the Go binary for 13
-OS/arch targets, packs five of them into `.mcpb` bundles for one-click desktop install
-(`packaging/mcpb/pack.sh`, macOS arm64 and Windows/Linux × amd64/arm64), attaches
-everything to a GitHub release, and publishes the npm wrapper (which downloads the matching
-binary on install). `just bundle` builds a bundle for the host platform locally.
-
-Release flow (`just` drives it; it refuses to run on a dirty tree):
-
-```bash
-just release-preview       # show the next patch/minor/major versions
-just release-patch         # or release-minor / release-major
-```
-
-`just release-<level>` bumps the version in `package.json`, re-syncs the Nix `vendorHash`
-(`just sync-flake`), runs the gates (`just check`), commits `release: vX.Y.Z`, tags, and
-pushes both the branch and the tag. The tag push triggers `publish.yml`.
-
-`package.json` is the single source of truth for the version: the binary embeds it via
-`go:embed` (no `-ldflags`) and `nix/package.nix` reads it, so one bump moves everything.
-The equivalent npm scripts (`npm run release:patch` / `:minor` / `:major`) still work.
-
-- The workflow is configured for npm Trusted Publisher (OIDC), so no `NPM_TOKEN` secret is required
-
-Required npm setup (one-time):
-
-- In npm package settings, add this GitHub repo/workflow as a Trusted Publisher
-
-Packagist needs no workflow step: it reads `composer.json` straight from each pushed `v*`
-tag (no `version` field — the tag is the version, and the launcher reads `package.json`
-to pick the release binary). One-time setup: submit the repo at
-<https://packagist.org/packages/submit> and keep the Packagist GitHub integration enabled
-so new tags are picked up automatically.
-
----
-
-## Creating Personal Access Tokens
-
-### Jira Server / Data Center
-
-Personal Access Tokens are supported from **Jira 8.14** onwards.
-
-1. Log in to your Jira instance.
-2. Click your profile avatar in the top-right corner and select **Profile**.
-3. In the left sidebar, click **Personal Access Tokens**.
-4. Click **Create token**.
-5. Give the token a name (e.g. `atlassian-mcp`) and optionally set an expiry date.
-6. Click **Create** and copy the token — it will only be shown once.
-
-Paste the token as the `token` value under `jira` in your config file.
-
-> If your Jira version is older than 8.14, you can use HTTP Basic Auth instead — but this server only supports Bearer token (PAT) authentication.
-
-### Bitbucket Server / Data Center
-
-Personal Access Tokens are supported from **Bitbucket Server 5.5** onwards.
-
-1. Log in to your Bitbucket instance.
-2. Click your profile avatar in the top-right corner and select **Manage account**.
-3. In the left sidebar, under **Security**, click **Personal access tokens**.
-4. Click **Create a token**.
-5. Give the token a name (e.g. `atlassian-mcp`).
-6. Set the permissions:
-   - **Projects**: Read
-   - **Repositories**: Read + Write (Write is needed to create pull requests and add comments)
-7. Optionally set an expiry date.
-8. Click **Create** and copy the token — it will only be shown once.
-
-Paste the token as the `token` value under `bitbucket` in your config file.
-
----
-
-## Development
-
-The server is a single Go module at the repo root (no `src/` tree).
-
-Tasks live in the `justfile` and mirror the CI gates, so a green `just check` predicts
-green CI:
-
-```bash
-just            # list tasks
-just check      # vet + test + build (what ci.yml runs)
-just fmt        # gofmt -w .
-just sync-flake # recompute the Nix vendorHash after a dependency change
-
-# Or the raw commands
-go build -o atlassian-mcp .
-./atlassian-mcp --config /path/to/config.json
-go vet ./... && go test ./...
-
-# Quick release smoke check (build + tools/list validation; CI also does a full stdio handshake)
-npm run smoke
-```
-
-Tool schemas live in `tools.json` (embedded into the binary) and the MCP protocol layer is
-the official [`modelcontextprotocol/go-sdk`](https://github.com/modelcontextprotocol/go-sdk);
-the Go files at the repo root hold the tool logic.
+Development, releases and internals: [MAINTAINERS.md](MAINTAINERS.md).
