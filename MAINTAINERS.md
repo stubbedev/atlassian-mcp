@@ -79,16 +79,17 @@ through [`go-git`](https://github.com/go-git/go-git), except status, which is co
 `internal/gitrepo/status.go` because go-git's own walks every ignored file. The C libraries some formats need
 (PDFium, libavif, libheif, libjxl) run as WebAssembly under [`wazero`](https://wazero.io).
 
-**Attachment decoding.** Images are resized with `imaging` (long edge `maxDimension`,
-default 1568) and auto-oriented; AVIF, HEIC and JPEG XL use the
-[`gen2brain`](https://github.com/gen2brain) WebAssembly decoders. Animations are composited
-in Go. Video is demuxed by [`mp4ff`](https://github.com/Eyevinn/mp4ff) (MP4/MOV) or in-tree
-(Matroska, AVI) and decoded by [`goh264`](https://github.com/thesyncim/goh264), with Motion
-JPEG and VP8 keyframes in-tree; frames are sampled uniformly or by ffmpeg's scene metric,
-and near-duplicates are dropped. HEVC, VP9, AV1 and MPEG-4 Part 2 are reported as
-unsupported. PDF text comes from `ledongthuc/pdf`, and scanned pages are rendered by
-[`go-pdfium`](https://github.com/klippa-app/go-pdfium). `goh264` is LGPL-2.1 and is linked
-unmodified; this source being public lets anyone rebuild against a modified copy.
+**Attachment decoding.** Images are decoded by the standard library and `golang.org/x/image`,
+turned upright from their EXIF orientation, and scaled with Catmull-Rom to a long edge of
+`maxDimension` (default 1568); AVIF, HEIC and JPEG XL use the
+[`gen2brain`](https://github.com/gen2brain) WebAssembly decoders. GIF, APNG and animated
+WebP are demuxed and composited in Go. MP4/MOV, Matroska and AVI are demuxed in-tree and
+H.264 is decoded by [`goh264`](https://github.com/thesyncim/goh264), with Motion JPEG and VP8
+keyframes in-tree; frames are sampled uniformly or by ffmpeg's scene metric, and
+near-duplicates are dropped. HEVC, VP9, AV1 and MPEG-4 Part 2 are reported as unsupported.
+PDF text and scanned pages both come from [`go-pdfium`](https://github.com/klippa-app/go-pdfium).
+`goh264` is LGPL-2.1 and is linked unmodified; this source being public lets anyone rebuild
+against a modified copy.
 
 **The upload panel.** `attach_files` serves `internal/server/ui/upload.html`, a single self-contained page,
 because hosts render MCP Apps under `default-src 'none'`. It carries its own ~2 KB bridge
