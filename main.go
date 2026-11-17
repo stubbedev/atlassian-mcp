@@ -1,10 +1,10 @@
-// Command atlassian-mcp is an MCP server exposing self-hosted Jira and
-// Bitbucket Server (tickets, pull requests, review threads, git context).
 package main
 
 import (
 	_ "embed"
 	"encoding/json"
+
+	"github.com/stubbedev/atlassian-mcp/internal/server"
 )
 
 // package.json is the single source of truth for the version. It is embedded at
@@ -25,4 +25,4 @@ var Version = func() string {
 	return "dev"
 }()
 
-func main() { run(Version) }
+func main() { server.Run(Version) }

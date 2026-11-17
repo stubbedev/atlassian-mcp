@@ -67,7 +67,9 @@ linters:
       # ST1005 (lowercase, unpunctuated error strings) is off: these errors are
       # user-facing tool results, and sentence style is this codebase's
       # convention. Everything else in staticcheck is on.
-      checks: ["all", "-ST1005"]
+      # ST1000 (package comments) is off: every package is internal and the
+      # code carries no prose comments by convention.
+      checks: ["all", "-ST1005", "-ST1000"]
     gocritic: {}
     revive:
       severity: warning
@@ -88,10 +90,10 @@ linters:
         # results and sentence style is this codebase's convention (same call
         # as -ST1005 in staticcheck).
         - name: errorf
-        - name: exported
+        # exported and package-comments are off: every package is internal,
+        # so their exported names are not a public API that needs doc comments.
         - name: increment-decrement
         - name: indent-error-flow
-        - name: package-comments
         - name: range
         - name: receiver-naming
         - name: redefines-builtin-id
@@ -133,9 +135,9 @@ linters:
 
   exclusions:
     rules:
-      # Test helpers legitimately re-use *testing.T as a context value and
-      # build fixtures with fixed crypto material.
-      - path: _test\.go
+      # Tests and the gittest fixture package legitimately re-use *testing.T
+      # as a context value and build fixtures with fixed crypto material.
+      - path: (_test\.go|internal/gitrepo/gittest/)
         linters:
           - gosec
           - unparam

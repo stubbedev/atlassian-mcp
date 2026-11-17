@@ -1,0 +1,195 @@
+package server
+
+import (
+	"os"
+	"os/signal"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+
+	"github.com/stubbedev/atlassian-mcp/internal/bitbucket"
+	"github.com/stubbedev/atlassian-mcp/internal/config"
+	"github.com/stubbedev/atlassian-mcp/internal/jira"
+	"github.com/stubbedev/atlassian-mcp/internal/logx"
+	"github.com/stubbedev/atlassian-mcp/internal/markup"
+)
+
+// ── Globals ──────────────────────────────────────────────────────────────────
+
+var (
+	jiraClient      *jira.Client
+	bitbucketClient *bitbucket.Client
+	credentials     config.Credentials
+)
+
+func Run(version string) {
+	cfg := config.Load()
+	markup.MarkAITextEnabled = cfg.MarkAIText
+	credentials = cfg.Credentials()
+	if cfg.Jira != nil {
+		jiraClient = jira.NewJiraClient(cfg.Jira.URL, cfg.Jira.Token, credentials)
+	}
+	// Bitbucket tools register whenever Bitbucket is configured — they are no
+	// longer gated on the process cwd's git remote. Per-call resolution still
+	// validates the remote host when auto-detecting project/repo from a repo.
+	if cfg.Bitbucket != nil {
+		bitbucketClient = bitbucket.NewBitbucketClient(cfg.Bitbucket.URL, cfg.Bitbucket.Token, credentials)
+	}
+	if jiraClient == nil && bitbucketClient == nil {
+		logx.Logf("No Jira or Bitbucket configuration found. Set jira.{url,token} / bitbucket.{url,token} in ~/.atlassian-mcp.json or JIRA_URL/JIRA_ACCESS_TOKEN/BITBUCKET_URL/BITBUCKET_ACCESS_TOKEN env vars. Only git tools will be available.")
+	}
+
+	instructions := buildInstructions(cfg)
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		os.Exit(0)
+	}()
+
+	runServer(instructions, version)
+}
+
+// httpAddr returns the HTTP bind address if HTTP mode is requested via
+// --http [addr] or ATLASSIAN_MCP_HTTP, else "" (stdio mode). A bare --http or
+// empty env value defaults to 127.0.0.1:7337.
+func httpAddr() string {
+	const def = "127.0.0.1:7337"
+	args := os.Args[1:]
+	for i, a := range args {
+		if a == "--http" {
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				return args[i+1]
+			}
+			return def
+		}
+		if after, ok := strings.CutPrefix(a, "--http="); ok {
+			if v := after; v != "" {
+				return v
+			}
+			return def
+		}
+	}
+	if v, ok := os.LookupEnv("ATLASSIAN_MCP_HTTP"); ok {
+		if v == "" || v == "1" || strings.EqualFold(v, "true") {
+			return def
+		}
+		return v
+	}
+	return ""
+}
+
+// ── Instructions ─────────────────────────────────────────────────────────────
+
+// buildInstructions runs before any client handshake, so it cannot know the
+// client's repo — repo state is surfaced dynamically by get_dev_context.
+func buildInstructions(cfg config.Config) string {
+	var b strings.Builder
+	w := func(s string) { b.WriteString(s); b.WriteByte('\n') }
+
+	// Identity enrichment ("you are X") is best-effort and must NOT delay the
+	// listener: each whoami can block up to 30s when Jira/Bitbucket is slow or
+	// unreachable (e.g. VPN not up yet at boot), which would otherwise stall the
+	// HTTP server ~60s and make clients fail to connect. Fetch both concurrently
+	// and wait only briefly; if they're not back in time, serve instructions
+	// without the identity line (the background fetch is harmless and discarded).
+	type identity struct {
+		jiraUser *jira.CurrentUser
+		bb       string
+	}
+	idCh := make(chan identity, 1)
+	go func() {
+		var id identity
+		var wg sync.WaitGroup
+		if jiraClient != nil {
+			wg.Go(func() { id.jiraUser, _ = jiraClient.Whoami() })
+		}
+		if bitbucketClient != nil {
+			wg.Go(func() { id.bb, _ = bitbucketClient.Whoami() })
+		}
+		wg.Wait()
+		idCh <- id
+	}()
+	var who identity
+	select {
+	case who = <-idCh:
+	case <-time.After(3 * time.Second):
+	}
+	jiraMe := who.jiraUser
+	bbMe := who.bb
+
+	w("# atlassian-mcp")
+	w("")
+	w("Self-hosted Jira + Bitbucket Server tooling. Prefer these tools over shelling out to `git log`, `gh`, or any `bitbucket`/`bb` CLI for anything that touches tickets, PRs, reviewers, comments, or user lookups.")
+	w("")
+	w("## Configured services")
+	jiraLine := "- Jira:      "
+	if jiraClient != nil {
+		jiraLine += cfg.Jira.URL
+		if jiraMe != nil {
+			id := jiraMe.Name
+			if id == "" {
+				id = jiraMe.Key
+			}
+			if id == "" {
+				id = "?"
+			}
+			jiraLine += " — you are " + id
+			if jiraMe.DisplayName != "" {
+				jiraLine += " \"" + jiraMe.DisplayName + "\""
+			}
+		}
+	} else {
+		jiraLine += "(not configured)"
+	}
+	w(jiraLine)
+
+	bbLine := "- Bitbucket: "
+	if bitbucketClient != nil {
+		bbLine += cfg.Bitbucket.URL
+		if bbMe != "" {
+			bbLine += " — you are " + bbMe
+		}
+	} else {
+		bbLine += "(not configured)"
+	}
+	w(bbLine)
+	w("")
+	w("## Repo context")
+	w("- Tools that need a repo (git_get_context, get_dev_context, start_work, complete_work, and Bitbucket project/repo auto-detection) resolve it from your MCP workspace roots, from the ATLASSIAN_MCP_REPO_ROOT env var, or from an explicit `repoPath` argument. Pass `repoPath` (or `projectKey`+`repoSlug` for Bitbucket) when working outside a single known workspace.")
+	w("")
+	w("## Use these tools — do NOT shell out")
+	w("- \"What am I working on / what's the status / show me the context\" → call `get_dev_context` first. It returns branch state, linked Jira tickets, the open PR, and reviewer status in one shot. The same report is also the `dev-context://current` resource — re-read it for fresh state instead of re-calling the tool.")
+	w("- Looking up a person's username (for reviewers, assignees, mentions) → ALWAYS use `bitbucket_search resource=users` or `jira_search resource=users`. NEVER use `git log`/`git shortlog`/`gh api`/`bb`/any bitbucket CLI to discover who someone is — those return commit-author strings, not Bitbucket/Jira usernames, and the wrong identifier breaks reviewer assignment.")
+	w("- Reading a Jira ticket → `jira_get` (single) or `jira_search` (many). Any Jira write — fields, transition, comment, attachment, link, worklog, fix version → `jira_mutate`.")
+	w("- A Jira field with no dedicated argument (Epic Name, Story Points, any custom field) → `jira_mutate` `create.customFields` / `update.customFields`, keyed by field name. To learn a screen's fields, required ones, and allowed values → `jira_search resource=fields` with project+issueType or issueKey. Never tell the user to set a field in the Jira UI before trying this.")
+	w("- Reading such a field (Story Points, Epic Link, any custom field) → `customFields` on `jira_get` (one issue) or `jira_search` resource=issues / board_overview (many), keyed by field name. Never open tickets one by one to total a sprint: `jira_search jql=\"sprint = <id>\" customFields=[\"Story Points\"]`.")
+	w("- Reading a PR → `bitbucket_get_pr`. Creating/updating/merging → `bitbucket_mutate`. Commenting → `bitbucket_comment`. An attachment from either service → `get_attachment` with source=jira|bitbucket.")
+	w("- Attaching a file → the `attachments` argument when a readable path or http(s) URL is in hand; otherwise `attach_files` if it is in your tool list (see its description), else ask the user for a path or URL.")
+	w("- Starting work on a ticket (branch + status transition + README) → `start_work`. Closing it (merge + transition) → `complete_work`.")
+	w("")
+	w("## Enforced by the server, not by you")
+	w("- Argument enums and required fields are checked before a call runs, so a wrong `action`/`resource` is an error rather than a silent no-op.")
+	w("- Jira text fields accept markdown: it is converted to wiki markup on the way in.")
+	w("- Names are resolved before anything is written: Jira assignee/reporter, components, fix versions, Bitbucket reviewers (an update that would drop an existing reviewer needs `update.replaceReviewers=true`). A bad one comes back with the valid options.")
+	w("")
+	w("- Every Jira ticket description/comment and Bitbucket PR description/comment you post gets a bold [AI] attribution line appended automatically — never add your own.")
+	w("")
+	w("## Writing style")
+	w("- Smallest output that still communicates, everywhere: tickets, comments, PR descriptions, review replies.")
+	w("- Jira tickets are simple specs: what is wrong or needed, repro steps or acceptance criteria, a fenced code example when code is the point — nothing else.")
+	w("- Brief, well-formatted text: short paragraphs, lists for enumerations, fenced code with a language for anything the reader runs or reads as code.")
+	w("- No chit-chat: no greetings, no apologies, no restating the ticket/PR/diff back at its reader, no \"let me know\" closers.")
+
+	return b.String()
+}
+
+func mustGetwd() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		return "."
+	}
+	return wd
+}

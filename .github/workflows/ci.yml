@@ -68,7 +68,7 @@ jobs:
       # initialized → tools/list) on the official SDK transport. Both services
       # are configured (via env) so the full tool set registers. The trailing
       # sleep keeps stdin open so the server flushes responses before EOF.
-      # (In-process coverage of the same path lives in smoke_test.go.)
+      # (In-process coverage of the same path lives in internal/server/smoke_test.go.)
       - name: Smoke — MCP handshake over stdio
         run: |
           BIN="$PWD/atlassian-mcp"

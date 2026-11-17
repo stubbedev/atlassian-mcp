@@ -2,8 +2,21 @@
 
 ## Development
 
-The server is one Go module at the repository root. Tool schemas live in `tools.json`,
-embedded into the binary; the MCP layer is the official
+One Go module; `main.go` at the root is only the entry point, so
+`go install github.com/stubbedev/atlassian-mcp@latest` keeps working. Everything else is
+under `internal/`, each package importing only those below it:
+
+| Package | Holds |
+|---|---|
+| `server` | MCP server, tool routing and schemas (`tools.json`), sessions, dev context, start/complete work, the upload panel (`ui/upload.html`) |
+| `jira`, `bitbucket` | API clients and their tool operations |
+| `attachment` | Upload sources and `get_attachment` results |
+| `media` | Image, animation, video and PDF decoding |
+| `gitrepo` | Git operations on go-git; `gitrepo/gittest` is the test fixture |
+| `markup` | Markdown → Jira wiki, `[AI]` attribution, suggestion blocks |
+| `config`, `arg`, `text`, `tool`, `httpx`, `logx` | Configuration, argument coercion, text helpers, tool result types, the shared HTTP client, logging |
+
+The MCP layer is the official
 [`modelcontextprotocol/go-sdk`](https://github.com/modelcontextprotocol/go-sdk).
 
 Tasks live in the `justfile` and mirror CI, so a green `just check` predicts a green build:
@@ -63,7 +76,7 @@ oxipng -o 4 --strip safe packaging/mcpb/icon.png
 
 **No external programs.** Release builds use `CGO_ENABLED=0 -tags nodynamic`. Git goes
 through [`go-git`](https://github.com/go-git/go-git), except status, which is computed in
-`git_status.go` because go-git's own walks every ignored file. The C libraries some formats need
+`internal/gitrepo/status.go` because go-git's own walks every ignored file. The C libraries some formats need
 (PDFium, libavif, libheif, libjxl) run as WebAssembly under [`wazero`](https://wazero.io).
 
 **Attachment decoding.** Images are resized with `imaging` (long edge `maxDimension`,
@@ -77,7 +90,7 @@ unsupported. PDF text comes from `ledongthuc/pdf`, and scanned pages are rendere
 [`go-pdfium`](https://github.com/klippa-app/go-pdfium). `goh264` is LGPL-2.1 and is linked
 unmodified; this source being public lets anyone rebuild against a modified copy.
 
-**The upload panel.** `attach_files` serves `ui/upload.html`, a single self-contained page,
+**The upload panel.** `attach_files` serves `internal/server/ui/upload.html`, a single self-contained page,
 because hosts render MCP Apps under `default-src 'none'`. It carries its own ~2 KB bridge
 instead of the official SDK, which would add ~400 KB of zod to validate messages the page
 already treats as untrusted. Files travel back as base64 `data:` URIs over `tools/call`, so
