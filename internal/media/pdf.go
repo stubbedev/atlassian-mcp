@@ -3,7 +3,6 @@ package media
 import (
 	"fmt"
 	"image"
-	"image/color"
 	"strings"
 	"sync"
 	"time"
@@ -12,7 +11,6 @@ import (
 	"github.com/klippa-app/go-pdfium/references"
 	"github.com/klippa-app/go-pdfium/requests"
 	"github.com/klippa-app/go-pdfium/webassembly"
-	"github.com/kovidgoyal/imaging"
 )
 
 const PDFRasterThreshold = 20
@@ -78,19 +76,11 @@ func RasterizePDF(buffer []byte, pageCount, maxDim int) ([]image.Image, error) {
 			if err != nil {
 				return fmt.Errorf("rendering page %d: %w", i+1, err)
 			}
-			// The pixels live in the WebAssembly heap until Cleanup; copy them out.
-			img := imaging.Clone(res.Result.RenderedImage)
+			// The pixels live in the WebAssembly heap until Cleanup; flattening copies them out.
+			out = append(out, flattenOnWhite(res.Result.RenderedImage))
 			res.Cleanup()
-			out = append(out, flattenOnWhite(img))
 		}
 		return nil
 	})
 	return out, err
-}
-
-// flattenOnWhite composites a page onto white paper: a page without a
-// background renders transparent, which JPEG would turn black.
-func flattenOnWhite(img image.Image) image.Image {
-	bg := imaging.New(img.Bounds().Dx(), img.Bounds().Dy(), color.White)
-	return imaging.Overlay(bg, img, image.Point{}, 1)
 }

@@ -12,7 +12,6 @@ require (
 	github.com/kettek/apng v0.0.0-20250827064933-2bb5f5fcf253
 	github.com/kevinburke/ssh_config v1.6.0
 	github.com/klippa-app/go-pdfium v1.21.4
-	github.com/kovidgoyal/imaging v1.9.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/sergi/go-diff v1.4.0
 	github.com/thesyncim/goh264 v0.0.0-20260714162114-14b36a2bfcc4
@@ -35,10 +34,7 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/jbenet/go-context v0.0.0-20150711004518-d14ea06fba99 // indirect
 	github.com/jolestar/go-commons-pool/v2 v2.1.2 // indirect
-	github.com/kovidgoyal/go-parallel v1.1.1 // indirect
-	github.com/kovidgoyal/go-shm v1.0.0 // indirect
 	github.com/pjbgf/sha1cd v0.7.0 // indirect
-	github.com/rwcarlsen/goexif v0.0.0-20190401172101-9e8deecbddbd // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect
 	github.com/skeema/knownhosts v1.3.1 // indirect

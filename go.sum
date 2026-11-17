@@ -73,12 +73,6 @@ github.com/kevinburke/ssh_config v1.6.0 h1:J1FBfmuVosPHf5GRdltRLhPJtJpTlMdKTBjRg
 github.com/kevinburke/ssh_config v1.6.0/go.mod h1:q2RIzfka+BXARoNexmF9gkxEX7DmvbW9P4hIVx2Kg4M=
 github.com/klippa-app/go-pdfium v1.21.4 h1:CalrAbIUyPIBkGU9qJX2z7yGitDrcuJT62FQT5m5CPU=
 github.com/klippa-app/go-pdfium v1.21.4/go.mod h1:d55Qev3QNMBTjv/VKA7pAV9hSyN47WZqiHI7bGc8fbc=
-github.com/kovidgoyal/go-parallel v1.1.1 h1:1OzpNjtrUkBPq3UaqrnvOoB2F9RttSt811uiUXyI7ok=
-github.com/kovidgoyal/go-parallel v1.1.1/go.mod h1:BJNIbe6+hxyFWv7n6oEDPj3PA5qSw5OCtf0hcVxWJiw=
-github.com/kovidgoyal/go-shm v1.0.0 h1:HJEel9D1F9YhULvClEHJLawoRSj/1u/EDV7MJbBPgQo=
-github.com/kovidgoyal/go-shm v1.0.0/go.mod h1:Yzb80Xf9L3kaoB2RGok9hHwMIt7Oif61kT6t3+VnZds=
-github.com/kovidgoyal/imaging v1.9.0 h1:TxHvhClPANvDW7eLm7PYDTZU1KE15xbqlFv95DA6DmY=
-github.com/kovidgoyal/imaging v1.9.0/go.mod h1:t2vWMc3uISm/jMP87nBCcZUcAK6EDUdgumwaXSuz0Jc=
 github.com/kr/pretty v0.1.0/go.mod h1:dAy3ld7l9f0ibDNOQOHHMYYIIbhfbHSm3C4ZsoJORNo=
 github.com/kr/pretty v0.3.1 h1:flRD4NNwYAUpkphVc1HcthR4KEIFJ65n8Mw5qdRn3LE=
 github.com/kr/pretty v0.3.1/go.mod h1:hoEshYVHaxMs3cyo3Yncou5ZscifuDolrwPKZanG3xk=
@@ -99,8 +93,6 @@ github.com/pkg/errors v0.9.1/go.mod h1:bwawxfHBFNV+L2hUp1rHADufV3IMtnDRdf1r5NINE
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/rogpeppe/go-internal v1.14.1 h1:UQB4HGPB6osV0SQTLymcB4TgvyWu6ZyliaW0tI/otEQ=
 github.com/rogpeppe/go-internal v1.14.1/go.mod h1:MaRKkUm5W0goXpeCfT7UZI6fk/L7L7so1lCWt35ZSgc=
-github.com/rwcarlsen/goexif v0.0.0-20190401172101-9e8deecbddbd h1:CmH9+J6ZSsIjUK3dcGsnCnO41eRBOnY12zwkn5qVwgc=
-github.com/rwcarlsen/goexif v0.0.0-20190401172101-9e8deecbddbd/go.mod h1:hPqNNc0+uJM6H+SuU8sEs5K5IQeKccPqeSjfgcKGgPk=
 github.com/segmentio/asm v1.1.3 h1:WM03sfUOENvvKexOLp+pCqgb/WDjsi7EK8gIsICtzhc=
 github.com/segmentio/asm v1.1.3/go.mod h1:Ld3L4ZXGNcSLRg4JBsZ3//1+f/TjYl0Mzen/DQy1EJg=
 github.com/segmentio/encoding v0.5.4 h1:OW1VRern8Nw6ITAtwSZ7Idrl3MXCFwXHPgqESYfvNt0=

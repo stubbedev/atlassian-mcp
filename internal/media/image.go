@@ -4,16 +4,14 @@ import (
 	"bytes"
 	"image"
 	"image/gif"
-	"image/png"
 	"strings"
 
 	_ "github.com/gen2brain/avif"   // AVIF, via libavif compiled to WebAssembly
 	_ "github.com/gen2brain/heic"   // HEIC/HEIF (iPhone photos), via libheif in WebAssembly
 	_ "github.com/gen2brain/jpegxl" // JPEG XL, via libjxl in WebAssembly
-	"github.com/kovidgoyal/imaging"
-	_ "golang.org/x/image/bmp"  // BMP
-	_ "golang.org/x/image/tiff" // TIFF
-	_ "golang.org/x/image/webp" // WebP
+	_ "golang.org/x/image/bmp"      // BMP
+	_ "golang.org/x/image/tiff"     // TIFF
+	_ "golang.org/x/image/webp"     // WebP
 )
 
 func imageHasAlpha(img image.Image) bool {
@@ -29,28 +27,21 @@ func ProcessImage(buffer []byte, mimeType string, maxDim, quality int) (data []b
 	if strings.ToLower(mimeType) == "image/svg+xml" {
 		return buffer, mimeType, false, nil
 	}
-	img, err := imaging.Decode(bytes.NewReader(buffer), imaging.AutoOrientation(true))
+	img, err := decodeOriented(buffer)
 	if err != nil {
 		return nil, "", false, err
 	}
 	b := img.Bounds()
-	longEdge := b.Dx()
-	if b.Dy() > longEdge {
-		longEdge = b.Dy()
-	}
-	needsResize := longEdge > maxDim
-	out := img
-	if needsResize {
-		out = imaging.Fit(img, maxDim, maxDim, imaging.Lanczos)
-	}
+	needsResize := max(b.Dx(), b.Dy()) > maxDim
+	out := fit(img, maxDim)
 	var buf bytes.Buffer
 	if imageHasAlpha(img) {
-		if err := imaging.Encode(&buf, out, imaging.PNG, imaging.PNGCompressionLevel(png.BestCompression)); err != nil {
+		if err := encodePNG(&buf, out); err != nil {
 			return nil, "", false, err
 		}
 		return buf.Bytes(), "image/png", needsResize, nil
 	}
-	if err := imaging.Encode(&buf, out, imaging.JPEG, imaging.JPEGQuality(quality)); err != nil {
+	if err := encodeJPEG(&buf, out, quality); err != nil {
 		return nil, "", false, err
 	}
 	return buf.Bytes(), "image/jpeg", needsResize, nil
@@ -75,7 +66,7 @@ func IsAnimatedImage(buffer []byte, mimeType string) bool {
 }
 
 func ReencodeFrame(frame []byte, maxDim, quality int) []byte {
-	img, err := imaging.Decode(bytes.NewReader(frame), imaging.AutoOrientation(true))
+	img, err := decodeOriented(frame)
 	if err != nil {
 		return frame
 	}
@@ -87,9 +78,8 @@ func ReencodeFrame(frame []byte, maxDim, quality int) []byte {
 
 // EncodeFittedJPEG shrinks img to fit maxDim and encodes it as JPEG; nil on failure.
 func EncodeFittedJPEG(img image.Image, maxDim, quality int) []byte {
-	out := imaging.Fit(img, maxDim, maxDim, imaging.Lanczos)
 	var buf bytes.Buffer
-	if imaging.Encode(&buf, out, imaging.JPEG, imaging.JPEGQuality(quality)) != nil {
+	if encodeJPEG(&buf, fit(img, maxDim), quality) != nil {
 		return nil
 	}
 	return buf.Bytes()

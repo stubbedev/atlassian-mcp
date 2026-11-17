@@ -9,7 +9,6 @@ import (
 	"image/jpeg"
 	"slices"
 
-	"github.com/kovidgoyal/imaging"
 	"github.com/thesyncim/goh264"
 	"golang.org/x/image/vp8"
 )
@@ -194,16 +193,7 @@ type rotatedPicture struct {
 }
 
 func (p rotatedPicture) image() image.Image {
-	img := p.picture.image()
-	switch p.degrees {
-	case 90:
-		return imaging.Rotate270(img) // imaging rotates counter-clockwise
-	case 180:
-		return imaging.Rotate180(img)
-	case 270:
-		return imaging.Rotate90(img)
-	}
-	return img
+	return rotateClockwise(p.picture.image(), p.degrees)
 }
 
 // ── H.264 ────────────────────────────────────────────────────────────────────
