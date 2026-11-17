@@ -51,7 +51,11 @@ func runTool(session *sessionState, name string, args map[string]any) (toolResul
 		if jira == nil {
 			return toolResult{}, errUnknownTool
 		}
-		return jira.issueOverview(issueOverviewOptsFromArgs(args))
+		opts, err := jira.issueOverviewOptsFromArgs(args)
+		if err != nil {
+			return toolResult{}, err
+		}
+		return jira.issueOverview(opts)
 
 	case "jira_mutate":
 		if jira == nil {

@@ -683,7 +683,7 @@ func (c *JiraClient) getEpicNameFieldID() (string, error) {
 func (c *JiraClient) resolveField(nameOrID string) (jiraField, error) {
 	key := strings.TrimSpace(nameOrID)
 	if key == "" {
-		return jiraField{}, errors.New("customFields entries must be a field name or id.")
+		return jiraField{}, errors.New("field entries must be a field name or id.")
 	}
 	fields, err := c.fieldList()
 	if err != nil {
@@ -1646,6 +1646,8 @@ func (c *JiraClient) search(args map[string]any, repoRoot string) (toolResult, e
 		return c.listFields(args, repoRoot)
 	case "components":
 		return c.listComponents(argString(args, "projectKey"), argString(args, "query"), repoRoot)
+	case "field_history":
+		return c.fieldHistory(args, repoRoot)
 	case "users":
 		return c.searchUsers(argString(args, "query"), argIntDefault(args, "maxResults", 10))
 	case "issues":
@@ -1661,7 +1663,7 @@ func (c *JiraClient) search(args map[string]any, repoRoot string) (toolResult, e
 			argString(args, "status"), argString(args, "assignee"), argString(args, "issueType"),
 			extra, argIntDefault(args, "maxResults", 20), argInt(args, "startAt"))
 	default:
-		return toolResult{}, fmt.Errorf("Unknown resource %q. Use one of: issues, projects, issue_types, boards, sprints, board_overview, versions, components, fields, users.", resource)
+		return toolResult{}, fmt.Errorf("Unknown resource %q. Use one of: issues, projects, issue_types, boards, sprints, board_overview, field_history, versions, components, fields, users.", resource)
 	}
 }
 
@@ -1834,9 +1836,10 @@ type issueOverviewOpts struct {
 	includeSprint      bool
 	descriptionCap     int // 0 = no cap
 	customFields       []string
+	changelog          *changeFilter
 }
 
-func issueOverviewOptsFromArgs(args map[string]any) issueOverviewOpts {
+func (c *JiraClient) issueOverviewOptsFromArgs(args map[string]any) (issueOverviewOpts, error) {
 	full := argBool(args, "fullDescription")
 	defaultCap := 2000
 	if full {
@@ -1844,7 +1847,7 @@ func issueOverviewOptsFromArgs(args map[string]any) issueOverviewOpts {
 	} else if has(args, "descriptionMaxChars") {
 		defaultCap = argInt(args, "descriptionMaxChars")
 	}
-	return issueOverviewOpts{
+	o := issueOverviewOpts{
 		issueKey:           argString(args, "issueKey"),
 		includeComments:    argBoolDefault(args, "includeComments", true),
 		commentsMaxResults: argIntDefault(args, "commentsMaxResults", 10),
@@ -1854,6 +1857,15 @@ func issueOverviewOptsFromArgs(args map[string]any) issueOverviewOpts {
 		descriptionCap:     defaultCap,
 		customFields:       argStrSlice(args, "customFields"),
 	}
+	if !argBool(args, "includeChangelog") {
+		return o, nil
+	}
+	f, err := c.changeFilterFromArgs(args)
+	if err != nil {
+		return issueOverviewOpts{}, err
+	}
+	o.changelog = &f
+	return o, nil
 }
 
 func (c *JiraClient) issueOverview(o issueOverviewOpts) (toolResult, error) {
@@ -2035,6 +2047,14 @@ func (c *JiraClient) issueOverview(o issueOverviewOpts) (toolResult, error) {
 			lines = append(lines, fmt.Sprintf("  #%s %s (%s, %s)", att.ID, att.Filename, mt, formatBytes(att.Size)))
 		}
 		lines = append(lines, "Use get_attachment source=jira with attachmentId to view contents.")
+	}
+
+	if o.changelog != nil {
+		history, err := c.issueChangelogLines(o.issueKey, *o.changelog)
+		if err != nil {
+			return toolResult{}, fmt.Errorf("reading the changelog of %s: %w", o.issueKey, err)
+		}
+		lines = append(lines, history...)
 	}
 
 	if o.includeComments {
