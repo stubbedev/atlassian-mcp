@@ -321,6 +321,54 @@ func TestVideoContainers(t *testing.T) {
 	}
 }
 
+func TestFragmentedMP4HasTheProgressivePackets(t *testing.T) {
+	progressive, err := openMP4Stream(readFixture(t, "cuts.mp4"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fragmented, err := openMP4Stream(readFixture(t, "cuts_fragmented.mp4"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(progressive.packets) != len(fragmented.packets) {
+		t.Fatalf("%d progressive packets, %d fragmented", len(progressive.packets), len(fragmented.packets))
+	}
+	for i, p := range progressive.packets {
+		f := fragmented.packets[i]
+		if p.pts != f.pts || p.sync != f.sync || !bytes.Equal(p.data, f.data) {
+			t.Fatalf("packet %d differs: pts %d/%d sync %v/%v", i, p.pts, f.pts, p.sync, f.sync)
+		}
+	}
+	// Without the progressive file's edit list the first frame shows at
+	// 0.133 s, so ffprobe places the same cuts at 2.133 and 4.133.
+	res, err := ProcessVideo(readFixture(t, "cuts_fragmented.mp4"), ProcessVideoOpts{Frames: 6, Mode: "scenes", SceneThreshold: 0.3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(frameTimes(res), " "); got != "2.13 4.13" {
+		t.Errorf("fragmented cuts at %s; ffprobe puts them at 2.13 4.13", got)
+	}
+}
+
+func TestMP4TrackMatrixRotatesFrames(t *testing.T) {
+	file := readFixture(t, "cuts.mp4")
+	at := bytes.Index(file, []byte("tkhd"))
+	if at < 0 || file[at+4] != 0 {
+		t.Fatal("fixture needs a version 0 tkhd")
+	}
+	matrix := at + 4 + 4 + 4*5 + 8 + 8
+	for i, v := range []uint32{0, 0x10000, 0, 0xFFFF0000, 0} {
+		binary.BigEndian.PutUint32(file[matrix+i*4:], v)
+	}
+	res, err := ProcessVideo(file, ProcessVideoOpts{Frames: 2, Mode: "uniform"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Meta.Width != 96 || res.Meta.Height != 160 {
+		t.Errorf("a 90° track should present as 96x160, got %dx%d", res.Meta.Width, res.Meta.Height)
+	}
+}
+
 func TestVP8SamplesKeyframes(t *testing.T) {
 	res, err := ProcessVideo(readFixture(t, "vp8.webm"), ProcessVideoOpts{Frames: 6, Mode: "uniform"})
 	if err != nil {

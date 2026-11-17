@@ -3,7 +3,6 @@ module github.com/stubbedev/atlassian-mcp
 go 1.27.4
 
 require (
-	github.com/Eyevinn/mp4ff v0.62.0
 	github.com/gen2brain/avif v0.6.0
 	github.com/gen2brain/heic v0.7.2
 	github.com/gen2brain/jpegxl v0.6.0
