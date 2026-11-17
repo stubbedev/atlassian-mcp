@@ -6,12 +6,10 @@
   # The cache is public; no token needed to pull.
   nixConfig = {
     extra-substituters = [
-      "https://nix.stubbe.dev/c/default/default"
-      "https://nix.stubbe.dev/c/default/flakes"
+      "https://xilos.dev/c/stubbedev/main"
     ];
     extra-trusted-public-keys = [
-      "default:6uWvXutL9cXjV3lii+Ur5ff+ArQoG4kMBKNXWrIxhHg="
-      "flakes:0Dr9MyPOvA6va2GVzflJcbrChNoZUeIZflyrww3O+YM="
+      "xilos.dev/stubbedev/main-1:397R6S49v/FSvP+mZ3HlKrVN1KXhgzHIEIHxA/UuG6Y="
     ];
   };
 
