@@ -13,7 +13,6 @@ require (
 	github.com/kevinburke/ssh_config v1.6.0
 	github.com/klippa-app/go-pdfium v1.21.4
 	github.com/kovidgoyal/imaging v1.9.0
-	github.com/ledongthuc/pdf v0.0.0-20250511090121-5959a4027728
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/sergi/go-diff v1.4.0
 	github.com/thesyncim/goh264 v0.0.0-20260714162114-14b36a2bfcc4

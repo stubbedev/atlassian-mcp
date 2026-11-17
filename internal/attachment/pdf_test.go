@@ -3,6 +3,7 @@ package attachment
 import (
 	"bytes"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stubbedev/atlassian-mcp/internal/media"
@@ -11,11 +12,24 @@ import (
 // minimalPDF is one page holding a filled black rectangle and no text, so
 // it takes the scanned-PDF path: rasterize instead of extracting text.
 func minimalPDF() []byte {
-	content := "0 0 0 rg 50 50 100 100 re f"
+	return onePagePDF("0 0 0 rg 50 50 100 100 re f", "")
+}
+
+func textPDF(lines ...string) []byte {
+	var content strings.Builder
+	content.WriteString("BT /F1 18 Tf 20 160 Td 22 TL")
+	for _, l := range lines {
+		fmt.Fprintf(&content, " (%s) Tj T*", l)
+	}
+	content.WriteString(" ET")
+	return onePagePDF(content.String(), "/Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >>")
+}
+
+func onePagePDF(content, resources string) []byte {
 	objs := []string{
 		"<< /Type /Catalog /Pages 2 0 R >>",
 		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R " + resources + " >>",
 		fmt.Sprintf("<< /Length %d >>\nstream\n%s\nendstream", len(content), content),
 	}
 	var b bytes.Buffer
@@ -32,6 +46,26 @@ func minimalPDF() []byte {
 	}
 	fmt.Fprintf(&b, "trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n", len(objs)+1, xref)
 	return b.Bytes()
+}
+
+func TestPDFTextIsExtracted(t *testing.T) {
+	res := buildPDFResult(Args{ID: "2", Filename: "notes.pdf", Buffer: textPDF("Release notes for 9.1", "Fixed the upload panel")}, "notes.pdf")
+	if len(res.Content) != 1 {
+		t.Fatalf("a text PDF should come back as one text block, got %d blocks", len(res.Content))
+	}
+	got := res.Content[0].Text
+	for _, want := range []string{"Extracted text from 1 page(s):", "Release notes for 9.1", "Fixed the upload panel"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("result missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestBrokenPDFIsReported(t *testing.T) {
+	res := buildPDFResult(Args{ID: "3", Filename: "broken.pdf", Buffer: []byte("%PDF-1.4\nnot really")}, "broken.pdf")
+	if got := res.Content[0].Text; !strings.Contains(got, "Failed to extract PDF text") {
+		t.Errorf("a broken PDF should say text extraction failed:\n%s", got)
+	}
 }
 
 func TestRasterizePDFInProcess(t *testing.T) {
