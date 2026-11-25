@@ -11,7 +11,7 @@ require (
 	github.com/kevinburke/ssh_config v1.6.0
 	github.com/klippa-app/go-pdfium v1.21.5
 	github.com/modelcontextprotocol/go-sdk v1.8.0
-	github.com/sergi/go-diff v1.4.0
+	github.com/sergi/go-diff v1.4.5
 	github.com/thesyncim/goh264 v0.0.0-20260714162114-14b36a2bfcc4
 	golang.org/x/crypto v0.59.0
 	golang.org/x/image v0.48.0
